@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Faros Authors.
+Copyright YEAR The Faros Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,21 +13,3 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
-package auth
-
-// OIDCConfig holds OIDC provider configuration.
-type OIDCConfig struct {
-	IssuerURL    string
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
-	Scopes       []string
-}
-
-// DefaultOIDCConfig returns default OIDC configuration.
-func DefaultOIDCConfig() *OIDCConfig {
-	return &OIDCConfig{
-		Scopes: []string{"openid", "profile", "email", "offline_access"},
-	}
-}

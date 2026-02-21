@@ -118,10 +118,20 @@ func SetupClusters(workDir string) env.Func {
 
 		// Belt-and-suspenders: wait for the hub /healthz even if kedge dev create
 		// already waited (it may return before the TLS listener is fully up).
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		if err := WaitForHubReady(waitCtx, DefaultHubURL); err != nil {
+		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer healthCancel()
+		if err := WaitForHubReady(healthCtx, DefaultHubURL); err != nil {
 			return ctx, fmt.Errorf("hub did not become healthy after setup: %w", err)
+		}
+
+		// Wait for KCP APIBindings to finish bootstrapping so the site API is
+		// available. Without this, tests that create sites immediately after setup
+		// can get "server could not find the requested resource".
+		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer apiCancel()
+		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+			return ctx, fmt.Errorf("site API did not become available after setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil

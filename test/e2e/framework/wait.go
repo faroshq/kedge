@@ -66,6 +66,26 @@ var insecureHTTPClient = &http.Client{
 	},
 }
 
+// WaitForSiteAPI polls `kedge site list` (after a one-time login) until the
+// site API is available (i.e. KCP APIBindings have finished bootstrapping).
+// Without this wait, tests that create sites right after hub setup can get
+// "server could not find the requested resource".
+func WaitForSiteAPI(ctx context.Context, client *KedgeClient, token string) error {
+	// Login once so the kedge context is written to the default kubeconfig.
+	if err := client.Login(ctx, token); err != nil {
+		return fmt.Errorf("login before site API wait: %w", err)
+	}
+	return Poll(ctx, 5*time.Second, 3*time.Minute, func(ctx context.Context) (bool, error) {
+		_, err := client.SiteList(ctx)
+		if err == nil {
+			return true, nil
+		}
+		// "server could not find" = APIBinding not ready yet — keep polling.
+		// Any other error also warrants a retry (hub may be mid-restart).
+		return false, nil
+	})
+}
+
 // HTTPGet performs a GET to url using an insecure client (self-signed certs in
 // dev) and returns the HTTP status code.
 func HTTPGet(ctx context.Context, url string) (int, error) {

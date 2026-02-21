@@ -35,7 +35,19 @@ jobs:
       - name: Build binaries
         run: make build
 
+      - name: Build hub Docker image
+        run: docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:v0.0.1-rc10 .
+
+      - name: Pre-create hub kind cluster and load image
+        run: |
+          KIND_EXPERIMENTAL_DOCKER_NETWORK=kedge-e2e kind create cluster \
+            --name kedge-e2e-hub \
+            --wait 90s
+          kind load docker-image ghcr.io/faroshq/kedge-hub:v0.0.1-rc10 --name kedge-e2e-hub
+
       - name: Run standalone e2e
+        env:
+          KEDGE_HUB_IMAGE_PULL_POLICY: Never
         run: make e2e-standalone E2E_TIMEOUT=20m
 
       - name: Upload test logs on failure

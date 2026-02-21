@@ -28,6 +28,10 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
 
+// hubImagePullPolicyEnv is the env var that overrides the hub image pull policy
+// passed to `kedge dev create`. Set to "Never" in CI when the image is pre-loaded.
+const hubImagePullPolicyEnv = "KEDGE_HUB_IMAGE_PULL_POLICY"
+
 const (
 	DefaultHubClusterName   = "kedge-e2e-hub"
 	DefaultAgentClusterName = "kedge-e2e-agent"
@@ -64,6 +68,9 @@ func ClusterEnvFrom(ctx context.Context) *ClusterEnv {
 // SetupClusters returns an env.Func that creates the hub and agent kind clusters
 // using `kedge dev create` with the local Helm chart. It stores a ClusterEnv
 // in the context for use by tests.
+//
+// If the KEDGE_HUB_IMAGE_PULL_POLICY env var is set (e.g. to "Never" in CI when
+// the image is pre-loaded into kind), it is forwarded to `kedge dev create`.
 func SetupClusters(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		kedge := filepath.Join(workDir, KedgeBin)
@@ -74,7 +81,11 @@ func SetupClusters(workDir string) env.Func {
 			"--agent-cluster-name", DefaultAgentClusterName,
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
-			"--wait-for-ready-timeout", "5m",
+			"--wait-for-ready-timeout", "10m",
+		}
+
+		if pullPolicy := os.Getenv(hubImagePullPolicyEnv); pullPolicy != "" {
+			args = append(args, "--image-pull-policy", pullPolicy)
 		}
 
 		cmd := exec.CommandContext(ctx, kedge, args...)
@@ -94,6 +105,14 @@ func SetupClusters(workDir string) env.Func {
 			HubURL:           DefaultHubURL,
 			Token:            DevToken,
 			WorkDir:          workDir,
+		}
+
+		// Belt-and-suspenders: wait for the hub /healthz even if kedge dev create
+		// already waited (it may return before the TLS listener is fully up).
+		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		if err := WaitForHubReady(waitCtx, DefaultHubURL); err != nil {
+			return ctx, fmt.Errorf("hub did not become healthy after setup: %w", err)
 		}
 
 		return WithClusterEnv(ctx, clusterEnv), nil

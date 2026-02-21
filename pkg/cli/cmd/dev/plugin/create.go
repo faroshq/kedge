@@ -67,6 +67,7 @@ type DevOptions struct {
 	APIServerPort       int
 	HubHTTPSPort        int
 	HubHTTPPort         int
+	ImagePullPolicy     string
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
@@ -106,6 +107,7 @@ func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&o.APIServerPort, "api-server-port", 6443, "Kubernetes API server port for hub kind cluster (change if 6443 is already in use)")
 	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 8443, "HTTPS port for kedge hub (change if 8443 is already in use)")
 	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for kedge hub (change if 8080 is already in use)")
+	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
 }
 
 // Complete completes the options
@@ -446,6 +448,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			"hub": map[string]any{
 				"repository": o.Image,
 				"tag":        o.Tag,
+				"pullPolicy": o.ImagePullPolicy,
 			},
 		},
 		"hub": map[string]any{
@@ -491,6 +494,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	if _, err := histClient.Run("kedge-hub"); err == nil {
 		upgradeAction := action.NewUpgrade(actionConfig)
 		upgradeAction.Namespace = "kedge-system"
+		upgradeAction.Wait = true
+		upgradeAction.Timeout = o.WaitForReadyTimeout
 		_, err = upgradeAction.Run("kedge-hub", chartObj, values)
 		if err != nil {
 			return fmt.Errorf("failed to upgrade chart: %w", err)
@@ -500,6 +505,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		installAction.ReleaseName = "kedge-hub"
 		installAction.Namespace = "kedge-system"
 		installAction.CreateNamespace = true
+		installAction.Wait = true
+		installAction.Timeout = o.WaitForReadyTimeout
 		_, err = installAction.Run(chartObj, values)
 		if err != nil {
 			return fmt.Errorf("failed to install chart: %w", err)

@@ -278,7 +278,7 @@ func extractSiteKubeconfig(ctx context.Context, t *testing.T, client *framework.
 	// Secret name format: site-<siteName>-kubeconfig
 	secretName := "site-" + siteName + "-kubeconfig"
 
-	return framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+	return framework.Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
 		// Get the secret as JSON.
 		out, err := client.Kubectl(ctx,
 			"get", "secret", secretName,

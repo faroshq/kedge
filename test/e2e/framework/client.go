@@ -93,15 +93,23 @@ func (k *KedgeClient) SiteDelete(ctx context.Context, name string) error {
 	return err
 }
 
-// WaitForSiteReady polls until the given site appears as Ready in `kedge site list`
-// or the timeout expires.
+// WaitForSiteReady polls until the given site appears with phase "Ready" in
+// `kedge site list` or the timeout expires. It avoids the substring-match
+// pitfall where "NotReady" would satisfy strings.Contains(…, "Ready").
 func (k *KedgeClient) WaitForSiteReady(ctx context.Context, siteName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.SiteList(ctx)
 		if err != nil {
 			return false, nil // not ready yet, retry
 		}
-		return strings.Contains(out, siteName) && strings.Contains(out, "Ready"), nil
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			// Expected columns: NAME STATUS K8S_VERSION PROVIDER REGION AGE
+			if len(fields) >= 2 && fields[0] == siteName && fields[1] == "Ready" {
+				return true, nil
+			}
+		}
+		return false, nil
 	})
 }
 

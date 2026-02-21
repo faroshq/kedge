@@ -53,12 +53,10 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.cancel = cancel
 
 	args := []string{
-		"join",
 		"--hub-kubeconfig", a.hubKubeconfig,
 		"--kubeconfig", a.agentKubeconfig,
 		"--tunnel-url", DefaultHubURL,
 		"--site-name", a.siteName,
-		"--insecure-skip-tls-verify",
 	}
 
 	cmd := exec.CommandContext(agentCtx, a.bin, args...)

@@ -238,11 +238,11 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 			return ctx, fmt.Errorf("dex did not become ready: %w", err)
 		}
 
-		// Wait for site API (using static token; OIDC and static tokens coexist).
-		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
-		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		// Wait for site API via OIDC login — static tokens are not configured
+		// in Dex mode, so we authenticate with the test Dex user instead.
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForSiteAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after OIDC setup: %w", err)
 		}
 

@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -99,4 +100,24 @@ func HTTPGet(ctx context.Context, url string) (int, error) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	return resp.StatusCode, nil
+}
+
+// HTTPGetBody performs a GET to url using a plain (non-insecure) HTTP client
+// and returns the status code and response body as a string.
+// Use this for plain HTTP endpoints (e.g. in-cluster Dex via kind port mapping).
+func HTTPGetBody(ctx context.Context, url string) (int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, "", fmt.Errorf("reading response body: %w", err)
+	}
+	return resp.StatusCode, string(body), nil
 }

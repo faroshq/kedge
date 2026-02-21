@@ -35,12 +35,11 @@ import (
 )
 
 // ── Shared cases (also run in standalone) ─────────────────────────────────────
-// Running these in the OIDC suite verifies that basic hub + site functionality
-// is not broken by the addition of an OIDC identity provider.
+// Only hub health is included here: static-token-dependent cases (StaticTokenLogin,
+// SiteLifecycle) are not run in the OIDC suite because static auth tokens are
+// intentionally disabled when --with-dex is active.
 
-func TestHubHealth(t *testing.T)        { testenv.Test(t, cases.HubHealth()) }
-func TestStaticTokenLogin(t *testing.T) { testenv.Test(t, cases.StaticTokenLogin()) }
-func TestSiteLifecycle(t *testing.T)    { testenv.Test(t, cases.SiteLifecycle()) }
+func TestHubHealth(t *testing.T) { testenv.Test(t, cases.HubHealth()) }
 
 // ── OIDC-specific cases ────────────────────────────────────────────────────────
 
@@ -168,30 +167,6 @@ func TestOIDCUserCanListSites(t *testing.T) {
 				t.Fatalf("kedge site list with OIDC token failed: %v\noutput: %s", err, out)
 			}
 			t.Logf("OIDC user can list sites: %s", out)
-			return ctx
-		}).Feature()
-	testenv.Test(t, f)
-}
-
-// TestOIDCAndStaticTokenCoexist verifies that the hub accepts both OIDC tokens
-// and static tokens simultaneously.
-func TestOIDCAndStaticTokenCoexist(t *testing.T) {
-	f := features.New("oidc and static token coexistence").
-		Assess("static dev-token still works alongside OIDC", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			clusterEnv := framework.ClusterEnvFrom(ctx)
-			if clusterEnv == nil {
-				t.Fatal("cluster env not found in context")
-			}
-
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
-			siteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-
-			out, err := client.Run(siteCtx, "site", "list")
-			if err != nil {
-				t.Fatalf("kedge site list with static dev-token failed after OIDC setup: %v\noutput: %s", err, out)
-			}
-			t.Logf("static dev-token still works: %s", out)
 			return ctx
 		}).Feature()
 	testenv.Test(t, f)

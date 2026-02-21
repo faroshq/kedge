@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -31,13 +30,19 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
+	"github.com/faroshq/faros-kedge/test/e2e/cases"
 	"github.com/faroshq/faros-kedge/test/e2e/framework"
 )
 
-func repoRoot() string {
-	_, thisFile, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
-}
+// ── Shared cases (also run in standalone) ─────────────────────────────────────
+// Running these in the OIDC suite verifies that basic hub + site functionality
+// is not broken by the addition of an OIDC identity provider.
+
+func TestHubHealth(t *testing.T)        { testenv.Test(t, cases.HubHealth()) }
+func TestStaticTokenLogin(t *testing.T) { testenv.Test(t, cases.StaticTokenLogin()) }
+func TestSiteLifecycle(t *testing.T)    { testenv.Test(t, cases.SiteLifecycle()) }
+
+// ── OIDC-specific cases ────────────────────────────────────────────────────────
 
 // TestDexHealthy verifies that Dex's OIDC discovery document is accessible
 // from the test runner via the kind port mapping.
@@ -115,8 +120,7 @@ func TestOIDCWrongPasswordFails(t *testing.T) {
 }
 
 // TestOIDCUserCanListSites verifies that a kubeconfig obtained via OIDC can be
-// used to call the kedge API (list sites) — i.e. the token is actually
-// accepted by the hub's authorisation layer.
+// used to call the kedge API (list sites).
 func TestOIDCUserCanListSites(t *testing.T) {
 	f := features.New("oidc user access").
 		Assess("oidc kubeconfig can list sites", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -137,15 +141,11 @@ func TestOIDCUserCanListSites(t *testing.T) {
 				t.Fatal("got empty kubeconfig from OIDC login")
 			}
 
-			// Write kubeconfig to a temp file.
 			kcFile := filepath.Join(t.TempDir(), "oidc.kubeconfig")
 			if err := os.WriteFile(kcFile, result.Kubeconfig, 0600); err != nil {
 				t.Fatalf("writing OIDC kubeconfig: %v", err)
 			}
 
-			// Cache the OIDC tokens so the `kedge get-token` exec credential
-			// plugin (referenced by the kubeconfig) can serve them without
-			// requiring an interactive `kedge login`.
 			if result.IDToken != "" {
 				tokenCache := &cliauth.TokenCache{
 					IDToken:      result.IDToken,
@@ -160,15 +160,13 @@ func TestOIDCUserCanListSites(t *testing.T) {
 				}
 			}
 
-			// `kedge site list` with the OIDC kubeconfig.
-			client := framework.NewKedgeClient(repoRoot(), kcFile, clusterEnv.HubURL)
+			client := framework.NewKedgeClient(framework.RepoRoot(), kcFile, clusterEnv.HubURL)
 			siteCtx, siteCancel := context.WithTimeout(ctx, 30*time.Second)
 			defer siteCancel()
 			out, err := client.Run(siteCtx, "site", "list")
 			if err != nil {
 				t.Fatalf("kedge site list with OIDC token failed: %v\noutput: %s", err, out)
 			}
-			// Any non-error output is acceptable (may be empty list).
 			t.Logf("OIDC user can list sites: %s", out)
 			return ctx
 		}).Feature()
@@ -176,8 +174,7 @@ func TestOIDCUserCanListSites(t *testing.T) {
 }
 
 // TestOIDCAndStaticTokenCoexist verifies that the hub accepts both OIDC tokens
-// and static tokens simultaneously (the dev-token must still work after OIDC
-// is configured).
+// and static tokens simultaneously.
 func TestOIDCAndStaticTokenCoexist(t *testing.T) {
 	f := features.New("oidc and static token coexistence").
 		Assess("static dev-token still works alongside OIDC", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -186,7 +183,7 @@ func TestOIDCAndStaticTokenCoexist(t *testing.T) {
 				t.Fatal("cluster env not found in context")
 			}
 
-			client := framework.NewKedgeClient(repoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			siteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
@@ -201,8 +198,7 @@ func TestOIDCAndStaticTokenCoexist(t *testing.T) {
 }
 
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
-// matches what Dex advertises in its discovery document — mismatches cause
-// token validation failures in production.
+// matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {
 	f := features.New("oidc issuer consistency").
 		Assess("dex discovery issuer matches expected URL", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {

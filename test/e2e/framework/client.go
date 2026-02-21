@@ -19,6 +19,8 @@ package framework
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -156,4 +158,43 @@ func (k *KedgeClient) Kubectl(ctx context.Context, args ...string) (string, erro
 func (k *KedgeClient) ApplyFile(ctx context.Context, path string) error {
 	_, err := k.Kubectl(ctx, "apply", "-f", path)
 	return err
+}
+
+// ExtractSiteKubeconfig waits for the site kubeconfig secret to appear in the
+// hub cluster and writes the base64-decoded content to destPath.
+// Secret name format: site-<siteName>-kubeconfig in namespace kedge-system.
+func (k *KedgeClient) ExtractSiteKubeconfig(ctx context.Context, siteName, destPath string) error {
+	secretName := "site-" + siteName + "-kubeconfig"
+
+	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "secret", secretName,
+			"-n", "kedge-system",
+			"-o", "json",
+		)
+		if err != nil || out == "" {
+			return false, nil
+		}
+
+		var secret struct {
+			Data map[string]string `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(out), &secret); err != nil {
+			return false, nil
+		}
+		encoded, ok := secret.Data["kubeconfig"]
+		if !ok || encoded == "" {
+			return false, nil
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return false, nil
+		}
+
+		if err := os.WriteFile(destPath, decoded, 0600); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 }

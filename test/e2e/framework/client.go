@@ -52,13 +52,38 @@ func (k *KedgeClient) run(ctx context.Context, args ...string) (string, error) {
 	cmd.Dir = k.workDir
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
-	if k.kubeconfig != "" {
-		cmd.Env = append(os.Environ(), "KUBECONFIG="+k.kubeconfig)
+
+	// Ensure the bin/ directory is in PATH so exec credential plugins (e.g.
+	// `kedge get-token`) can be found when the OIDC kubeconfig is used.
+	binDir := filepath.Dir(k.bin)
+	env := os.Environ()
+	pathUpdated := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			env[i] = "PATH=" + binDir + string(filepath.ListSeparator) + e[5:]
+			pathUpdated = true
+			break
+		}
 	}
+	if !pathUpdated {
+		env = append(env, "PATH="+binDir)
+	}
+
+	if k.kubeconfig != "" {
+		env = append(env, "KUBECONFIG="+k.kubeconfig)
+	}
+	cmd.Env = env
+
 	if err := cmd.Run(); err != nil {
 		return buf.String(), fmt.Errorf("kedge %s failed: %w\noutput: %s", strings.Join(args, " "), err, buf.String())
 	}
 	return buf.String(), nil
+}
+
+// Run executes an arbitrary kedge command and returns stdout+stderr combined.
+// This is the public variant of the internal run() helper.
+func (k *KedgeClient) Run(ctx context.Context, args ...string) (string, error) {
+	return k.run(ctx, args...)
 }
 
 // Login authenticates to the hub using a static token.

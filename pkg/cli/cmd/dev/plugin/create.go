@@ -64,10 +64,10 @@ type DevOptions struct {
 	AgentChartPath      string
 	ChartVersion        string
 	KindNetwork         string
-	APIServerPort   int
-	HubHTTPSPort    int
-	HubHTTPPort     int
-	ImagePullPolicy string
+	APIServerPort       int
+	HubHTTPSPort        int
+	HubHTTPPort         int
+	ImagePullPolicy     string
 
 	// WithDex enables Dex as an embedded OIDC identity provider.
 	// When true, Dex is deployed into the hub kind cluster and the hub is
@@ -491,7 +491,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, _ s
 			},
 		},
 		"config": map[string]any{
-			"issuer": devDexIssuerURL,
+			"issuer":  devDexIssuerURL,
 			"storage": map[string]any{"type": "memory"},
 			"web":     map[string]any{"http": "0.0.0.0:5556"},
 			"oauth2":  map[string]any{"skipApprovalScreen": true},

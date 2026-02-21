@@ -108,7 +108,7 @@ func TestOIDCWrongPasswordFails(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected OIDC login with wrong password to fail, but it succeeded")
 			}
-			t.Logf("correctly rejected bad credentials: %v", err)
+			t.Logf("correctly rejected bad credentials (expected): %v", err)
 			return ctx
 		}).Feature()
 	testenv.Test(t, f)

@@ -34,8 +34,9 @@ import (
 // from the location of this source file at compile time.
 func RepoRoot() string {
 	_, thisFile, _, _ := runtime.Caller(0)
-	// thisFile = .../test/e2e/framework/cluster.go → go up 4 levels
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
+	// thisFile = .../test/e2e/framework/cluster.go
+	// go up 3 levels: framework/ → e2e/ → test/ → repo root
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
 }
 
 const (

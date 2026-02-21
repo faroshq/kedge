@@ -174,17 +174,17 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 
 	postResp, err := client.Do(postReq)
 	if err != nil {
-		return nil, fmt.Errorf("POSTing Dex login form: %w", err)
+		return nil, fmt.Errorf("posting Dex login form: %w", err)
 	}
 	_ = postResp.Body.Close()
 
 	if postResp.StatusCode != http.StatusFound && postResp.StatusCode != http.StatusSeeOther {
-		return nil, fmt.Errorf("Dex login POST returned %d (expected 302/303); bad credentials?", postResp.StatusCode)
+		return nil, fmt.Errorf("dex login POST returned %d (expected 302/303); bad credentials?", postResp.StatusCode)
 	}
 
 	dexCallbackURL := postResp.Header.Get("Location")
 	if dexCallbackURL == "" {
-		return nil, fmt.Errorf("Dex returned no Location after login POST")
+		return nil, fmt.Errorf("dex returned no Location after login POST")
 	}
 
 	// Resolve relative Dex callback URLs.

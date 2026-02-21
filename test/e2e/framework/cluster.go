@@ -22,12 +22,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
+
+// RepoRoot returns the absolute path to the kedge repository root, derived
+// from the location of this source file at compile time.
+func RepoRoot() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	// thisFile = .../test/e2e/framework/cluster.go → go up 4 levels
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
+}
 
 const (
 	// hubImagePullPolicyEnv overrides the hub image pull policy passed to

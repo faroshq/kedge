@@ -471,8 +471,9 @@ func ensureDexHelmRepo() error {
 	return nil
 }
 
-// deployDex installs or upgrades the Dex Helm chart into the hub kind cluster.
-func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, _ string) error {
+// deployDex installs or upgrades the Dex Helm chart into the hub kind cluster
+// and blocks until the Dex pod is Running/Ready.
+func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
 	actionConfig := new(action.Configuration)
 	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret",
 		func(format string, v ...any) {}); err != nil {
@@ -552,6 +553,26 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, _ s
 			return fmt.Errorf("installing dex chart: %w", err)
 		}
 	}
+
+	// helm's Wait=true may return before the pod is truly Ready (known
+	// inconsistency with the Go SDK).  Gate explicitly on kubectl rollout
+	// status so that the subsequent hub upgrade can reach Dex at startup.
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "Waiting for Dex pod to be Ready...\n")
+	rolloutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	rolloutCmd := exec.CommandContext(rolloutCtx,
+		"kubectl", "rollout", "status",
+		"deployment/dex",
+		"-n", "kedge-system",
+		"--kubeconfig", kubeconfigPath,
+		"--timeout=3m",
+	)
+	rolloutCmd.Stdout = os.Stderr
+	rolloutCmd.Stderr = os.Stderr
+	if err := rolloutCmd.Run(); err != nil {
+		return fmt.Errorf("waiting for dex rollout to complete: %w", err)
+	}
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex pod is Ready\n")
 	return nil
 }
 

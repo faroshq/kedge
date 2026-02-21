@@ -422,30 +422,24 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 		if err != nil {
 			return err
 		}
-		// First install: no IDP values — Dex does not exist yet. Including the
-		// issuer URL here would cause the hub to crash-loop trying to reach a
-		// non-existent Dex endpoint, preventing the helm --wait from succeeding.
-		if err := o.installHelmChart(ctx, restConfig, false); err != nil {
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install Helm chart\n")
-			return err
-		}
-		_, _ = fmt.Fprint(o.Streams.ErrOut, "Helm chart installed successfully\n")
 
-		// If Dex is enabled, deploy it after the hub is up, then upgrade the
-		// hub chart to wire in the IDP settings.
+		// Deploy Dex FIRST so the hub can be installed once, with IDP settings
+		// already wired in. Dex creates the namespace (CreateNamespace=true).
 		if o.WithDex {
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Deploying Dex OIDC provider...\n")
 			if err := o.deployDex(ctx, restConfig, kubeconfigPath); err != nil {
 				return fmt.Errorf("deploying dex: %w", err)
 			}
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex deployed; upgrading hub with IDP settings...\n")
-			// Upgrade: now Dex is running, pass withIDP=true so the hub gets
-			// the issuer URL and can validate OIDC config on startup.
-			if err := o.installHelmChart(ctx, restConfig, true); err != nil {
-				return fmt.Errorf("upgrading hub chart with IDP settings: %w", err)
-			}
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Hub upgraded with OIDC IDP configuration\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex deployed\n")
 		}
+
+		// Single hub install: pass withIDP=o.WithDex so IDP settings are
+		// included from the start when Dex is enabled.
+		if err := o.installHelmChart(ctx, restConfig, o.WithDex); err != nil {
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install Helm chart\n")
+			return err
+		}
+		_, _ = fmt.Fprint(o.Streams.ErrOut, "Helm chart installed successfully\n")
 	}
 
 	return nil
@@ -546,7 +540,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 		inst := action.NewInstall(actionConfig)
 		inst.ReleaseName = devDexReleaseName
 		inst.Namespace = "kedge-system"
-		inst.CreateNamespace = false
+		inst.CreateNamespace = true // Dex is deployed before the hub; create namespace here.
 		inst.Wait = true
 		inst.Timeout = 3 * time.Minute
 		if _, err := inst.Run(chartObj, dexValues); err != nil {
@@ -554,48 +548,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 		}
 	}
 
-	// helm's Go SDK Wait=true may return before the pod is truly serving
-	// requests (known race with the SDK's kube client watcher).
-	// Gate on the actual Dex OIDC discovery endpoint via the kind NodePort
-	// so the hub can reach Dex at startup during the subsequent upgrade.
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "Waiting for Dex OIDC endpoint to be ready...\n")
-	if err := o.waitForDexReady(ctx); err != nil {
-		return fmt.Errorf("dex did not become ready: %w", err)
-	}
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex is ready\n")
 	return nil
-}
-
-// waitForDexReady polls the Dex OIDC discovery endpoint (reachable via the
-// kind port mapping localhost:DexHTTPPort → NodePort 31556 → Dex pod:5556)
-// until it returns HTTP 200 or the context is cancelled.
-func (o *DevOptions) waitForDexReady(ctx context.Context) error {
-	discoveryURL := fmt.Sprintf("http://localhost:%d/dex/.well-known/openid-configuration", o.DexHTTPPort)
-	deadline := time.Now().Add(3 * time.Minute)
-
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-	for {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out after 3m waiting for %s", discoveryURL)
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := httpClient.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			_ = resp.Body.Close()
-			return nil
-		}
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(3 * time.Second):
-		}
-	}
 }
 
 func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, networkName string) (string, error) {
@@ -659,9 +612,11 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		"hubExternalURL": hubExternalURL,
 		"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
 		"devMode":        true,
-		"staticAuthTokens": []string{
-			"dev-token",
-		},
+	}
+	// Static auth token is only used in token mode. In OIDC/IDP mode the hub
+	// authenticates via Dex; mixing both would be confusing and unnecessary.
+	if !withIDP {
+		hubValues["staticAuthTokens"] = []string{"dev-token"}
 	}
 	// IDP settings are passed via the top-level `idp` helm values (not under `hub`).
 	// See deploy/charts/kedge-hub/templates/statefulset.yaml.

@@ -554,26 +554,48 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 		}
 	}
 
-	// helm's Wait=true may return before the pod is truly Ready (known
-	// inconsistency with the Go SDK).  Gate explicitly on kubectl rollout
-	// status so that the subsequent hub upgrade can reach Dex at startup.
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "Waiting for Dex pod to be Ready...\n")
-	rolloutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-	rolloutCmd := exec.CommandContext(rolloutCtx,
-		"kubectl", "rollout", "status",
-		"deployment/dex",
-		"-n", "kedge-system",
-		"--kubeconfig", kubeconfigPath,
-		"--timeout=3m",
-	)
-	rolloutCmd.Stdout = os.Stderr
-	rolloutCmd.Stderr = os.Stderr
-	if err := rolloutCmd.Run(); err != nil {
-		return fmt.Errorf("waiting for dex rollout to complete: %w", err)
+	// helm's Go SDK Wait=true may return before the pod is truly serving
+	// requests (known race with the SDK's kube client watcher).
+	// Gate on the actual Dex OIDC discovery endpoint via the kind NodePort
+	// so the hub can reach Dex at startup during the subsequent upgrade.
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "Waiting for Dex OIDC endpoint to be ready...\n")
+	if err := o.waitForDexReady(ctx); err != nil {
+		return fmt.Errorf("dex did not become ready: %w", err)
 	}
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex pod is Ready\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex is ready\n")
 	return nil
+}
+
+// waitForDexReady polls the Dex OIDC discovery endpoint (reachable via the
+// kind port mapping localhost:DexHTTPPort → NodePort 31556 → Dex pod:5556)
+// until it returns HTTP 200 or the context is cancelled.
+func (o *DevOptions) waitForDexReady(ctx context.Context) error {
+	discoveryURL := fmt.Sprintf("http://localhost:%d/dex/.well-known/openid-configuration", o.DexHTTPPort)
+	deadline := time.Now().Add(3 * time.Minute)
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after 3m waiting for %s", discoveryURL)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := httpClient.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			_ = resp.Body.Close()
+			return nil
+		}
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
 }
 
 func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, networkName string) (string, error) {

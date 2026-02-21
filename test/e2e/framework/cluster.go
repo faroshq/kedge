@@ -28,9 +28,15 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
 
-// hubImagePullPolicyEnv is the env var that overrides the hub image pull policy
-// passed to `kedge dev create`. Set to "Never" in CI when the image is pre-loaded.
-const hubImagePullPolicyEnv = "KEDGE_HUB_IMAGE_PULL_POLICY"
+const (
+	// hubImagePullPolicyEnv overrides the hub image pull policy passed to
+	// `kedge dev create`. Set to "Never" in CI when the image is pre-loaded.
+	hubImagePullPolicyEnv = "KEDGE_HUB_IMAGE_PULL_POLICY"
+
+	// hubImageTagEnv overrides the hub image tag passed to `kedge dev create`.
+	// Use this in CI to ensure the built image tag matches what the chart uses.
+	hubImageTagEnv = "KEDGE_HUB_IMAGE_TAG"
+)
 
 const (
 	DefaultHubClusterName   = "kedge-e2e-hub"
@@ -86,6 +92,9 @@ func SetupClusters(workDir string) env.Func {
 
 		if pullPolicy := os.Getenv(hubImagePullPolicyEnv); pullPolicy != "" {
 			args = append(args, "--image-pull-policy", pullPolicy)
+		}
+		if tag := os.Getenv(hubImageTagEnv); tag != "" {
+			args = append(args, "--tag", tag)
 		}
 
 		cmd := exec.CommandContext(ctx, kedge, args...)

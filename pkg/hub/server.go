@@ -195,9 +195,25 @@ func (s *Server) Run(ctx context.Context) error {
 		oidcConfig.ClientSecret = s.opts.IDPClientSecret
 		oidcConfig.RedirectURL = s.opts.HubExternalURL + "/auth/callback"
 
-		authHandler, err = auth.NewHandler(ctx, oidcConfig, userClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
-		if err != nil {
-			return fmt.Errorf("creating auth handler: %w", err)
+		// Retry OIDC provider initialisation: the OIDC provider (e.g. Dex) may
+		// not be immediately reachable when the hub pod first starts, especially
+		// in dev/test environments where the IDP is deployed alongside the hub.
+		// A brief back-off avoids a CrashLoopBackOff spiral while Dex comes up.
+		for attempt := 1; ; attempt++ {
+			authHandler, err = auth.NewHandler(ctx, oidcConfig, userClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
+			if err == nil {
+				break
+			}
+			if attempt >= 12 { // ~2 min total (5+10+15+…)
+				return fmt.Errorf("creating auth handler after %d attempts: %w", attempt, err)
+			}
+			wait := time.Duration(attempt*5) * time.Second
+			logger.Info("OIDC provider not ready, retrying", "attempt", attempt, "backoff", wait, "err", err)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
 		}
 		authHandler.RegisterRoutes(router)
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.IDPIssuerURL)

@@ -422,7 +422,10 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 		if err != nil {
 			return err
 		}
-		if err := o.installHelmChart(ctx, restConfig); err != nil {
+		// First install: no IDP values — Dex does not exist yet. Including the
+		// issuer URL here would cause the hub to crash-loop trying to reach a
+		// non-existent Dex endpoint, preventing the helm --wait from succeeding.
+		if err := o.installHelmChart(ctx, restConfig, false); err != nil {
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install Helm chart\n")
 			return err
 		}
@@ -436,7 +439,9 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 				return fmt.Errorf("deploying dex: %w", err)
 			}
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Dex deployed; upgrading hub with IDP settings...\n")
-			if err := o.installHelmChart(ctx, restConfig); err != nil {
+			// Upgrade: now Dex is running, pass withIDP=true so the hub gets
+			// the issuer URL and can validate OIDC config on startup.
+			if err := o.installHelmChart(ctx, restConfig, true); err != nil {
 				return fmt.Errorf("upgrading hub chart with IDP settings: %w", err)
 			}
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Hub upgraded with OIDC IDP configuration\n")
@@ -587,7 +592,11 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 	return "", fmt.Errorf("could not find IP address for cluster %s in network %s", clusterName, networkName)
 }
 
-func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config) error {
+// installHelmChart installs or upgrades the kedge-hub Helm chart.
+// withIDP controls whether IDP/OIDC values are included; pass false for the
+// initial install (before Dex is deployed) and true for the upgrade after Dex
+// is up, so the hub never tries to contact a non-existent issuer at startup.
+func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config, withIDP bool) error {
 	actionConfig := new(action.Configuration)
 
 	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
@@ -631,7 +640,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			},
 		},
 	}
-	if o.WithDex {
+	if withIDP && o.WithDex {
 		values["idp"] = map[string]any{
 			"issuerURL":    devDexIssuerURL,
 			"clientID":     devDexClientID,

@@ -61,7 +61,7 @@ build-agent:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-agent ./cmd/kedge-agent/
 
 test:
-	go test ./...
+	go test $(shell go list ./... | grep -v '/test/e2e')
 
 test-util:
 	go test ./pkg/util/...

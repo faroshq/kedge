@@ -374,6 +374,20 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 	}
 
 	if installKedge {
+		// When pull policy is Never, pre-load the hub image into the kind cluster
+		// so helm install can start without hitting the registry.
+		if o.ImagePullPolicy == "Never" {
+			imageRef := fmt.Sprintf("%s:%s", o.Image, o.Tag)
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "Loading hub image %s into cluster %s\n", imageRef, clusterName)
+			loadCmd := exec.CommandContext(ctx, "kind", "load", "docker-image", imageRef, "--name", clusterName)
+			loadCmd.Stdout = os.Stdout
+			loadCmd.Stderr = os.Stderr
+			if err := loadCmd.Run(); err != nil {
+				// Non-fatal: image may already be present or name may differ; helm will surface the real error.
+				_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: kind load docker-image failed (image may be missing): %v\n", err)
+			}
+		}
+
 		restConfig, err := loadRestConfigFromFile(kubeconfigPath)
 		if err != nil {
 			return err

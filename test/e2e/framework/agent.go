@@ -26,13 +26,13 @@ import (
 
 // Agent manages a kedge-agent process for e2e tests.
 type Agent struct {
-	bin            string
-	workDir        string
-	hubKubeconfig  string
+	bin             string
+	workDir         string
+	hubKubeconfig   string
 	agentKubeconfig string
-	siteName       string
-	cmd            *exec.Cmd
-	cancel         context.CancelFunc
+	siteName        string
+	cmd             *exec.Cmd
+	cancel          context.CancelFunc
 }
 
 // NewAgent creates a new Agent.

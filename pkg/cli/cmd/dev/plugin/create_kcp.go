@@ -45,7 +45,7 @@ const (
 	kcpChartRef     = "kcp-dev/kcp"
 	kcpReleaseName  = "kcp"
 	kcpNamespace    = "kcp"
-	kcpChartVersion = "0.7.1" // matches kcp binary v0.30.0
+	kcpChartVersion = "0.14.0" // matches kcp app version v0.30.0
 
 	// kcp networking: front-proxy service port and NodePort
 	// externalPort=8443 → ClusterIP service port

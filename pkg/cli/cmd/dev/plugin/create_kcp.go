@@ -139,7 +139,7 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 
 	kcpValues := map[string]any{
 		"externalHostname": kcpExternalHostname,
-		"externalPort":     kcpExternalPort,
+		"externalPort": fmt.Sprintf("%d", kcpExternalPort),
 		"kcpFrontProxy": map[string]any{
 			"service": map[string]any{
 				"type":     "NodePort",

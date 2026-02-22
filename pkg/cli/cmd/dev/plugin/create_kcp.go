@@ -139,7 +139,7 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 
 	kcpValues := map[string]any{
 		"externalHostname": kcpExternalHostname,
-		"externalPort": fmt.Sprintf("%d", kcpExternalPort),
+		"externalPort":     fmt.Sprintf("%d", kcpExternalPort),
 		"kcpFrontProxy": map[string]any{
 			"service": map[string]any{
 				"type":     "NodePort",
@@ -181,6 +181,74 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 		inst.Timeout = 8 * time.Minute
 		if _, err := inst.Run(chartObj, kcpValues); err != nil {
 			return fmt.Errorf("installing kcp chart: %w", err)
+		}
+	}
+
+	// kcp advertises its internal APIExport endpoint URLs using the short
+	// hostname "kcp" (the Service name). The hub pod runs in kedge-system, a
+	// different namespace, so "kcp" does not resolve via cluster DNS.
+	// Patch CoreDNS to rewrite "kcp" → "kcp.kcp.svc.cluster.local" so that
+	// the hub can reach kcp's virtual workspace API.
+	if err := patchCoreDNSForKCP(ctx, restConfig); err != nil {
+		return fmt.Errorf("patching coredns for kcp: %w", err)
+	}
+
+	return nil
+}
+
+// patchCoreDNSForKCP inserts a CoreDNS rewrite rule so that the bare hostname
+// "kcp" resolves to "kcp.kcp.svc.cluster.local" cluster-wide. This is needed
+// because kcp publishes its APIExport endpoint URLs using the short Service
+// name, which only resolves within the "kcp" namespace by default.
+func patchCoreDNSForKCP(ctx context.Context, restConfig *rest.Config) error {
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("creating clientset: %w", err)
+	}
+
+	const (
+		rewriteRule = "    rewrite name exact kcp kcp.kcp.svc.cluster.local\n"
+		marker      = "# kcp-rewrite"
+		insertAfter = "errors\n"
+	)
+
+	cm, err := clientset.CoreV1().ConfigMaps("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting coredns configmap: %w", err)
+	}
+
+	corefile := cm.Data["Corefile"]
+	if strings.Contains(corefile, marker) {
+		return nil // already patched
+	}
+
+	// Insert the rewrite rule immediately after the "errors" plugin line.
+	patched := strings.Replace(
+		corefile,
+		insertAfter,
+		insertAfter+rewriteRule+marker+"\n",
+		1,
+	)
+	if patched == corefile {
+		// Fallback: append before the closing brace of the first block.
+		patched = strings.Replace(corefile, "}\n", rewriteRule+marker+"\n}\n", 1)
+	}
+	cm.Data["Corefile"] = patched
+
+	if _, err := clientset.CoreV1().ConfigMaps("kube-system").Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating coredns configmap: %w", err)
+	}
+
+	// Restart CoreDNS pods to pick up the new Corefile.
+	pods, err := clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+		LabelSelector: "k8s-app=kube-dns",
+	})
+	if err != nil {
+		return fmt.Errorf("listing coredns pods: %w", err)
+	}
+	for i := range pods.Items {
+		if err := clientset.CoreV1().Pods("kube-system").Delete(ctx, pods.Items[i].Name, metav1.DeleteOptions{}); err != nil {
+			return fmt.Errorf("deleting coredns pod %s: %w", pods.Items[i].Name, err)
 		}
 	}
 

@@ -93,6 +93,12 @@ type ClusterEnv struct {
 	// KCPKubeconfig is the path to the external kcp admin kubeconfig written
 	// to WorkDir. Only populated by SetupClustersWithExternalKCP.
 	KCPKubeconfig string
+
+	// HubAdminKubeconfig is the raw kind-cluster admin kubeconfig for the hub
+	// cluster, saved before kedge login overwrites the main HubKubeconfig with
+	// a kcp workspace context. Use this for kubectl commands against the hub
+	// kind cluster itself (e.g. deleting pods in the kcp namespace).
+	HubAdminKubeconfig string
 }
 
 // clusterEnvKey is the context key for ClusterEnv.
@@ -440,15 +446,25 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 			return ctx, fmt.Errorf("kedge dev create --with-external-kcp failed: %w", err)
 		}
 
+		hubKubeconfig := filepath.Join(workDir, DefaultHubClusterName+".kubeconfig")
+		hubAdminKubeconfig := filepath.Join(workDir, DefaultHubClusterName+"-admin.kubeconfig")
+
+		// Save a copy of the hub kubeconfig before kedge login overwrites the
+		// current context with a kcp workspace URL.
+		if data, err := os.ReadFile(hubKubeconfig); err == nil {
+			_ = os.WriteFile(hubAdminKubeconfig, data, 0o600)
+		}
+
 		clusterEnv := &ClusterEnv{
-			HubClusterName:   DefaultHubClusterName,
-			AgentClusterName: DefaultAgentClusterName,
-			HubKubeconfig:    filepath.Join(workDir, DefaultHubClusterName+".kubeconfig"),
-			AgentKubeconfig:  filepath.Join(workDir, DefaultAgentClusterName+".kubeconfig"),
-			HubURL:           DefaultHubURL,
-			Token:            DevToken,
-			WorkDir:          workDir,
-			KCPKubeconfig:    filepath.Join(workDir, DefaultKCPExternalKubeconfigFile),
+			HubClusterName:     DefaultHubClusterName,
+			AgentClusterName:   DefaultAgentClusterName,
+			HubKubeconfig:      hubKubeconfig,
+			AgentKubeconfig:    filepath.Join(workDir, DefaultAgentClusterName+".kubeconfig"),
+			HubAdminKubeconfig: hubAdminKubeconfig,
+			HubURL:             DefaultHubURL,
+			Token:              DevToken,
+			WorkDir:            workDir,
+			KCPKubeconfig:      filepath.Join(workDir, DefaultKCPExternalKubeconfigFile),
 		}
 
 		// Wait for hub health.

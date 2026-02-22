@@ -99,9 +99,11 @@ func TestKCPResilience(t *testing.T) {
 			}
 
 			// Delete the kcp front-proxy pod to force a restart.
+			// Use HubAdminKubeconfig — the kind-cluster admin kubeconfig saved
+			// before login overwrote HubKubeconfig with the kcp workspace URL.
 			//nolint:gosec // kubeconfig path comes from our own test setup
 			deleteCmd := exec.CommandContext(ctx, "kubectl",
-				"--kubeconfig", clusterEnv.HubKubeconfig,
+				"--kubeconfig", clusterEnv.HubAdminKubeconfig,
 				"delete", "pods",
 				"-n", "kcp",
 				"-l", "app.kubernetes.io/component=front-proxy",

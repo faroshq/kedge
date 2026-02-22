@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -53,38 +52,6 @@ func requireTwoAgentClusters(t *testing.T, env *framework.ClusterEnv) {
 	t.Helper()
 	if env == nil || len(env.AgentClusters) < 2 {
 		t.Skip("multi-site tests require at least 2 agent clusters (run with --agent-count 2)")
-	}
-}
-
-// requireVirtualWorkloadScheduler skips t if the scheduler is not creating
-// Placements for VirtualWorkloads.  It applies a probe VW and waits up to
-// 30 s; if no Placement appears the scheduler is deemed non-functional in this
-// environment (common in embedded-KCP suites with APIBinding timing issues).
-func requireVirtualWorkloadScheduler(ctx context.Context, t *testing.T, client *framework.KedgeClient) {
-	t.Helper()
-	const probeVW = "e2e-ms-scheduler-probe"
-	manifest := virtualWorkloadManifest(probeVW, msNamespace, nil, "Spread")
-	if err := client.ApplyManifest(ctx, manifest); err != nil {
-		t.Skipf("scheduler probe: ApplyManifest failed (%v) — skipping VW scheduling tests", err)
-	}
-	defer func() { _ = client.DeleteVirtualWorkload(ctx, probeVW, msNamespace) }()
-
-	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	err := framework.Poll(probeCtx, 3*time.Second, 30*time.Second, func(c context.Context) (bool, error) {
-		out, err := client.Kubectl(c,
-			"get", "placements", "-n", msNamespace,
-			"--insecure-skip-tls-verify",
-			"-l", "kedge.faros.sh/virtualworkload="+probeVW,
-			"--no-headers",
-		)
-		if err != nil {
-			return false, nil
-		}
-		return strings.TrimSpace(out) != "", nil
-	})
-	if err != nil {
-		t.Skipf("VirtualWorkload scheduler probe timed out (no Placement in 30 s) — skipping VW scheduling tests")
 	}
 }
 
@@ -303,8 +270,6 @@ func LabelBasedScheduling() features.Feature {
 					t.Fatalf("site %s did not become Ready: %v", site, err)
 				}
 			}
-			// Skip early if the VirtualWorkload scheduler is not functional.
-			requireVirtualWorkloadScheduler(ctx, t, client)
 			return ctx
 		}).
 		Assess("VW with region=eu selector schedules only to site-1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -352,7 +317,6 @@ func WorkloadIsolation() features.Feature {
 					t.Fatalf("site %s not Ready: %v", site, err)
 				}
 			}
-			requireVirtualWorkloadScheduler(ctx, t, client)
 			return ctx
 		}).
 		Assess("site-1-only workload has no placement on site-2", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -398,7 +362,6 @@ func SiteFailoverIsolation() features.Feature {
 					t.Fatalf("site %s not Ready: %v", site, err)
 				}
 			}
-			requireVirtualWorkloadScheduler(ctx, t, client)
 
 			// Create VW targeting site-2 only.
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "us"}, "Spread")
@@ -456,7 +419,6 @@ func SiteReconnect() features.Feature {
 					t.Fatalf("site %s not Ready: %v", site, err)
 				}
 			}
-			requireVirtualWorkloadScheduler(ctx, t, client)
 
 			// Create VW targeting site-1.
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "eu"}, "Spread")

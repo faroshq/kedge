@@ -55,6 +55,7 @@ func SetupWithManager(mgr mcmanager.Manager) error {
 // Reconcile handles a single VirtualWorkload reconciliation across workspaces.
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("key", req.NamespacedName, "cluster", req.ClusterName)
+	logger.V(4).Info("Reconciling VirtualWorkload")
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {

@@ -275,8 +275,46 @@ func (o *DevOptions) buildKCPKubeconfigs(ctx context.Context, restConfig *rest.C
 		return fmt.Errorf("kcp-ca secret has no tls.crt field")
 	}
 
-	// --- 2. Apply admin client Certificate resource ---
-	certYAML := fmt.Sprintf(`apiVersion: cert-manager.io/v1
+	// --- 2. Create TWO admin certificates ---
+	//
+	// (a) Internal cert: signed by kcp-client-issuer (backed by kcp-client-ca).
+	//     Used by the hub pod to connect DIRECTLY to the kcp backend at kcp:6443.
+	//     The kcp-apiexport-cluster-provider also uses this to call
+	//     kcp:6443/services/apiexport/... (the virtual workspace endpoint).
+	//
+	// (b) External cert: signed by kcp-front-proxy-client-issuer.
+	//     Used by test runners outside the cluster to call the kcp front-proxy
+	//     via NodePort 127.0.0.1:KCPHTTPSPort.
+	//
+	// Why two certs? The kcp backend (kcp:6443) trusts kcp-client-ca, while the
+	// front-proxy (kcp-front-proxy:8443) trusts kcp-front-proxy-client-ca. They
+	// are separate CAs, so a single cert cannot satisfy both.
+
+	internalCertName := kcpAdminCertName + "-internal"
+	internalSecretName := kcpAdminSecretName + "-internal"
+
+	internalCertYAML := fmt.Sprintf(`apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  commonName: kedge-e2e-admin
+  issuerRef:
+    name: kcp-client-issuer
+    kind: Issuer
+  secretName: %s
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  usages:
+    - client auth
+  subject:
+    organizations:
+      - system:kcp:admin
+`, internalCertName, kcpNamespace, internalSecretName)
+
+	externalCertYAML := fmt.Sprintf(`apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: %s
@@ -297,53 +335,69 @@ spec:
       - system:kcp:admin
 `, kcpAdminCertName, kcpNamespace, kcpAdminSecretName)
 
-	applyCmd := exec.CommandContext(ctx, "kubectl",
-		"--kubeconfig", kubeconfigPath,
-		"apply", "-f", "-",
-	)
-	applyCmd.Stdin = strings.NewReader(certYAML)
-	applyCmd.Stdout = os.Stdout
-	applyCmd.Stderr = os.Stderr
-	if err := applyCmd.Run(); err != nil {
-		return fmt.Errorf("applying kcp admin Certificate: %w", err)
+	for _, yaml := range []string{internalCertYAML, externalCertYAML} {
+		applyCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-")
+		applyCmd.Stdin = strings.NewReader(yaml)
+		applyCmd.Stdout = os.Stdout
+		applyCmd.Stderr = os.Stderr
+		if err := applyCmd.Run(); err != nil {
+			return fmt.Errorf("applying kcp admin Certificate: %w", err)
+		}
 	}
 
-	// --- 3. Wait for Certificate to be Ready ---
-	waitCmd := exec.CommandContext(ctx, "kubectl",
-		"--kubeconfig", kubeconfigPath,
-		"wait", "--for=condition=Ready",
-		fmt.Sprintf("certificate/%s", kcpAdminCertName),
-		"-n", kcpNamespace,
-		"--timeout=3m",
-	)
-	waitCmd.Stdout = os.Stdout
-	waitCmd.Stderr = os.Stderr
-	if err := waitCmd.Run(); err != nil {
-		return fmt.Errorf("waiting for kcp admin Certificate to be ready: %w", err)
+	// --- 3. Wait for both Certificates to be Ready ---
+	for _, certName := range []string{internalCertName, kcpAdminCertName} {
+		waitCmd := exec.CommandContext(ctx, "kubectl",
+			"--kubeconfig", kubeconfigPath,
+			"wait", "--for=condition=Ready",
+			fmt.Sprintf("certificate/%s", certName),
+			"-n", kcpNamespace,
+			"--timeout=3m",
+		)
+		waitCmd.Stdout = os.Stdout
+		waitCmd.Stderr = os.Stderr
+		if err := waitCmd.Run(); err != nil {
+			return fmt.Errorf("waiting for kcp Certificate %s to be ready: %w", certName, err)
+		}
 	}
 
-	// --- 4. Extract client cert and key ---
+	// --- 4a. Extract internal client cert and key ---
+	internalSecret, err := clientset.CoreV1().Secrets(kcpNamespace).Get(ctx, internalSecretName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting kcp internal admin cert secret: %w", err)
+	}
+	internalClientCert := internalSecret.Data["tls.crt"]
+	internalClientKey := internalSecret.Data["tls.key"]
+	if len(internalClientCert) == 0 || len(internalClientKey) == 0 {
+		return fmt.Errorf("kcp internal admin cert secret missing tls.crt or tls.key")
+	}
+
+	// --- 4b. Extract external client cert and key ---
 	certSecret, err := clientset.CoreV1().Secrets(kcpNamespace).Get(ctx, kcpAdminSecretName, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("getting kcp admin cert secret: %w", err)
+		return fmt.Errorf("getting kcp external admin cert secret: %w", err)
 	}
-	clientCert := certSecret.Data["tls.crt"]
-	clientKey := certSecret.Data["tls.key"]
-	if len(clientCert) == 0 || len(clientKey) == 0 {
-		return fmt.Errorf("kcp admin cert secret missing tls.crt or tls.key")
+	externalClientCert := certSecret.Data["tls.crt"]
+	externalClientKey := certSecret.Data["tls.key"]
+	if len(externalClientCert) == 0 || len(externalClientKey) == 0 {
+		return fmt.Errorf("kcp external admin cert secret missing tls.crt or tls.key")
 	}
 
 	// --- 5. Build in-cluster kubeconfig (for hub pod) ---
-	inClusterServer := fmt.Sprintf("https://%s:%d/clusters/root", kcpExternalHostname, kcpExternalPort)
-	inClusterKubeconfig := buildKubeconfigWithCerts(inClusterServer, caCert, clientCert, clientKey, false)
+	// Points directly to the kcp backend (kcp:6443). The kcp server cert has
+	// "DNS:kcp" as a SAN and our CoreDNS rewrite resolves "kcp" to the kcp
+	// Service ClusterIP, so TLS verification succeeds without extra config.
+	inClusterServer := "https://kcp:6443/clusters/root"
+	inClusterKubeconfig := buildKubeconfigWithCerts(inClusterServer, caCert, internalClientCert, internalClientKey, false)
 	inClusterBytes, err := clientcmd.Write(*inClusterKubeconfig)
 	if err != nil {
 		return fmt.Errorf("serialising in-cluster kcp kubeconfig: %w", err)
 	}
 
 	// --- 6. Build external kubeconfig (for test runner) ---
+	// Points to the kcp front-proxy via NodePort, using the external cert.
 	externalServer := fmt.Sprintf("https://127.0.0.1:%d/clusters/root", o.KCPHTTPSPort)
-	externalKubeconfig := buildKubeconfigWithCerts(externalServer, nil, clientCert, clientKey, true)
+	externalKubeconfig := buildKubeconfigWithCerts(externalServer, nil, externalClientCert, externalClientKey, true)
 	externalBytes, err := clientcmd.Write(*externalKubeconfig)
 	if err != nil {
 		return fmt.Errorf("serialising external kcp kubeconfig: %w", err)

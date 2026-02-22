@@ -14,9 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package standalone implements e2e tests for kedge running with embedded kcp
-// and static token authentication (no Dex/OIDC required).
-package standalone
+// Package oidc implements e2e tests for kedge OIDC authentication via Dex.
+// It requires a hub kind cluster with Dex deployed (--with-dex flag).
+//
+// If clusters already exist (KEDGE_USE_EXISTING_CLUSTERS=true) the suite
+// skips cluster creation and just waits for Dex to be healthy.
+package oidc
 
 import (
 	"os"
@@ -33,7 +36,6 @@ import (
 var testenv env.Environment
 
 func TestMain(m *testing.M) {
-	// Resolve repo root (two levels up from this file's directory).
 	_, thisFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
 
@@ -45,9 +47,11 @@ func TestMain(m *testing.M) {
 	testenv = env.NewWithConfig(cfg)
 
 	if os.Getenv("KEDGE_USE_EXISTING_CLUSTERS") == "true" {
-		testenv.Setup(framework.UseExistingClusters(repoRoot))
+		// Clusters already running — just verify Dex is reachable and wire up
+		// the env objects so tests can find them.
+		testenv.Setup(framework.UseExistingClustersWithOIDC(repoRoot))
 	} else {
-		testenv.Setup(framework.SetupClusters(repoRoot))
+		testenv.Setup(framework.SetupClustersWithOIDC(repoRoot))
 		testenv.Finish(framework.TeardownClusters(repoRoot))
 	}
 

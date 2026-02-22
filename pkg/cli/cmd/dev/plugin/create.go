@@ -515,7 +515,7 @@ func ensureDexHelmRepo() error {
 // and blocks until the Dex pod is Running/Ready.
 func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
 	actionConfig := new(action.Configuration)
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret",
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "kedge-system"}, "kedge-system", "secret",
 		func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("initialising helm action config for dex: %w", err)
 	}
@@ -641,7 +641,7 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config, withIDP bool) error {
 	actionConfig := new(action.Configuration)
 
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "kedge-system"}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("failed to initialize helm action config: %w", err)
 	}
 
@@ -741,7 +741,8 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 }
 
 type restConfigGetter struct {
-	config *rest.Config
+	config    *rest.Config
+	namespace string // default namespace for Helm operations
 }
 
 func (r *restConfigGetter) ToRESTConfig() (*rest.Config, error) {
@@ -768,7 +769,7 @@ func (r *restConfigGetter) ToRESTMapper() (meta.RESTMapper, error) {
 func (r *restConfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 	return clientcmd.NewNonInteractiveClientConfig(clientcmdapi.Config{}, "", &clientcmd.ConfigOverrides{
 		Context: clientcmdapi.Context{
-			Namespace: "kedge-system",
+			Namespace: r.namespace,
 		},
 	}, nil)
 }

@@ -127,7 +127,7 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 	}
 
 	actionConfig := new(action.Configuration)
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, kcpNamespace, "secret",
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: kcpNamespace}, kcpNamespace, "secret",
 		func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("initialising helm action config for kcp: %w", err)
 	}
@@ -355,7 +355,7 @@ func buildKubeconfigWithCerts(server string, caCert, clientCert, clientKey []byt
 // with external kcp configuration.
 func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restConfig *rest.Config) error {
 	actionConfig := new(action.Configuration)
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig}, "kedge-system", "secret",
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "kedge-system"}, "kedge-system", "secret",
 		func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("failed to initialize helm action config: %w", err)
 	}

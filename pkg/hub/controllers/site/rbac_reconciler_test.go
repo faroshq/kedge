@@ -65,7 +65,7 @@ func TestRBACReconciler_SiteNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("expected empty Result for not-found site, got: %+v", result)
 	}
 }
@@ -155,7 +155,7 @@ func TestRBACReconciler_TokenPopulated_KubeconfigSecretCreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("expected empty result after token available, got: %+v", result)
 	}
 

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,10 +161,13 @@ func startMultisiteAgents(ctx context.Context, t *testing.T, clusterEnv *framewo
 		t.Logf("site %s kubeconfig extracted", s.name)
 	}
 
-	// Phase 3: start all agents.
+	// Phase 3: start all agents with the same labels that were set on the sites
+	// so that agent.registerSite correctly preserves/sets them.
 	for _, s := range sites {
 		agentKC := clusterEnv.AgentClusters[s.agentIndex].Kubeconfig
-		agent := framework.NewAgent(framework.RepoRoot(), s.siteKCPath, agentKC, s.name)
+		lblMap := parseLabelString(s.label)
+		agent := framework.NewAgent(framework.RepoRoot(), s.siteKCPath, agentKC, s.name).
+			WithLabels(lblMap)
 		if err := agent.Start(ctx); err != nil {
 			t.Fatalf("start agent for %s: %v", s.name, err)
 		}
@@ -522,4 +526,21 @@ func SiteListAccuracyUnderChurn() features.Feature {
 			return ctx
 		}).
 		Feature()
+}
+
+// parseLabelString converts a "key=value" (or comma-separated "k1=v1,k2=v2")
+// label string into a map, silently skipping malformed entries.
+func parseLabelString(s string) map[string]string {
+	m := make(map[string]string)
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) == 2 {
+			m[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return m
 }

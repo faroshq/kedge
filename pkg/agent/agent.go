@@ -213,9 +213,15 @@ func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) er
 			return fmt.Errorf("creating site: %w", err)
 		}
 	} else {
-		// Update existing site labels
+		// Merge agent labels into existing site labels; don't wipe labels the
+		// agent doesn't own (e.g. user-assigned routing labels).
 		logger.Info("Updating Site", "name", a.opts.SiteName)
-		existing.Labels = a.opts.Labels
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		for k, v := range a.opts.Labels {
+			existing.Labels[k] = v
+		}
 		_, err := client.Sites().Update(ctx, existing, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("updating site: %w", err)

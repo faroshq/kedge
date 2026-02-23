@@ -27,12 +27,13 @@ import (
 
 const (
 	// ContainerSSHImage is the Docker image used for the container-based SSH
-	// server test. lscr.io/linuxserver/openssh-server is a well-maintained
-	// Alpine-based sshd image configurable entirely via env vars.
-	ContainerSSHImage = "lscr.io/linuxserver/openssh-server"
+	// server test.  We use a plain Ubuntu image and install openssh-server at
+	// container start time so that we have full control over the sshd
+	// configuration (in particular: PermitRootLogin + PermitEmptyPasswords).
+	ContainerSSHImage = "ubuntu:22.04"
 
-	// ContainerSSHPort is the port sshd listens on inside the linuxserver image.
-	// The default is 2222; we keep it to avoid conflicts with the host sshd on 22.
+	// ContainerSSHPort is the port sshd listens on inside the container.
+	// We use 2222 to avoid conflicts with any host sshd on port 22.
 	ContainerSSHPort = 2222
 )
 
@@ -54,28 +55,32 @@ type ServerContainer struct {
 
 // Start launches the container, waits for sshd, copies the agent, and starts it.
 func (s *ServerContainer) Start(ctx context.Context) error {
-	// 1. Pull + run the container on the host network.
-	//    lscr.io/linuxserver/openssh-server env vars:
-	//      PASSWORD_ACCESS=true  – enable password authentication
-	//      USER_NAME=root        – configure the root account
-	//      USER_PASSWORD=        – empty password (no value = empty string)
-	//      LOG_STDOUT=true       – send s6 logs to stdout so we can inspect them
+	// 1. Start a plain Ubuntu container with --network host.
+	//    We install openssh-server and configure it to allow root login with an
+	//    empty password — the security boundary is the kedge tunnel auth, not sshd.
+	sshdScript := strings.Join([]string{
+		"apt-get update -q",
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y -q openssh-server",
+		"mkdir -p /run/sshd",
+		"passwd -d root",
+		fmt.Sprintf(
+			"printf 'Port %d\\nPermitRootLogin yes\\nPasswordAuthentication yes\\nPermitEmptyPasswords yes\\nUsePAM no\\n' > /etc/ssh/sshd_config",
+			ContainerSSHPort),
+		fmt.Sprintf("/usr/sbin/sshd -D -p %d", ContainerSSHPort),
+	}, " && ")
 	if _, err := runDockerCmd(ctx,
 		"run", "-d",
 		"--name", s.Name,
 		"--network", "host",
-		"-e", "PASSWORD_ACCESS=true",
-		"-e", "USER_NAME=root",
-		"-e", "USER_PASSWORD=",
-		"-e", "LOG_STDOUT=true",
 		ContainerSSHImage,
+		"sh", "-c", sshdScript,
 	); err != nil {
 		return fmt.Errorf("creating container %s: %w", s.Name, err)
 	}
 
 	// 2. Wait until sshd is accepting connections on ContainerSSHPort.
-	//    The linuxserver image initialises asynchronously via s6-overlay.
-	if err := waitForTCPPort(ctx, ContainerSSHPort, 60*time.Second); err != nil {
+	//    apt-get + sshd startup takes a moment.
+	if err := waitForTCPPort(ctx, ContainerSSHPort, 90*time.Second); err != nil {
 		logs, _ := s.containerLogs(ctx)
 		return fmt.Errorf("sshd not ready on port %d: %w\ncontainer logs:\n%s",
 			ContainerSSHPort, err, logs)

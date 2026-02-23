@@ -68,14 +68,15 @@ func setupRouter(downstream *rest.Config, sshPort int) *mux.Router {
 // newSSHHandler returns an http.HandlerFunc that proxies SSH connections arriving
 // over the revdial tunnel to the host SSH daemon on localhost:<sshPort>.
 //
-// The hub speaks the full SSH protocol over the revdial connection; the agent's role
-// is pure TCP forwarding — no SSH parsing required here.
+// Protocol: the hub sends GET /ssh with "Upgrade: ssh-tunnel" headers.
+// The agent responds with 101 Switching Protocols, then hijacks the connection
+// and pipes raw bytes to the local sshd.  After the 101 response the hub speaks
+// the full SSH protocol directly — no additional framing is needed.
 func newSSHHandler(sshPort int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := klog.Background().WithName("ssh-handler")
 		logger.Info("SSH connection request received", "sshPort", sshPort)
 
-		// Hijack the HTTP connection to get the raw TCP conn from the revdial listener.
 		hijacker, ok := w.(http.Hijacker)
 		if !ok {
 			logger.Error(nil, "ResponseWriter does not support hijacking")
@@ -83,12 +84,24 @@ func newSSHHandler(sshPort int) http.HandlerFunc {
 			return
 		}
 
-		tunnelConn, _, err := hijacker.Hijack()
+		// Send 101 Switching Protocols BEFORE hijacking so the hub knows the
+		// HTTP layer is done and raw SSH traffic can begin.
+		w.Header().Set("Connection", "Upgrade")
+		w.Header().Set("Upgrade", "ssh-tunnel")
+		w.WriteHeader(http.StatusSwitchingProtocols)
+
+		tunnelConn, brw, err := hijacker.Hijack()
 		if err != nil {
 			logger.Error(err, "failed to hijack connection")
 			return
 		}
 		defer tunnelConn.Close() //nolint:errcheck
+
+		// Flush the buffered 101 response headers to the wire.
+		if err := brw.Flush(); err != nil {
+			logger.Error(err, "failed to flush 101 response")
+			return
+		}
 
 		// Dial the host sshd.
 		addr := fmt.Sprintf("localhost:%d", sshPort)

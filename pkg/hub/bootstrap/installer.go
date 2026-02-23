@@ -83,6 +83,7 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 		"virtualworkloads.kedge.faros.sh",
 		"sites.kedge.faros.sh",
 		"placements.kedge.faros.sh",
+		"servers.kedge.faros.sh",
 		"users.kedge.faros.sh",
 	}
 

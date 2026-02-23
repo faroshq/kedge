@@ -42,6 +42,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&VirtualWorkload{},
 		&VirtualWorkloadList{},
 		&Site{},
+		&Server{},
+		&ServerList{},
 		&SiteList{},
 		&Placement{},
 		&PlacementList{},

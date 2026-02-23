@@ -239,8 +239,7 @@ func TwoAgentsJoin() features.Feature {
 			return startMultisiteAgents(ctx, t, clusterEnv)
 		}).
 		Assess("both sites become Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
 
 			for _, site := range []string{msSite1, msSite2} {
 				if err := client.WaitForSiteReady(ctx, site, 3*time.Minute); err != nil {

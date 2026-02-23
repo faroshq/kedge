@@ -69,6 +69,11 @@ spec:
     storage:
       crd: {}
   - group: kedge.faros.sh
+    name: servers
+    schema: v260223-f2c2894.servers.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
     name: sites
     schema: v260217-7570c9b.sites.kedge.faros.sh
     storage:

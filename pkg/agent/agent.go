@@ -228,26 +228,6 @@ func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) er
 		}
 	}
 
-	// Update status to connected
-	now := metav1.Now()
-	statusSite := &kedgev1alpha1.Site{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
-			Kind:       "Site",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: a.opts.SiteName,
-		},
-		Status: kedgev1alpha1.SiteStatus{
-			Phase:             kedgev1alpha1.SitePhaseConnected,
-			TunnelConnected:   true,
-			LastHeartbeatTime: &now,
-		},
-	}
-	_, err = client.Sites().UpdateStatus(ctx, statusSite, metav1.UpdateOptions{})
-	if err != nil {
-		logger.Error(err, "Failed to update site status to connected")
-	}
-
+	// Status is set to Ready by the heartbeat reporter immediately on start.
 	return nil
 }

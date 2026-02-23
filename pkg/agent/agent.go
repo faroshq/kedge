@@ -36,6 +36,17 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
+// AgentMode controls whether the agent registers as a Kubernetes Site or a bare-metal Server.
+type AgentMode string
+
+const (
+	// AgentModeSite is the default mode: connects a Kubernetes cluster to the hub.
+	AgentModeSite AgentMode = "site"
+	// AgentModeServer is the systemd/bare-metal mode: connects a non-k8s host
+	// to the hub, exposing SSH access via the reverse tunnel.
+	AgentModeServer AgentMode = "server"
+)
+
 // Options holds configuration for the agent.
 type Options struct {
 	HubURL        string
@@ -47,6 +58,9 @@ type Options struct {
 	Kubeconfig    string
 	Context       string
 	Labels        map[string]string
+	// Mode controls whether the agent registers as a Site (k8s cluster) or a
+	// Server (bare-metal / systemd host). Defaults to AgentModeSite.
+	Mode AgentMode
 	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
 	// connection. Should only be used in development/testing; never in production.
 	InsecureSkipTLSVerify bool
@@ -56,21 +70,25 @@ type Options struct {
 func NewOptions() *Options {
 	return &Options{
 		Labels: make(map[string]string),
+		Mode:   AgentModeSite,
 	}
 }
 
-// Agent is the kedge agent that connects a site to the hub.
+// Agent is the kedge agent that connects a site or server to the hub.
 type Agent struct {
 	opts             *Options
 	hubConfig        *rest.Config
 	hubTLSConfig     *tls.Config
-	downstreamConfig *rest.Config
+	downstreamConfig *rest.Config // nil in server mode
 }
 
 // New creates a new agent.
 func New(opts *Options) (*Agent, error) {
 	if opts.SiteName == "" {
 		return nil, fmt.Errorf("site name is required")
+	}
+	if opts.Mode != AgentModeSite && opts.Mode != AgentModeServer {
+		return nil, fmt.Errorf("invalid mode %q: must be %q or %q", string(opts.Mode), string(AgentModeSite), string(AgentModeServer))
 	}
 
 	// Build hub config
@@ -86,7 +104,6 @@ func New(opts *Options) (*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to build hub config from kubeconfig: %w", err)
 		}
-		// Allow HubURL to override the kubeconfig's server URL (useful for dev environments)
 		if opts.HubURL != "" {
 			hubConfig.Host = opts.HubURL
 		}
@@ -102,31 +119,34 @@ func New(opts *Options) (*Agent, error) {
 		return nil, fmt.Errorf("hub URL or hub kubeconfig is required")
 	}
 
-	// Build downstream (target cluster) config
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if opts.Kubeconfig != "" {
-		rules.ExplicitPath = opts.Kubeconfig
-	}
-	overrides := &clientcmd.ConfigOverrides{}
-	if opts.Context != "" {
-		overrides.CurrentContext = opts.Context
-	}
-	downstreamConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build downstream config: %w", err)
-	}
-
 	hubTLSConfig, err := rest.TLSConfigFor(hubConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build hub TLS config: %w", err)
 	}
 
-	return &Agent{
-		opts:             opts,
-		hubConfig:        hubConfig,
-		hubTLSConfig:     hubTLSConfig,
-		downstreamConfig: downstreamConfig,
-	}, nil
+	a := &Agent{
+		opts:         opts,
+		hubConfig:    hubConfig,
+		hubTLSConfig: hubTLSConfig,
+	}
+
+	// In server mode there is no downstream Kubernetes cluster to connect to.
+	if opts.Mode == AgentModeSite {
+		rules := clientcmd.NewDefaultClientConfigLoadingRules()
+		if opts.Kubeconfig != "" {
+			rules.ExplicitPath = opts.Kubeconfig
+		}
+		overrides := &clientcmd.ConfigOverrides{}
+		if opts.Context != "" {
+			overrides.CurrentContext = opts.Context
+		}
+		a.downstreamConfig, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build downstream config: %w", err)
+		}
+	}
+
+	return a, nil
 }
 
 // Run starts the agent and blocks until the context is cancelled.
@@ -134,29 +154,34 @@ func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting kedge agent",
 		"siteName", a.opts.SiteName,
+		"mode", a.opts.Mode,
 		"labels", a.opts.Labels,
 	)
 
-	// Create hub clients
 	hubDynamic, err := dynamic.NewForConfig(a.hubConfig)
 	if err != nil {
 		return fmt.Errorf("creating hub dynamic client: %w", err)
 	}
 	hubClient := kedgeclient.NewFromDynamic(hubDynamic)
 
-	// Create downstream client
+	if a.opts.Mode == AgentModeServer {
+		return a.runServerMode(ctx, logger, hubClient)
+	}
+	return a.runSiteMode(ctx, logger, hubClient)
+}
+
+// runSiteMode is the original Kubernetes-cluster mode.
+func (a *Agent) runSiteMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
 	downstreamClient, err := kubernetes.NewForConfig(a.downstreamConfig)
 	if err != nil {
 		return fmt.Errorf("creating downstream client: %w", err)
 	}
 
-	// Register/update Site on hub.
 	if err := a.registerSite(ctx, hubClient); err != nil {
 		return fmt.Errorf("registering site: %w", err)
 	}
 	logger.Info("Site registered")
 
-	// Start reverse tunnel to hub
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
 		tunnelURL = a.hubConfig.Host
@@ -164,15 +189,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	tunnelState := make(chan bool, 1)
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, a.downstreamConfig, a.hubTLSConfig, tunnelState)
 
-	// Start workload reconciler
-	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubDynamic, downstreamClient)
+	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
 		if err := wkr.Run(ctx); err != nil {
 			logger.Error(err, "Workload reconciler failed")
 		}
 	}()
 
-	// Start status reporter (heartbeat + workload status)
 	reporter := agentStatus.NewReporter(a.opts.SiteName, hubClient, downstreamClient)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
@@ -180,10 +203,37 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}()
 
-	logger.Info("Agent started successfully")
+	logger.Info("Agent started successfully (site mode)")
 	<-ctx.Done()
 	logger.Info("Agent shutting down")
+	return nil
+}
 
+// runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
+func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
+	if err := a.registerServer(ctx, hubClient); err != nil {
+		return fmt.Errorf("registering server: %w", err)
+	}
+	logger.Info("Server registered")
+
+	tunnelURL := a.opts.TunnelURL
+	if tunnelURL == "" {
+		tunnelURL = a.hubConfig.Host
+	}
+	tunnelState := make(chan bool, 1)
+	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, nil, a.hubTLSConfig, tunnelState)
+
+	reporter := agentStatus.NewServerReporter(a.opts.SiteName, hubClient)
+	go func() {
+		if err := reporter.Run(ctx); err != nil {
+			logger.Error(err, "Server status reporter failed")
+		}
+	}()
+
+	logger.Info("Agent started successfully (server mode)")
+	<-ctx.Done()
+	logger.Info("Agent shutting down")
 	return nil
 }
 
@@ -206,15 +256,12 @@ func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) er
 
 	existing, err := client.Sites().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
 	if err != nil {
-		// Create new site
 		logger.Info("Creating Site", "name", a.opts.SiteName)
 		_, err := client.Sites().Create(ctx, site, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("creating site: %w", err)
 		}
 	} else {
-		// Merge agent labels into existing site labels; don't wipe labels the
-		// agent doesn't own (e.g. user-assigned routing labels).
 		logger.Info("Updating Site", "name", a.opts.SiteName)
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string)
@@ -228,6 +275,46 @@ func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) er
 		}
 	}
 
-	// Status is set to Ready by the heartbeat reporter immediately on start.
+	return nil
+}
+
+func (a *Agent) registerServer(ctx context.Context, client *kedgeclient.Client) error {
+	logger := klog.FromContext(ctx)
+
+	server := &kedgev1alpha1.Server{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+			Kind:       "Server",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   a.opts.SiteName,
+			Labels: a.opts.Labels,
+		},
+		Spec: kedgev1alpha1.ServerSpec{
+			DisplayName: a.opts.SiteName,
+		},
+	}
+
+	existing, err := client.Servers().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
+	if err != nil {
+		logger.Info("Creating Server", "name", a.opts.SiteName)
+		_, err := client.Servers().Create(ctx, server, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("creating server: %w", err)
+		}
+	} else {
+		logger.Info("Updating Server", "name", a.opts.SiteName)
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		for k, v := range a.opts.Labels {
+			existing.Labels[k] = v
+		}
+		_, err := client.Servers().Update(ctx, existing, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("updating server: %w", err)
+		}
+	}
+
 	return nil
 }

@@ -45,6 +45,12 @@ var (
 		Version:  kedgev1alpha1.Version,
 		Resource: "sites",
 	}
+	ServerGVR = schema.GroupVersionResource{
+		Group:    kedgev1alpha1.GroupName,
+		Version:  kedgev1alpha1.Version,
+		Resource: "servers",
+	}
+
 	PlacementGVR = schema.GroupVersionResource{
 		Group:    kedgev1alpha1.GroupName,
 		Version:  kedgev1alpha1.Version,
@@ -85,6 +91,13 @@ func (c *Client) Dynamic() dynamic.Interface {
 func (c *Client) VirtualWorkloads(namespace string) *TypedResource[kedgev1alpha1.VirtualWorkload, kedgev1alpha1.VirtualWorkloadList] {
 	return &TypedResource[kedgev1alpha1.VirtualWorkload, kedgev1alpha1.VirtualWorkloadList]{
 		client: c.dynamic.Resource(VirtualWorkloadGVR).Namespace(namespace),
+	}
+}
+
+// Servers returns a typed interface for Server resources (cluster-scoped).
+func (c *Client) Servers() *TypedResource[kedgev1alpha1.Server, kedgev1alpha1.ServerList] {
+	return &TypedResource[kedgev1alpha1.Server, kedgev1alpha1.ServerList]{
+		client: c.dynamic.Resource(ServerGVR),
 	}
 }
 

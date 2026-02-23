@@ -46,7 +46,7 @@ func newRemoteServer(downstream *rest.Config) (*http.Server, error) {
 func setupRouter(downstream *rest.Config) *mux.Router {
 	router := mux.NewRouter()
 
-	// SSH handler
+	// SSH handler — proxies the revdial connection to the host sshd on localhost:22.
 	router.HandleFunc("/ssh", sshHandler).Methods("GET")
 
 	// K8s proxy handler
@@ -61,14 +61,57 @@ func setupRouter(downstream *rest.Config) *mux.Router {
 	return router
 }
 
-// sshHandler handles SSH connections over the tunnel.
+// sshHandler proxies an SSH connection from the hub (arriving over the revdial tunnel)
+// to the host SSH daemon on localhost:22.
+//
+// The hub speaks the full SSH protocol over the revdial connection; the agent's role is
+// pure TCP forwarding — no SSH parsing required here.
 func sshHandler(w http.ResponseWriter, r *http.Request) {
 	logger := klog.Background().WithName("ssh-handler")
-	logger.Info("SSH connection request")
+	logger.Info("SSH connection request received, proxying to localhost:22")
 
-	// TODO: Start SSH server with pty
-	// Uses creack/pty + golang.org/x/crypto/ssh
-	http.Error(w, "SSH not yet implemented", http.StatusNotImplemented)
+	// Hijack the HTTP connection to get the raw TCP conn from the revdial listener.
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		logger.Error(nil, "ResponseWriter does not support hijacking")
+		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+
+	tunnelConn, _, err := hijacker.Hijack()
+	if err != nil {
+		logger.Error(err, "failed to hijack connection")
+		return
+	}
+	defer tunnelConn.Close() //nolint:errcheck
+
+	// Dial the host sshd.
+	sshdConn, err := net.Dial("tcp", "localhost:22")
+	if err != nil {
+		logger.Error(err, "failed to connect to localhost:22")
+		// Cannot write HTTP error after hijack; just close.
+		return
+	}
+	defer sshdConn.Close() //nolint:errcheck
+
+	logger.Info("SSH tunnel established", "remote", r.RemoteAddr)
+
+	// Bidirectional pipe: hub <-> revdial conn <-> localhost:22
+	errc := make(chan error, 2)
+	go func() {
+		_, copyErr := io.Copy(sshdConn, tunnelConn)
+		errc <- copyErr
+	}()
+	go func() {
+		_, copyErr := io.Copy(tunnelConn, sshdConn)
+		errc <- copyErr
+	}()
+
+	// Wait for either side to finish (EOF or error).
+	if err := <-errc; err != nil {
+		logger.V(4).Info("SSH tunnel copy finished", "reason", err)
+	}
+	logger.Info("SSH tunnel closed", "remote", r.RemoteAddr)
 }
 
 // k8sHandler creates an HTTP handler that proxies requests to the local Kubernetes API.
@@ -107,7 +150,7 @@ func k8sHandler(config *rest.Config) http.HandlerFunc {
 			return
 		}
 		if tlsConfig == nil {
-			tlsConfig = &tls.Config{}
+			tlsConfig = &tls.Config{} //nolint:gosec
 		}
 
 		proxy.Transport = &http.Transport{
@@ -162,7 +205,6 @@ func handleK8sUpgrade(w http.ResponseWriter, r *http.Request, config *rest.Confi
 	}
 	defer backendConn.Close() //nolint:errcheck
 
-	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
@@ -176,7 +218,6 @@ func handleK8sUpgrade(w http.ResponseWriter, r *http.Request, config *rest.Confi
 	}
 	defer clientConn.Close() //nolint:errcheck
 
-	// Modify and forward the request to the backend
 	r.URL.Path = k8sPath
 	r.URL.Host = target.Host
 	r.URL.Scheme = target.Scheme
@@ -189,7 +230,6 @@ func handleK8sUpgrade(w http.ResponseWriter, r *http.Request, config *rest.Confi
 		return
 	}
 
-	// Bidirectional copy
 	errc := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(backendConn, clientConn)

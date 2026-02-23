@@ -47,7 +47,7 @@ func newAgentJoinCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "join",
-		Short: "Join a site to the hub",
+		Short: "Join a site or server to the hub",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
@@ -71,6 +71,7 @@ func newAgentJoinCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
 	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site")
 	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "hub-insecure-skip-tls-verify", false, "Skip TLS certificate verification for the hub connection (insecure, for development only)")
+	cmd.Flags().StringVar(&opts.Mode, "mode", agent.AgentModeSite, `Agent mode: "site" (Kubernetes cluster) or "server" (bare-metal/systemd host with SSH access)`)
 
 	return cmd
 }

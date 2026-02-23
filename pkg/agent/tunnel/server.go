@@ -49,8 +49,15 @@ func setupRouter(downstream *rest.Config) *mux.Router {
 	// SSH handler — proxies the revdial connection to the host sshd on localhost:22.
 	router.HandleFunc("/ssh", sshHandler).Methods("GET")
 
-	// K8s proxy handler
-	router.PathPrefix("/k8s/").HandlerFunc(k8sHandler(downstream))
+	// K8s proxy handler — only registered when a downstream k8s config is present.
+	// In server mode (downstream == nil) k8s proxying is not available.
+	if downstream != nil {
+		router.PathPrefix("/k8s/").HandlerFunc(k8sHandler(downstream))
+	} else {
+		router.PathPrefix("/k8s/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "k8s proxy not available in server mode", http.StatusServiceUnavailable)
+		})
+	}
 
 	// Status/health endpoint
 	router.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {

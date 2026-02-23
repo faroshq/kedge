@@ -143,8 +143,15 @@ func (p *virtualWorkspaces) k8sHandler(ctx context.Context, w http.ResponseWrite
 }
 
 // sshHandler establishes an SSH session over WebSocket to the agent.
+// The SSH username is derived from the caller's OIDC identity (email local-part,
+// then sub), falling back to "root" for service-account or anonymous callers.
 func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, key string) {
 	logger := klog.FromContext(ctx)
+
+	// Derive SSH username from the bearer token before dialling the agent.
+	token := extractBearerToken(r)
+	sshUser := sshUsernameFromToken(token)
+	logger.V(4).Info("SSH handler", "key", key, "sshUser", sshUser)
 
 	deviceConn, err := p.connManager.Dial(ctx, key)
 	if err != nil {
@@ -166,8 +173,8 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 	}
 	defer wsConn.Close() //nolint:errcheck
 
-	// Create SSH client through the device connection
-	sshClient, err := newSSHClient(ctx, deviceConn, logger)
+	// Create SSH client through the device connection using the derived username.
+	sshClient, err := newSSHClient(ctx, deviceConn, sshUser, logger)
 	if err != nil {
 		logger.Error(err, "failed to create SSH client")
 		return
@@ -240,16 +247,14 @@ func (t *deviceConnTransport) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 // newSSHClient creates an SSH client through a device connection.
-func newSSHClient(_ context.Context, deviceConn net.Conn, _ klog.Logger) (*gossh.Client, error) {
+// sshUser is the Unix username to authenticate as on the remote host.
+func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, _ klog.Logger) (*gossh.Client, error) {
 	// TODO(#64): InsecureIgnoreHostKey accepts any SSH host key — MITM risk.
 	// Store a known-good public key in the Site/Server CRD at registration time
 	// and use gossh.FixedHostKey or a custom HostKeyCallback here.
 	// https://github.com/faroshq/kedge/issues/64
-	//
-	// TODO(#64): User is hardcoded to "root". See also issue #53 for OIDC identity → SSH
-	// username mapping. https://github.com/faroshq/kedge/issues/64
 	sshConfig := &gossh.ClientConfig{
-		User:            "root",
+		User:            sshUser,
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // tracked in #64
 	}
 

@@ -19,6 +19,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +33,7 @@ import (
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -166,13 +168,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 	}
 
-	return ctrl.Result{}, nil
+	// Requeue periodically so site reconnects are picked up even if the watch
+	// event is missed (e.g. status-only changes may not always fire the mapper).
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // mapSiteToVirtualWorkloads re-enqueues all VirtualWorkloads in the same
 // workspace whenever a Site changes.
 func (r *Reconciler) mapSiteToVirtualWorkloads(ctx context.Context, obj client.Object) []reconcile.Request {
-	clusterKey := obj.GetAnnotations()["kcp.io/cluster"]
+	// Prefer the cluster name from the multicluster-runtime context (canonical),
+	// fall back to the kcp annotation if the context value is absent.
+	clusterKey, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		clusterKey = obj.GetAnnotations()["kcp.io/cluster"]
+	}
 	klog.V(2).InfoS("mapSiteToVirtualWorkloads", "site", obj.GetName(), "cluster", clusterKey)
 	cl, err := r.mgr.GetCluster(ctx, clusterKey)
 	if err != nil {

@@ -246,7 +246,10 @@ func (t *deviceConnTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // sshUser is the Unix username to authenticate as on the remote host.
 func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, _ klog.Logger) (*gossh.Client, error) {
 	sshConfig := &gossh.ClientConfig{
-		User:            sshUser,
+		User: sshUser,
+		// Password("") allows connection to sshd configured with PermitEmptyPasswords.
+		// TODO(#54): replace with key-based auth loaded from a Secret on the Server resource.
+		Auth:            []gossh.AuthMethod{gossh.Password("")},
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec
 	}
 

@@ -34,20 +34,17 @@ import (
 
 // newRemoteServer creates the local HTTP server that is served on the revdial.Listener.
 // It handles requests from the hub that are tunneled back to the agent.
-func newRemoteServer(downstream *rest.Config) (*http.Server, error) {
-	router := setupRouter(downstream)
-
-	return &http.Server{
-		Handler: router,
-	}, nil
+func newRemoteServer(downstream *rest.Config, sshPort int) (*http.Server, error) {
+	router := setupRouter(downstream, sshPort)
+	return &http.Server{Handler: router}, nil
 }
 
 // setupRouter configures the mux router for the local server.
-func setupRouter(downstream *rest.Config) *mux.Router {
+func setupRouter(downstream *rest.Config, sshPort int) *mux.Router {
 	router := mux.NewRouter()
 
-	// SSH handler — proxies the revdial connection to the host sshd on localhost:22.
-	router.HandleFunc("/ssh", sshHandler).Methods("GET")
+	// SSH handler — proxies the revdial connection to the host sshd on sshPort.
+	router.HandleFunc("/ssh", newSSHHandler(sshPort)).Methods("GET")
 
 	// K8s proxy handler — only registered when a downstream k8s config is present.
 	// In server mode (downstream == nil) k8s proxying is not available.
@@ -68,57 +65,60 @@ func setupRouter(downstream *rest.Config) *mux.Router {
 	return router
 }
 
-// sshHandler proxies an SSH connection from the hub (arriving over the revdial tunnel)
-// to the host SSH daemon on localhost:22.
+// newSSHHandler returns an http.HandlerFunc that proxies SSH connections arriving
+// over the revdial tunnel to the host SSH daemon on localhost:<sshPort>.
 //
-// The hub speaks the full SSH protocol over the revdial connection; the agent's role is
-// pure TCP forwarding — no SSH parsing required here.
-func sshHandler(w http.ResponseWriter, r *http.Request) {
-	logger := klog.Background().WithName("ssh-handler")
-	logger.Info("SSH connection request received, proxying to localhost:22")
+// The hub speaks the full SSH protocol over the revdial connection; the agent's role
+// is pure TCP forwarding — no SSH parsing required here.
+func newSSHHandler(sshPort int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logger := klog.Background().WithName("ssh-handler")
+		logger.Info("SSH connection request received", "sshPort", sshPort)
 
-	// Hijack the HTTP connection to get the raw TCP conn from the revdial listener.
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		logger.Error(nil, "ResponseWriter does not support hijacking")
-		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
-		return
+		// Hijack the HTTP connection to get the raw TCP conn from the revdial listener.
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			logger.Error(nil, "ResponseWriter does not support hijacking")
+			http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+			return
+		}
+
+		tunnelConn, _, err := hijacker.Hijack()
+		if err != nil {
+			logger.Error(err, "failed to hijack connection")
+			return
+		}
+		defer tunnelConn.Close() //nolint:errcheck
+
+		// Dial the host sshd.
+		addr := fmt.Sprintf("localhost:%d", sshPort)
+		sshdConn, err := net.Dial("tcp", addr)
+		if err != nil {
+			logger.Error(err, "failed to connect to sshd", "addr", addr)
+			// Cannot write HTTP error after hijack; just close.
+			return
+		}
+		defer sshdConn.Close() //nolint:errcheck
+
+		logger.Info("SSH tunnel established", "remote", r.RemoteAddr, "sshPort", sshPort)
+
+		// Bidirectional pipe: hub <-> revdial conn <-> sshd
+		errc := make(chan error, 2)
+		go func() {
+			_, copyErr := io.Copy(sshdConn, tunnelConn)
+			errc <- copyErr
+		}()
+		go func() {
+			_, copyErr := io.Copy(tunnelConn, sshdConn)
+			errc <- copyErr
+		}()
+
+		// Wait for either side to finish (EOF or error).
+		if err := <-errc; err != nil {
+			logger.V(4).Info("SSH tunnel copy finished", "reason", err)
+		}
+		logger.Info("SSH tunnel closed", "remote", r.RemoteAddr)
 	}
-
-	tunnelConn, _, err := hijacker.Hijack()
-	if err != nil {
-		logger.Error(err, "failed to hijack connection")
-		return
-	}
-	defer tunnelConn.Close() //nolint:errcheck
-
-	// Dial the host sshd.
-	sshdConn, err := net.Dial("tcp", "localhost:22")
-	if err != nil {
-		logger.Error(err, "failed to connect to localhost:22")
-		// Cannot write HTTP error after hijack; just close.
-		return
-	}
-	defer sshdConn.Close() //nolint:errcheck
-
-	logger.Info("SSH tunnel established", "remote", r.RemoteAddr)
-
-	// Bidirectional pipe: hub <-> revdial conn <-> localhost:22
-	errc := make(chan error, 2)
-	go func() {
-		_, copyErr := io.Copy(sshdConn, tunnelConn)
-		errc <- copyErr
-	}()
-	go func() {
-		_, copyErr := io.Copy(tunnelConn, sshdConn)
-		errc <- copyErr
-	}()
-
-	// Wait for either side to finish (EOF or error).
-	if err := <-errc; err != nil {
-		logger.V(4).Info("SSH tunnel copy finished", "reason", err)
-	}
-	logger.Info("SSH tunnel closed", "remote", r.RemoteAddr)
 }
 
 // k8sHandler creates an HTTP handler that proxies requests to the local Kubernetes API.

@@ -157,26 +157,34 @@ func (s *SocketSSHSession) writeToSSHPipe(cmdBytes []byte) {
 	}
 }
 
+func (s *SocketSSHSession) flushOutput() error {
+	if s.comboOutput == nil {
+		return nil
+	}
+	bs := s.comboOutput.Bytes()
+	if len(bs) == 0 {
+		return nil
+	}
+	if err := s.wsConn.WriteMessage(websocket.BinaryMessage, bs); err != nil {
+		s.logger.Error(err, "failed to write ssh output to the websocket conn")
+		return err
+	}
+	s.comboOutput.buffer.Reset()
+	return nil
+}
+
 func (s *SocketSSHSession) sendComboOutput(stop <-chan struct{}) error {
 	tick := time.NewTicker(time.Millisecond * time.Duration(60))
 	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
-			return nil
+			// Flush remaining output before exiting — otherwise output produced
+			// between the last tick and session-end (e.g. shell exit) is lost.
+			return s.flushOutput()
 		case <-tick.C:
-			if s.comboOutput == nil {
-				return nil
-			}
-			bs := s.comboOutput.Bytes()
-			if len(bs) > 0 {
-				err := s.wsConn.WriteMessage(websocket.BinaryMessage, bs)
-				if err != nil {
-					s.logger.Error(err, "failed to write ssh output to the websocket conn")
-					return err
-				}
-
-				s.comboOutput.buffer.Reset()
+			if err := s.flushOutput(); err != nil {
+				return err
 			}
 		}
 	}

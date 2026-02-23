@@ -44,7 +44,7 @@ import (
 // tlsConfig controls TLS verification for the WebSocket connection to the hub.
 // Pass nil to use a default (secure) TLS config; use InsecureSkipVerify only
 // in development environments.
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool) {
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "siteName", siteName)
 
@@ -63,7 +63,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, siteName, downstream, tlsConfig, stateChannel)
+		err := startTunneler(ctx, hubURL, token, siteName, downstream, tlsConfig, stateChannel, sshPort)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -80,7 +80,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool) error {
+func startTunneler(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
@@ -104,7 +104,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 	defer ln.Close() //nolint:errcheck
 
 	// Create and serve local HTTP server
-	server, err := newRemoteServer(downstream)
+	server, err := newRemoteServer(downstream, sshPort)
 	if err != nil {
 		return fmt.Errorf("failed to create remote server: %w", err)
 	}

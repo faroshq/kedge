@@ -52,9 +52,7 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// 1. Extract bearer token.
 		token := extractBearerToken(r)
-		claims, ok := parseServiceAccountToken(token)
-		if !ok {
-			p.logger.Info("Rejected tunnel connection: invalid or missing SA token")
+		if token == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -68,19 +66,29 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 			return
 		}
 
-		// 3. Delegated authorization: TokenReview + SubjectAccessReview via kcp.
-		// Checks that the SA token can "get" the site (same verb as faros-core edge proxy).
-		if p.kcpConfig != nil {
-			if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "get", "sites", siteName); err != nil {
-				p.logger.Error(err, "edge proxy authorization failed", "tokenCluster", claims.ClusterName, "site", siteName)
-				http.Error(w, "Forbidden", http.StatusForbidden)
+		// 3. Authenticate: static tokens bypass JWT SA requirement.
+		// SA tokens (JWTs) go through kcp delegated authorization.
+		_, isStaticToken := p.staticTokens[token]
+		if !isStaticToken {
+			claims, ok := parseServiceAccountToken(token)
+			if !ok {
+				p.logger.Info("Rejected tunnel connection: invalid or missing SA token")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
+			}
+			// Delegated authorization: TokenReview + SubjectAccessReview via kcp.
+			if p.kcpConfig != nil {
+				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "get", "sites", siteName); err != nil {
+					p.logger.Error(err, "edge proxy authorization failed", "tokenCluster", claims.ClusterName, "site", siteName)
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
 			}
 		}
 
 		// 4. Upgrade to WebSocket and register the tunnel.
 		key := p.getKey(clusterName, siteName)
-		p.logger.Info("Agent connecting", "key", key, "tokenCluster", claims.ClusterName)
+		p.logger.Info("Agent connecting", "key", key)
 
 		wsConn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -89,7 +97,7 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 		}
 		conn := wsconnadapter.New(wsConn)
 		p.connManager.Set(key, conn)
-		p.logger.Info("Agent tunnel established", "key", key, "tokenCluster", claims.ClusterName)
+		p.logger.Info("Agent tunnel established", "key", key)
 	})
 
 	return mux

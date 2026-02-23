@@ -595,3 +595,8 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 		return ctx, nil
 	}
 }
+
+// AgentBinPath returns the path to the kedge binary under bin/.
+func AgentBinPath() string {
+	return filepath.Join(RepoRoot(), "bin", "kedge")
+}

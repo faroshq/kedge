@@ -60,6 +60,7 @@ enabling secure workload deployment across distributed sites.`,
 		newGetCommand(),
 		newWorkspaceCommand(),
 		newVersionCommand(),
+		newSSHCommand(),
 		devCmd,
 	)
 

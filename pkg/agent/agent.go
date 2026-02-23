@@ -64,13 +64,17 @@ type Options struct {
 	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
 	// connection. Should only be used in development/testing; never in production.
 	InsecureSkipTLSVerify bool
+	// SSHProxyPort is the local port of the SSH daemon the agent proxies to.
+	// Defaults to 22; override in tests to avoid conflicts with the host sshd.
+	SSHProxyPort int
 }
 
 // NewOptions returns default agent options.
 func NewOptions() *Options {
 	return &Options{
-		Labels: make(map[string]string),
-		Mode:   AgentModeSite,
+		Labels:       make(map[string]string),
+		Mode:         AgentModeSite,
+		SSHProxyPort: 22,
 	}
 }
 
@@ -187,7 +191,7 @@ func (a *Agent) runSiteMode(ctx context.Context, logger klog.Logger, hubClient *
 		tunnelURL = a.hubConfig.Host
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, a.downstreamConfig, a.hubTLSConfig, tunnelState)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -222,9 +226,9 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 	tunnelState := make(chan bool, 1)
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, nil, a.hubTLSConfig, tunnelState)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
 
-	reporter := agentStatus.NewServerReporter(a.opts.SiteName, hubClient)
+	reporter := agentStatus.NewServerReporter(a.opts.SiteName, hubClient, tunnelState)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
 			logger.Error(err, "Server status reporter failed")

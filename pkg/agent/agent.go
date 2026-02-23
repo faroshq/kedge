@@ -36,12 +36,15 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
+// AgentMode controls whether the agent registers as a Kubernetes Site or a bare-metal Server.
+type AgentMode string
+
 const (
 	// AgentModeSite is the default mode: connects a Kubernetes cluster to the hub.
-	AgentModeSite = "site"
+	AgentModeSite AgentMode = "site"
 	// AgentModeServer is the systemd/bare-metal mode: connects a non-k8s host
 	// to the hub, exposing SSH access via the reverse tunnel.
-	AgentModeServer = "server"
+	AgentModeServer AgentMode = "server"
 )
 
 // Options holds configuration for the agent.
@@ -57,7 +60,7 @@ type Options struct {
 	Labels        map[string]string
 	// Mode controls whether the agent registers as a Site (k8s cluster) or a
 	// Server (bare-metal / systemd host). Defaults to AgentModeSite.
-	Mode string
+	Mode AgentMode
 	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
 	// connection. Should only be used in development/testing; never in production.
 	InsecureSkipTLSVerify bool
@@ -85,7 +88,7 @@ func New(opts *Options) (*Agent, error) {
 		return nil, fmt.Errorf("site name is required")
 	}
 	if opts.Mode != AgentModeSite && opts.Mode != AgentModeServer {
-		return nil, fmt.Errorf("invalid mode %q: must be %q or %q", opts.Mode, AgentModeSite, AgentModeServer)
+		return nil, fmt.Errorf("invalid mode %q: must be %q or %q", string(opts.Mode), string(AgentModeSite), string(AgentModeServer))
 	}
 
 	// Build hub config

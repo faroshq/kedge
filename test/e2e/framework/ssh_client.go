@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -53,16 +54,24 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	// Build WebSocket URL: https → wss, http → ws
-	base := strings.TrimRight(cfg.Host, "/")
-	wsURL := base
-	switch {
-	case strings.HasPrefix(base, "https://"):
-		wsURL = "wss://" + strings.TrimPrefix(base, "https://")
-	case strings.HasPrefix(base, "http://"):
-		wsURL = "ws://" + strings.TrimPrefix(base, "http://")
+	// Build WebSocket URL.  The kubeconfig Host may contain a path suffix (e.g.
+	// /clusters/<name> when kcp workspaces are in use).  We must use url.Parse
+	// to replace the path rather than appending to it, exactly as
+	// buildSSHWebSocketURL does in pkg/cli/cmd/ssh.go.
+	u, err := url.Parse(strings.TrimRight(cfg.Host, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("parsing hub URL %q: %w", cfg.Host, err)
 	}
-	wsURL += fmt.Sprintf("/proxy/apis/kedge.faros.sh/v1alpha1/sites/%s/ssh", name)
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	default:
+		u.Scheme = "wss"
+	}
+	u.Path = fmt.Sprintf("/proxy/apis/kedge.faros.sh/v1alpha1/sites/%s/ssh", name)
+	wsURL := u.String()
 
 	headers := http.Header{}
 	if cfg.BearerToken != "" {

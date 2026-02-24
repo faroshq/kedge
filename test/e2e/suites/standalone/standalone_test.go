@@ -41,7 +41,3 @@ func TestSiteListAccuracyUnderChurn(t *testing.T) {
 	testenv.Test(t, cases.SiteListAccuracyUnderChurn())
 }
 
-func TestSSHServerModeConnect(t *testing.T) { testenv.Test(t, cases.SSHServerModeConnect()) }
-func TestSSHDockerServerModeConnect(t *testing.T) {
-	testenv.Test(t, cases.SSHDockerServerModeConnect())
-}

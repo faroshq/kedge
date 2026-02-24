@@ -43,5 +43,5 @@ func init() {
 	flag.BoolVar(&KeepClusters, "keep-clusters", false, "Keep kind clusters after test run (useful for debugging failures)")
 	flag.StringVar(&KedgeBin, "kedge-bin", "bin/kedge", "Path to the kedge CLI binary")
 	flag.StringVar(&DevToken, "dev-token", "dev-token", "Static auth token for non-OIDC test suites")
-	flag.DurationVar(&SSHKeepaliveDuration, "ssh-keepalive-duration", 5*time.Minute, "How long to hold the long-lived SSH session open in the keepalive test")
+	flag.DurationVar(&SSHKeepaliveDuration, "ssh-keepalive-duration", 30*time.Second, "How long to hold the long-lived SSH session open in the keepalive test")
 }

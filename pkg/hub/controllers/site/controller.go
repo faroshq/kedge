@@ -21,7 +21,9 @@ import "time"
 
 const (
 	// HeartbeatTimeout is the duration after which a site is considered disconnected.
-	HeartbeatTimeout = 5 * time.Minute
+	// 90s = 3 missed heartbeats at the agent 30s interval; reasonable for production
+	// and keeps CI fast (was 5 min, causing CI timeouts).
+	HeartbeatTimeout = 90 * time.Second
 	// GCTimeout is the duration after which a disconnected site is garbage collected.
 	GCTimeout = 24 * time.Hour
 )

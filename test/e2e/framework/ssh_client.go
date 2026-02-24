@@ -42,8 +42,18 @@ type sshWsMsg struct {
 // SSHWebSocketClient is a programmatic WebSocket SSH client for use in e2e tests.
 // It connects directly to the hub SSH subresource endpoint, bypassing the CLI,
 // so that the interactive PTY path can be exercised without a real terminal.
+//
+// A single background reader goroutine pumps all inbound WebSocket frames into
+// a buffered channel.  CollectOutput drains that channel with a time.Timer
+// instead of using SetReadDeadline.  This avoids the gorilla/websocket
+// behaviour of permanently storing read errors: once a deadline fires,
+// c.readErr is set and every subsequent ReadMessage returns that error
+// immediately, making the connection unusable for further reads.
 type SSHWebSocketClient struct {
 	conn *websocket.Conn
+	// msgs receives every binary/text message from the server.  The channel
+	// is closed when the reader goroutine exits (connection closed / error).
+	msgs chan []byte
 }
 
 // DialSSH connects to the hub SSH WebSocket endpoint for the given server/site name.
@@ -88,7 +98,27 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 		return nil, fmt.Errorf("dialling SSH WebSocket %s: %w", wsURL, err)
 	}
 
-	return &SSHWebSocketClient{conn: conn}, nil
+	c := &SSHWebSocketClient{
+		conn: conn,
+		msgs: make(chan []byte, 1024),
+	}
+	go c.reader()
+	return c, nil
+}
+
+// reader is the single goroutine that reads from the WebSocket connection and
+// delivers messages to the msgs channel.  Using a single goroutine avoids the
+// "concurrent readers" restriction of gorilla/websocket.  The channel is
+// closed when the connection is closed or an error occurs.
+func (c *SSHWebSocketClient) reader() {
+	defer close(c.msgs)
+	for {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		c.msgs <- data
+	}
 }
 
 // SendResize sends a terminal resize message.
@@ -104,30 +134,28 @@ func (c *SSHWebSocketClient) SendInput(data []byte) error {
 	})
 }
 
-// CollectOutput reads WebSocket messages for up to timeout and returns all
-// output concatenated as a string.
+// CollectOutput drains WebSocket messages for up to timeout and returns all
+// output concatenated as a string.  It uses a time.Timer (not SetReadDeadline)
+// so that the underlying connection remains usable after the call returns.
 func (c *SSHWebSocketClient) CollectOutput(ctx context.Context, timeout time.Duration) string {
 	var sb strings.Builder
-	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
-	for time.Now().Before(deadline) {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
+	for {
+		select {
+		case data, ok := <-c.msgs:
+			if !ok {
+				// reader goroutine exited (connection closed / error)
+				return sb.String()
+			}
+			sb.Write(data)
+		case <-timer.C:
+			return sb.String()
+		case <-ctx.Done():
+			return sb.String()
 		}
-		if err := c.conn.SetReadDeadline(time.Now().Add(remaining)); err != nil {
-			break
-		}
-		_, data, err := c.conn.ReadMessage()
-		if err != nil {
-			break
-		}
-		sb.Write(data)
 	}
-
-	// Reset deadline
-	_ = c.conn.SetReadDeadline(time.Time{})
-	return sb.String()
 }
 
 // Close closes the WebSocket connection.

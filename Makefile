@@ -1,4 +1,4 @@
-.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-site-create dev-create-workload dev-run-agent dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
+.PHONY: build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-site-create dev-create-workload dev-run-agent dev-server-create dev-run-server-agent dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -149,6 +149,7 @@ dev-login-static: build-kedge ## Login using static token auth (for use with run
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
 DEV_SITE_NAME ?= dev-site-1
+DEV_SERVER_NAME ?= dev-server-1
 
 dev-site-create: build-kedge
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-site-setup.sh $(DEV_SITE_NAME) "env=dev,provider=local"
@@ -157,6 +158,7 @@ dev-create-workload: ## Create a demo VirtualWorkload targeting dev sites
 	kubectl apply -f hack/dev/examples/virtualworkload-nginx.yaml
 
 -include .env
+-include .env.server
 export
 
 dev-run-agent: build-agent
@@ -168,6 +170,20 @@ dev-run-agent: build-agent
 		--tunnel-url=https://localhost:8443 \
 		--site-name=$(KEDGE_SITE_NAME) \
 		--labels=$(KEDGE_LABELS)
+
+dev-server-create: build-kedge ## Register a server (SSH server-mode host)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-server-setup.sh $(DEV_SERVER_NAME) "env=dev,provider=bare-metal"
+
+dev-run-server-agent: build-agent ## Start the agent in server mode (SSH reverse tunnel)
+	@test -f .env.server || (echo "Run 'make dev-server-create' first"; exit 1)
+	$(BINDIR)/kedge-agent join \
+		--hub-url=https://localhost:8443 \
+		--hub-insecure-skip-tls-verify \
+		--token=$(STATIC_AUTH_TOKEN) \
+		--tunnel-url=https://localhost:8443 \
+		--site-name=$(KEDGE_SERVER_NAME) \
+		--labels=$(KEDGE_SERVER_LABELS) \
+		--mode=server
 
 
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)

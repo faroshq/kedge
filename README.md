@@ -111,6 +111,20 @@ kedge agent join \
 
 The `--mode server` flag skips the downstream Kubernetes config — only the SSH tunnel is started.
 
+### Developer Quick-Start
+
+Use the convenience `make` targets to try SSH server mode against a local dev hub (requires `make dev-login` first):
+
+```bash
+# Terminal 1 — register a dev Server resource and write .env.server
+make dev-server-create
+
+# Terminal 2 — start the agent in server mode (SSH reverse tunnel to localhost:22)
+make dev-run-server-agent
+```
+
+These mirror the existing `make dev-site-create` / `make dev-run-agent` pattern. The server name defaults to `dev-server-1`; override with `DEV_SERVER_NAME=my-host make dev-server-create`.
+
 ### Usage
 
 ```bash

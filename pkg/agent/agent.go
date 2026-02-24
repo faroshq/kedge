@@ -191,7 +191,7 @@ func (a *Agent) runSiteMode(ctx context.Context, logger klog.Logger, hubClient *
 		tunnelURL = a.hubConfig.Host
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "sites", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -226,7 +226,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 	tunnelState := make(chan bool, 1)
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "servers", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
 
 	reporter := agentStatus.NewServerReporter(a.opts.SiteName, hubClient, tunnelState)
 	go func() {

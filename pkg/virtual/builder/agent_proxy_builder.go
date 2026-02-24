@@ -49,7 +49,7 @@ func (p *virtualWorkspaces) buildAgentProxyHandler() http.Handler {
 			return
 		}
 
-		// Parse path: /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/sites/{name}/{subresource}
+		// Parse path: /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/{sites|servers}/{name}/{subresource}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 
 		if len(parts) < 2 {
@@ -57,33 +57,35 @@ func (p *virtualWorkspaces) buildAgentProxyHandler() http.Handler {
 			return
 		}
 
-		// Find subresource from path
-		var clusterName, siteName, subresource string
+		// Find resource kind, name, and subresource from path.
+		// Supports both "sites" (k8s cluster agents) and "servers" (bare-metal agents).
+		var resourceKind, resourceName, subresource string
 		for i, part := range parts {
-			if part == "sites" && i+2 < len(parts) {
-				siteName = parts[i+1]
+			if (part == "sites" || part == "servers") && i+2 < len(parts) {
+				resourceKind = part
+				resourceName = parts[i+1]
 				subresource = parts[i+2]
 				break
 			}
 		}
 
-		// Get cluster from query or path
-		clusterName = r.URL.Query().Get("cluster")
+		// Get cluster from query param (falls back to "default").
+		clusterName := r.URL.Query().Get("cluster")
 		if clusterName == "" {
 			clusterName = "default"
 		}
 
-		if siteName == "" {
-			http.Error(w, "site name required", http.StatusBadRequest)
+		if resourceName == "" {
+			http.Error(w, "site or server name required in path", http.StatusBadRequest)
 			return
 		}
 
 		// 2. Delegated authorization: TokenReview + SubjectAccessReview via kcp.
-		// Checks that the caller can "proxy" the site (same verb as faros-core agent proxy).
+		// Checks that the caller can "proxy" the resource.
 		if p.kcpConfig != nil {
 			if claims, ok := parseServiceAccountToken(token); ok {
-				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "proxy", "sites", siteName); err != nil {
-					p.logger.Error(err, "agent proxy authorization failed", "site", siteName)
+				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "proxy", resourceKind, resourceName); err != nil {
+					p.logger.Error(err, "agent proxy authorization failed", "resource", resourceKind, "name", resourceName)
 					http.Error(w, "Forbidden", http.StatusForbidden)
 					return
 				}
@@ -94,7 +96,15 @@ func (p *virtualWorkspaces) buildAgentProxyHandler() http.Handler {
 			// https://github.com/faroshq/kedge/issues/63
 		}
 
-		key := p.getKey(clusterName, siteName)
+		// Build the connman key matching the key used when the tunnel was
+		// registered in the edge proxy handler. Sites and Servers use
+		// distinct key namespaces to avoid aliasing.
+		var key string
+		if resourceKind == "servers" {
+			key = p.getServerKey(clusterName, resourceName)
+		} else {
+			key = p.getKey(clusterName, resourceName)
+		}
 
 		switch subresource {
 		case "k8s":

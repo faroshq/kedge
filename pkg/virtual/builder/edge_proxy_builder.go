@@ -57,12 +57,20 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 			return
 		}
 
-		// 2. Extract cluster and site name from query parameters.
+		// 2. Extract cluster and resource identity from query parameters.
+		// Agents dial with either ?site=<name> (site/k8s mode) or
+		// ?server=<name> (server/bare-metal mode). A cluster param is always
+		// required; both resource-type params being absent is an error.
 		clusterName := r.URL.Query().Get("cluster")
 		siteName := r.URL.Query().Get("site")
+		serverName := r.URL.Query().Get("server")
 
-		if clusterName == "" || siteName == "" {
-			http.Error(w, "cluster and site query parameters required", http.StatusBadRequest)
+		if clusterName == "" {
+			http.Error(w, "cluster query parameter required", http.StatusBadRequest)
+			return
+		}
+		if siteName == "" && serverName == "" {
+			http.Error(w, "site or server query parameter required", http.StatusBadRequest)
 			return
 		}
 
@@ -78,8 +86,15 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 			}
 			// Delegated authorization: TokenReview + SubjectAccessReview via kcp.
 			if p.kcpConfig != nil {
-				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "get", "sites", siteName); err != nil {
-					p.logger.Error(err, "edge proxy authorization failed", "tokenCluster", claims.ClusterName, "site", siteName)
+				// Authorise against the appropriate resource kind.
+				resource := "sites"
+				resourceName := siteName
+				if serverName != "" {
+					resource = "servers"
+					resourceName = serverName
+				}
+				if err := authorize(r.Context(), p.kcpConfig, token, claims.ClusterName, "get", resource, resourceName); err != nil {
+					p.logger.Error(err, "edge proxy authorization failed", "tokenCluster", claims.ClusterName, resource, resourceName)
 					http.Error(w, "Forbidden", http.StatusForbidden)
 					return
 				}
@@ -87,7 +102,14 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 		}
 
 		// 4. Upgrade to WebSocket and register the tunnel.
-		key := p.getKey(clusterName, siteName)
+		// Use resource-type-scoped keys so a Site and a Server with the same
+		// name never collide in the connection manager.
+		var key string
+		if serverName != "" {
+			key = p.getServerKey(clusterName, serverName)
+		} else {
+			key = p.getKey(clusterName, siteName)
+		}
 		p.logger.Info("Agent connecting", "key", key)
 
 		wsConn, err := upgrader.Upgrade(w, r, nil)
@@ -103,7 +125,16 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 	return mux
 }
 
-// getKey creates a unique key for a site connection.
+// getKey creates a unique connection-manager key for a Site tunnel.
+// Format: "<clusterName>/sites/<siteName>"
 func (p *virtualWorkspaces) getKey(clusterName, siteName string) string {
-	return clusterName + "/" + siteName
+	return clusterName + "/sites/" + siteName
+}
+
+// getServerKey creates a unique connection-manager key for a Server tunnel.
+// Format: "<clusterName>/servers/<serverName>"
+// Using a distinct prefix ensures that a Site and a Server with the same name
+// never share the same connman slot.
+func (p *virtualWorkspaces) getServerKey(clusterName, serverName string) string {
+	return clusterName + "/servers/" + serverName
 }

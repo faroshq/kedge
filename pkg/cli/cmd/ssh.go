@@ -33,7 +33,10 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 // wsSshMsg mirrors the wsMsg type used by pkg/util/ssh.
@@ -81,7 +84,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	wsURL, err := buildSSHWebSocketURL(config, name, remoteCmd)
+	wsURL, err := buildSSHWebSocketURL(ctx, config, name, remoteCmd)
 	if err != nil {
 		return fmt.Errorf("building SSH endpoint URL: %w", err)
 	}
@@ -107,10 +110,28 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	return runSSHInteractive(ctx, conn)
 }
 
+// resolveResourceKind queries the hub to determine whether name refers to a
+// Server or a Site resource. Returns "servers" or "sites". Falls back to
+// "sites" when the lookup is inconclusive so existing callers are unaffected.
+func resolveResourceKind(ctx context.Context, config *rest.Config, name string) string {
+	d, err := kedgeclient.NewForConfig(config)
+	if err != nil {
+		return "sites"
+	}
+	// Probe Server first — that's the resource kind relevant to SSH access for
+	// bare-metal hosts. If it exists, prefer the servers path.
+	if _, err := d.Servers().Get(ctx, name, metav1.GetOptions{}); err == nil {
+		return "servers"
+	}
+	return "sites"
+}
+
 // buildSSHWebSocketURL constructs the WebSocket URL for the hub SSH subresource.
+// It first resolves whether name refers to a Server or a Site so the correct
+// API path is used (/servers/ vs /sites/).
 // If remoteCmd is non-empty it is embedded as the "cmd" query parameter so
 // the hub runs it via SSH exec (no PTY, no shell startup overhead).
-func buildSSHWebSocketURL(config *rest.Config, name, remoteCmd string) (string, error) {
+func buildSSHWebSocketURL(ctx context.Context, config *rest.Config, name, remoteCmd string) (string, error) {
 	base := strings.TrimRight(config.Host, "/")
 
 	u, err := url.Parse(base)
@@ -127,7 +148,8 @@ func buildSSHWebSocketURL(config *rest.Config, name, remoteCmd string) (string, 
 		u.Scheme = "wss"
 	}
 
-	u.Path = fmt.Sprintf("/proxy/apis/kedge.faros.sh/v1alpha1/sites/%s/ssh", name)
+	resourceKind := resolveResourceKind(ctx, config, name)
+	u.Path = fmt.Sprintf("/proxy/apis/kedge.faros.sh/v1alpha1/%s/%s/ssh", resourceKind, name)
 	if remoteCmd != "" {
 		q := url.Values{}
 		q.Set("cmd", remoteCmd)

@@ -44,9 +44,14 @@ import (
 // tlsConfig controls TLS verification for the WebSocket connection to the hub.
 // Pass nil to use a default (secure) TLS config; use InsecureSkipVerify only
 // in development environments.
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) {
+//
+// resourceType must be either "sites" (Kubernetes cluster agent) or "servers"
+// (bare-metal / systemd host agent). It controls the query parameter sent to
+// the hub's tunnel endpoint so that Sites and Servers are stored under
+// distinct connection-manager keys and never alias each other.
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "siteName", siteName)
+	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "siteName", siteName, "resourceType", resourceType)
 
 	backoff := wait.Backoff{
 		Duration: 1 * time.Second,
@@ -63,7 +68,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, siteName, downstream, tlsConfig, stateChannel, sshPort)
+		err := startTunneler(ctx, hubURL, token, siteName, resourceType, downstream, tlsConfig, stateChannel, sshPort)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -80,14 +85,24 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, siteName string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) error {
+func startTunneler(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
 	// Extract the real kcp logical cluster name from the SA token so the tunnel
 	// key matches what the mount controller expects.
 	clusterName := extractClusterNameFromToken(token)
-	edgeProxyURL := fmt.Sprintf("%s/tunnel/?cluster=%s&site=%s", hubURL, clusterName, siteName)
+
+	// resourceType controls the query parameter: "sites" agents use ?site=,
+	// "servers" agents use ?server=. The hub stores them under distinct keys so
+	// a Server and a Site with the same name never alias each other.
+	var edgeProxyURL string
+	switch resourceType {
+	case "servers":
+		edgeProxyURL = fmt.Sprintf("%s/tunnel/?cluster=%s&server=%s", hubURL, clusterName, siteName)
+	default:
+		edgeProxyURL = fmt.Sprintf("%s/tunnel/?cluster=%s&site=%s", hubURL, clusterName, siteName)
+	}
 
 	conn, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig)
 	if err != nil {

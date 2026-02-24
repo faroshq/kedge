@@ -198,7 +198,12 @@ func (s *SocketSSHSession) flushOutput() error {
 	if s.comboOutput == nil {
 		return nil
 	}
-	bs := s.comboOutput.Bytes()
+	// ReadAndReset copies the current buffer content and resets it atomically
+	// under the safeBuffer mutex.  This prevents a race where a concurrent
+	// Write() (from the SSH library's copy goroutine) appends new data between
+	// the Bytes() read and the Reset() call, causing that data to be silently
+	// discarded and never forwarded to the WebSocket client.
+	bs := s.comboOutput.ReadAndReset()
 	if len(bs) == 0 {
 		return nil
 	}
@@ -206,7 +211,6 @@ func (s *SocketSSHSession) flushOutput() error {
 		s.logger.Error(err, "failed to write ssh output to the websocket conn")
 		return err
 	}
-	s.comboOutput.buffer.Reset()
 	return nil
 }
 
@@ -312,4 +316,21 @@ func (w *safeBuffer) Reset() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.buffer.Reset()
+}
+
+// ReadAndReset returns a copy of the current buffer content and resets the
+// buffer atomically under the mutex.  Using a single locked operation instead
+// of separate Bytes()+Reset() calls eliminates the race where a concurrent
+// Write() can append data between the read and the reset, causing that data
+// to be silently discarded.
+func (w *safeBuffer) ReadAndReset() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.buffer.Len() == 0 {
+		return nil
+	}
+	data := make([]byte, w.buffer.Len())
+	copy(data, w.buffer.Bytes())
+	w.buffer.Reset()
+	return data
 }

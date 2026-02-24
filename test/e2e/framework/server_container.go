@@ -92,10 +92,12 @@ func (s *ServerContainer) Start(ctx context.Context) error {
 	}
 
 	// 4. Start the agent in server mode (background).
+	// Use POSIX-compatible redirection (Ubuntu uses dash as /bin/sh, which does
+	// not support bash-only &> syntax; use > file 2>&1 & instead).
 	agentCmd := fmt.Sprintf(
 		"/kedge agent join --mode=server --hub-url=%s --token=%s --site-name=%s"+
 			" --hub-insecure-skip-tls-verify --ssh-proxy-port=%d"+
-			" &> /var/log/kedge-agent.log &",
+			" > /var/log/kedge-agent.log 2>&1 &",
 		s.HubURL, s.Token, s.ServerName, ContainerSSHPort,
 	)
 	if _, err := s.exec(ctx, "sh", "-c", agentCmd); err != nil {

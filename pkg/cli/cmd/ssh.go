@@ -81,7 +81,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	wsURL, err := buildSSHWebSocketURL(config, name)
+	wsURL, err := buildSSHWebSocketURL(config, name, remoteCmd)
 	if err != nil {
 		return fmt.Errorf("building SSH endpoint URL: %w", err)
 	}
@@ -102,13 +102,15 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	defer conn.Close() //nolint:errcheck
 
 	if remoteCmd != "" {
-		return runSSHCommand(ctx, conn, remoteCmd)
+		return runSSHCommandStream(ctx, conn)
 	}
 	return runSSHInteractive(ctx, conn)
 }
 
 // buildSSHWebSocketURL constructs the WebSocket URL for the hub SSH subresource.
-func buildSSHWebSocketURL(config *rest.Config, name string) (string, error) {
+// If remoteCmd is non-empty it is embedded as the "cmd" query parameter so
+// the hub runs it via SSH exec (no PTY, no shell startup overhead).
+func buildSSHWebSocketURL(config *rest.Config, name, remoteCmd string) (string, error) {
 	base := strings.TrimRight(config.Host, "/")
 
 	u, err := url.Parse(base)
@@ -126,26 +128,19 @@ func buildSSHWebSocketURL(config *rest.Config, name string) (string, error) {
 	}
 
 	u.Path = fmt.Sprintf("/proxy/apis/kedge.faros.sh/v1alpha1/sites/%s/ssh", name)
+	if remoteCmd != "" {
+		q := url.Values{}
+		q.Set("cmd", remoteCmd)
+		u.RawQuery = q.Encode()
+	}
 	return u.String(), nil
 }
 
-// runSSHCommand sends a single command to the remote shell and streams output
-// until the WebSocket closes (i.e. the shell exits after "exit").
-func runSSHCommand(ctx context.Context, conn *websocket.Conn, cmd string) error {
-	// Send command followed by exit so the remote shell terminates cleanly.
-	input := cmd + "\nexit\n"
-	b, err := json.Marshal(wsSSHMsg{
-		Type: "cmd",
-		Cmd:  base64.StdEncoding.EncodeToString([]byte(input)),
-	})
-	if err != nil {
-		return err
-	}
-	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
-		return fmt.Errorf("sending command: %w", err)
-	}
-
-	// Stream output until the connection closes.
+// runSSHCommandStream reads output messages from the WebSocket until the
+// connection is closed by the hub (after the remote command exits).  The
+// command itself was already conveyed to the hub via the "cmd" query
+// parameter in the WebSocket URL; there is nothing to write here.
+func runSSHCommandStream(ctx context.Context, conn *websocket.Conn) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -154,7 +149,7 @@ func runSSHCommand(ctx context.Context, conn *websocket.Conn, cmd string) error 
 		}
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			// Normal EOF — remote shell exited.
+			// Normal EOF — remote command finished.
 			return nil //nolint:nilerr
 		}
 		if _, err := os.Stdout.Write(data); err != nil {

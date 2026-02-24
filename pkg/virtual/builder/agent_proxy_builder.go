@@ -149,7 +149,12 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 	// Derive SSH username from the bearer token before dialling the agent.
 	token := extractBearerToken(r)
 	sshUser := sshUsernameFromToken(token)
-	logger.V(4).Info("SSH handler", "key", key, "sshUser", sshUser)
+
+	// If a remote command was provided via query param, use SSH exec (no PTY).
+	// This is the path for `kedge ssh <name> -- <cmd>`.
+	remoteCmd := r.URL.Query().Get("cmd")
+
+	logger.V(4).Info("SSH handler", "key", key, "sshUser", sshUser, "exec", remoteCmd != "")
 
 	deviceConn, err := p.connManager.Dial(ctx, key)
 	if err != nil {
@@ -186,7 +191,13 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 	}
 	defer sshClient.Close() //nolint:errcheck
 
-	// Create SSH session over WebSocket
+	if remoteCmd != "" {
+		// Non-interactive exec mode: run the command, stream output, close.
+		p.sshExec(ctx, wsConn, sshClient, remoteCmd, logger)
+		return
+	}
+
+	// Interactive mode: PTY + shell session over WebSocket.
 	session, err := utilssh.NewSocketSSHSession(logger, 120, 40, sshClient, wsConn)
 	if err != nil {
 		logger.Error(err, "failed to create SSH session")
@@ -197,6 +208,51 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 	if err := session.Run(ctx); err != nil {
 		logger.Error(err, "SSH session error")
 	}
+}
+
+// sshExec runs remoteCmd on the SSH client via a non-interactive exec channel
+// and streams the combined stdout+stderr output as binary WebSocket messages.
+// It closes the WebSocket when the command finishes (or on error).
+func (p *virtualWorkspaces) sshExec(ctx context.Context, wsConn *websocket.Conn, sshClient *gossh.Client, remoteCmd string, logger klog.Logger) {
+	sshSession, err := sshClient.NewSession()
+	if err != nil {
+		logger.Error(err, "failed to create SSH exec session")
+		return
+	}
+	defer sshSession.Close() //nolint:errcheck
+
+	// Pipe stdout+stderr to a goroutine that forwards chunks to the WebSocket.
+	pr, pw := io.Pipe()
+	sshSession.Stdout = pw
+	sshSession.Stderr = pw
+
+	// Forward pipe → WebSocket in the background.
+	fwdDone := make(chan struct{})
+	go func() {
+		defer close(fwdDone)
+		buf := make([]byte, 4096)
+		for {
+			n, err := pr.Read(buf)
+			if n > 0 {
+				if werr := wsConn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					logger.V(4).Info("WebSocket write error during exec", "err", werr)
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Run the remote command (blocks until it exits).
+	if err := sshSession.Run(remoteCmd); err != nil {
+		logger.V(4).Info("SSH exec command finished", "cmd", remoteCmd, "err", err)
+	}
+
+	// Close the write end of the pipe so the forwarder goroutine sees EOF.
+	pw.Close() //nolint:errcheck
+	<-fwdDone  // wait for all output to be forwarded before closing the WebSocket
 }
 
 // handleK8sUpgrade handles upgrade requests (exec, port-forward) by hijacking

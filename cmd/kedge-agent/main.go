@@ -58,6 +58,8 @@ func main() {
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Path to target cluster kubeconfig")
 	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
 	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site (key=value pairs)")
+	cmd.Flags().StringVar((*string)(&opts.Mode), "mode", string(agent.AgentModeSite), "Agent mode: 'site' (k8s cluster) or 'server' (bare-metal/systemd host)")
+	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification for hub connection (dev/test only)")
 
 	if err := cmd.Execute(); err != nil {
 		klog.Fatal(err)

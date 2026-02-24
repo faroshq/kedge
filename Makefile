@@ -176,9 +176,9 @@ dev-server-create: build-kedge ## Register a server (SSH server-mode host)
 
 dev-run-server-agent: build-agent ## Start the agent in server mode (SSH reverse tunnel)
 	@test -f .env.server || (echo "Run 'make dev-server-create' first"; exit 1)
-	$(BINDIR)/kedge-agent join \
+	$(BINDIR)/kedge-agent \
 		--hub-url=https://localhost:8443 \
-		--hub-insecure-skip-tls-verify \
+		--insecure-skip-tls-verify \
 		--token=$(STATIC_AUTH_TOKEN) \
 		--tunnel-url=https://localhost:8443 \
 		--site-name=$(KEDGE_SERVER_NAME) \

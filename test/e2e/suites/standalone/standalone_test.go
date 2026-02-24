@@ -40,4 +40,3 @@ func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconne
 func TestSiteListAccuracyUnderChurn(t *testing.T) {
 	testenv.Test(t, cases.SiteListAccuracyUnderChurn())
 }
-

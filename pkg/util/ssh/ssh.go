@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ import (
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 )
+
+// errSessionDone is a sentinel returned by wait() when the SSH session exits
+// cleanly (nil error from session.Wait).  It causes errgroup to cancel gCtx
+// so that receiveWsMsg, sendComboOutput, sendKeepAlive, and wsCloser all
+// return promptly.  Run() filters this error out and returns nil to callers.
+var errSessionDone = errors.New("ssh session ended normally")
 
 type SocketSSHSession struct {
 	stdinPipe   io.WriteCloser
@@ -80,6 +87,11 @@ func NewSocketSSHSession(l klog.Logger, cols, rows int, sshClient *ssh.Client, w
 }
 
 func (s *SocketSSHSession) Close() {
+	// Close stdinPipe first to signal EOF to the remote shell and to unblock
+	// any goroutine waiting on the pipe (e.g. session.Wait's stdin copier).
+	if s.stdinPipe != nil {
+		s.stdinPipe.Close() //nolint:errcheck
+	}
 	if s.session != nil {
 		s.session.Close() //nolint:errcheck
 	}
@@ -132,7 +144,11 @@ func (s *SocketSSHSession) Run(ctx context.Context) error {
 		return nil
 	})
 
-	return g.Wait()
+	err := g.Wait()
+	if errors.Is(err, errSessionDone) {
+		return nil
+	}
+	return err
 }
 
 func (s *SocketSSHSession) receiveWsMsg(stop <-chan struct{}) error {
@@ -227,7 +243,9 @@ func (s *SocketSSHSession) sendKeepAlive(stop <-chan struct{}) error {
 		case <-stop:
 			return nil
 		case <-tick.C:
-			_, err := s.session.SendRequest("keepalive@openssh.com", true, nil)
+			// Use wantReply=false so SendRequest never blocks if the channel
+			// is broken or the server has already closed the session.
+			_, err := s.session.SendRequest("keepalive@openssh.com", false, nil)
 			if err != nil {
 				consecutiveFailures++
 
@@ -260,9 +278,21 @@ func (s *SocketSSHSession) wait(stop <-chan struct{}) error {
 
 	select {
 	case <-stop:
+		// Close stdinPipe to unblock the SSH library's stdin copy goroutine,
+		// then close the session to unblock session.Wait().
+		if s.stdinPipe != nil {
+			s.stdinPipe.Close() //nolint:errcheck
+		}
 		s.session.Close() //nolint:errcheck
 		return nil
 	case err := <-done:
+		if err == nil {
+			// Return a non-nil sentinel so errgroup cancels gCtx, which
+			// causes receiveWsMsg, sendComboOutput, sendKeepAlive, and
+			// wsCloser to all return and unblock g.Wait().  Run() filters
+			// this sentinel out before returning to callers.
+			return errSessionDone
+		}
 		return err
 	}
 }

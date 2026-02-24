@@ -152,13 +152,37 @@ func (s *TestSSHServer) handleSession(ctx context.Context, ch gossh.Channel, req
 			return
 
 		case "shell":
-			// For interactive shells, connect stdin/stdout directly to /bin/sh.
+			// For interactive shells, connect stdout directly to /bin/sh.
+			// We use StdinPipe so that cmd.Wait() does NOT wait for stdin to be
+			// drained — the io.Copy goroutine is cleaned up when ch is closed
+			// by the deferred ch.Close() after cmd.Run returns.
 			req.Reply(true, nil) //nolint:errcheck
 			cmd := exec.CommandContext(ctx, "/bin/sh")
-			cmd.Stdin = ch
+			stdinPipe, err := cmd.StdinPipe()
+			if err != nil {
+				return
+			}
 			cmd.Stdout = ch
 			cmd.Stderr = ch.Stderr()
-			_ = cmd.Run()
+
+			// Copy SSH channel input to the shell stdin asynchronously.
+			// This goroutine exits when ch is closed (deferred below).
+			go func() {
+				io.Copy(stdinPipe, ch) //nolint:errcheck
+				stdinPipe.Close()      //nolint:errcheck
+			}()
+
+			if err := cmd.Run(); err != nil {
+				exitCode := 1
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				}
+				payload := gossh.Marshal(struct{ Code uint32 }{uint32(exitCode)})
+				ch.SendRequest("exit-status", false, payload) //nolint:errcheck
+			} else {
+				payload := gossh.Marshal(struct{ Code uint32 }{0})
+				ch.SendRequest("exit-status", false, payload) //nolint:errcheck
+			}
 			return
 
 		case "pty-req":

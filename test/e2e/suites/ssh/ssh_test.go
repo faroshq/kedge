@@ -14,16 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package site reconciles Site resources.
-package site
+package ssh
 
-import "time"
+import (
+	"testing"
 
-const (
-	// HeartbeatTimeout is the duration after which a site is considered disconnected.
-	// 90s = 3 missed heartbeats at the agent 30s interval; reasonable for production
-	// and keeps CI fast (was 5 min, causing CI timeouts).
-	HeartbeatTimeout = 90 * time.Second
-	// GCTimeout is the duration after which a disconnected site is garbage collected.
-	GCTimeout = 24 * time.Hour
+	"github.com/faroshq/faros-kedge/test/e2e/cases"
 )
+
+func TestSSHServerModeConnect(t *testing.T) {
+	testenv.Test(t, cases.SSHServerModeConnect())
+}
+
+func TestSSHDockerServerModeConnect(t *testing.T) {
+	testenv.Test(t, cases.SSHDockerServerModeConnect())
+}

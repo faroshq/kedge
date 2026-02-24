@@ -151,7 +151,12 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 	// Derive SSH username from the bearer token before dialling the agent.
 	token := extractBearerToken(r)
 	sshUser := sshUsernameFromToken(token)
-	logger.V(4).Info("SSH handler", "key", key, "sshUser", sshUser)
+
+	// If a remote command was provided via query param, use SSH exec (no PTY).
+	// This is the path for `kedge ssh <name> -- <cmd>`.
+	remoteCmd := r.URL.Query().Get("cmd")
+
+	logger.V(4).Info("SSH handler", "key", key, "sshUser", sshUser, "exec", remoteCmd != "")
 
 	deviceConn, err := p.connManager.Dial(ctx, key)
 	if err != nil {
@@ -160,9 +165,19 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 		return
 	}
 
+	// Open the SSH tunnel: send HTTP upgrade request to the agent's /ssh handler,
+	// receive 101 Switching Protocols, and return a raw pipe to the agent's sshd.
+	sshConn, err := openAgentSSHTunnel(ctx, deviceConn)
+	if err != nil {
+		logger.Error(err, "failed to open SSH tunnel to agent", "key", key)
+		http.Error(w, "failed to open SSH tunnel", http.StatusBadGateway)
+		return
+	}
+
 	// TODO(#67): CheckOrigin returns true for all origins, allowing cross-site WebSocket
 	// hijacking. Replace with utilhttp.CheckSameOrAllowedOrigin (same as edge proxy).
 	// https://github.com/faroshq/kedge/issues/67
+	// Upgrade client connection to WebSocket
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
@@ -173,15 +188,21 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 	}
 	defer wsConn.Close() //nolint:errcheck
 
-	// Create SSH client through the device connection using the derived username.
-	sshClient, err := newSSHClient(ctx, deviceConn, sshUser, logger)
+	// Create SSH client over the tunnelled raw connection.
+	sshClient, err := newSSHClient(ctx, sshConn, sshUser, logger)
 	if err != nil {
 		logger.Error(err, "failed to create SSH client")
 		return
 	}
 	defer sshClient.Close() //nolint:errcheck
 
-	// Create SSH session over WebSocket
+	if remoteCmd != "" {
+		// Non-interactive exec mode: run the command, stream output, close.
+		p.sshExec(ctx, wsConn, sshClient, remoteCmd, logger)
+		return
+	}
+
+	// Interactive mode: PTY + shell session over WebSocket.
 	session, err := utilssh.NewSocketSSHSession(logger, 120, 40, sshClient, wsConn)
 	if err != nil {
 		logger.Error(err, "failed to create SSH session")
@@ -192,6 +213,51 @@ func (p *virtualWorkspaces) sshHandler(ctx context.Context, w http.ResponseWrite
 	if err := session.Run(ctx); err != nil {
 		logger.Error(err, "SSH session error")
 	}
+}
+
+// sshExec runs remoteCmd on the SSH client via a non-interactive exec channel
+// and streams the combined stdout+stderr output as binary WebSocket messages.
+// It closes the WebSocket when the command finishes (or on error).
+func (p *virtualWorkspaces) sshExec(ctx context.Context, wsConn *websocket.Conn, sshClient *gossh.Client, remoteCmd string, logger klog.Logger) {
+	sshSession, err := sshClient.NewSession()
+	if err != nil {
+		logger.Error(err, "failed to create SSH exec session")
+		return
+	}
+	defer sshSession.Close() //nolint:errcheck
+
+	// Pipe stdout+stderr to a goroutine that forwards chunks to the WebSocket.
+	pr, pw := io.Pipe()
+	sshSession.Stdout = pw
+	sshSession.Stderr = pw
+
+	// Forward pipe → WebSocket in the background.
+	fwdDone := make(chan struct{})
+	go func() {
+		defer close(fwdDone)
+		buf := make([]byte, 4096)
+		for {
+			n, err := pr.Read(buf)
+			if n > 0 {
+				if werr := wsConn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					logger.V(4).Info("WebSocket write error during exec", "err", werr)
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Run the remote command (blocks until it exits).
+	if err := sshSession.Run(remoteCmd); err != nil {
+		logger.V(4).Info("SSH exec command finished", "cmd", remoteCmd, "err", err)
+	}
+
+	// Close the write end of the pipe so the forwarder goroutine sees EOF.
+	pw.Close() //nolint:errcheck
+	<-fwdDone  // wait for all output to be forwarded before closing the WebSocket
 }
 
 // handleK8sUpgrade handles upgrade requests (exec, port-forward) by hijacking
@@ -246,6 +312,58 @@ func (t *deviceConnTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return http.ReadResponse(bufio.NewReader(t.conn), req)
 }
 
+// openAgentSSHTunnel sends an HTTP upgrade request to the agent's /ssh endpoint
+// and returns a net.Conn providing raw TCP access to the agent's sshd.
+//
+// Protocol:
+//
+//  1. Hub sends:   GET /ssh HTTP/1.1\r\nUpgrade: ssh-tunnel\r\n...
+//  2. Agent sends: HTTP/1.1 101 Switching Protocols\r\n...
+//  3. Both sides switch to raw SSH byte stream.
+//
+// A bufferedConn is returned so that any bytes the bufio.Reader buffered past
+// the 101 response headers (e.g. the SSH banner) are not lost.
+func openAgentSSHTunnel(ctx context.Context, conn net.Conn) (net.Conn, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://agent/ssh", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building SSH tunnel request: %w", err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "ssh-tunnel")
+
+	if err := req.Write(conn); err != nil {
+		return nil, fmt.Errorf("writing SSH tunnel request: %w", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, req)
+	if err != nil {
+		return nil, fmt.Errorf("reading SSH tunnel response: %w", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		return nil, fmt.Errorf("expected 101 Switching Protocols from agent, got %d", resp.StatusCode)
+	}
+
+	// Wrap conn so that bytes already buffered by the bufio.Reader (e.g. the
+	// SSH banner that may have arrived before we finished reading the headers)
+	// are not lost.
+	return &bufferedConn{Conn: conn, reader: reader}, nil
+}
+
+// bufferedConn wraps a net.Conn with a bufio.Reader so that bytes pre-buffered
+// during HTTP response parsing are available via Read before the underlying
+// connection is used directly.
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (bc *bufferedConn) Read(b []byte) (int, error) {
+	return bc.reader.Read(b)
+}
+
 // newSSHClient creates an SSH client through a device connection.
 // sshUser is the Unix username to authenticate as on the remote host.
 func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, _ klog.Logger) (*gossh.Client, error) {
@@ -254,7 +372,10 @@ func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, _ klog
 	// and use gossh.FixedHostKey or a custom HostKeyCallback here.
 	// https://github.com/faroshq/kedge/issues/64
 	sshConfig := &gossh.ClientConfig{
-		User:            sshUser,
+		User: sshUser,
+		// Password("") allows connection to sshd configured with PermitEmptyPasswords.
+		// TODO(#54): replace with key-based auth loaded from a Secret on the Server resource.
+		Auth:            []gossh.AuthMethod{gossh.Password("")},
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // tracked in #64
 	}
 

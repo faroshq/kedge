@@ -31,17 +31,22 @@ import (
 )
 
 // ServerReporter sends heartbeats for a Server resource (non-k8s mode).
-// It marks the server as Ready and SSH-enabled on each tick.
+// It marks the server as Ready once the tunnel is connected.
 type ServerReporter struct {
-	serverName string
-	hubClient  *kedgeclient.Client
+	serverName      string
+	hubClient       *kedgeclient.Client
+	tunnelState     <-chan bool // receives true when tunnel connects, false when it drops
+	tunnelConnected bool
 }
 
 // NewServerReporter creates a new ServerReporter.
-func NewServerReporter(serverName string, hubClient *kedgeclient.Client) *ServerReporter {
+// tunnelState is the channel produced by tunnel.StartProxyTunnel; pass nil to
+// skip tunnel-state tracking (tunnelConnected will always report false).
+func NewServerReporter(serverName string, hubClient *kedgeclient.Client, tunnelState <-chan bool) *ServerReporter {
 	return &ServerReporter{
-		serverName: serverName,
-		hubClient:  hubClient,
+		serverName:  serverName,
+		hubClient:   hubClient,
+		tunnelState: tunnelState,
 	}
 }
 
@@ -60,6 +65,11 @@ func (r *ServerReporter) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case connected, ok := <-r.tunnelState:
+			if ok {
+				r.tunnelConnected = connected
+				r.sendServerHeartbeat(ctx, logger)
+			}
 		case <-ticker.C:
 			r.sendServerHeartbeat(ctx, logger)
 		}
@@ -70,8 +80,8 @@ func (r *ServerReporter) sendServerHeartbeat(ctx context.Context, logger klog.Lo
 	now := metav1.Now()
 	status := kedgev1alpha1.ServerStatus{
 		Phase:             kedgev1alpha1.ServerPhaseReady,
-		TunnelConnected:   true,
-		SSHEnabled:        true,
+		TunnelConnected:   r.tunnelConnected,
+		SSHEnabled:        r.tunnelConnected,
 		LastHeartbeatTime: &now,
 	}
 

@@ -347,13 +347,16 @@ E2E_TIMEOUT ?= 10m
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 
 e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
-	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
+	go test ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
-	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
-	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(E2E_FLAGS)
+	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
 	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)

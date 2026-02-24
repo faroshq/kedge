@@ -71,6 +71,7 @@ func newAgentJoinCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
 	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site")
 	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "hub-insecure-skip-tls-verify", false, "Skip TLS certificate verification for the hub connection (insecure, for development only)")
+	cmd.Flags().IntVar(&opts.SSHProxyPort, "ssh-proxy-port", 22, "Local port of the SSH daemon to proxy connections to (default 22; set to a different port in test environments)")
 	cmd.Flags().StringVar((*string)(&opts.Mode), "mode", string(agent.AgentModeSite), `Agent mode: "site" (Kubernetes cluster) or "server" (bare-metal/systemd host with SSH access)`)
 
 	return cmd

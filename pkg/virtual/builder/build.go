@@ -51,16 +51,22 @@ type VirtualWorkspaceConfig struct {
 	RootPathPrefix string
 	ConnManager    *connman.ConnectionManager
 	KCPConfig      *rest.Config // kcp rest config for token verification (nil if kcp not configured)
+	StaticTokens   []string     // static tokens that bypass JWT SA requirement in the edge proxy
 }
 
 // BuildVirtualWorkspaces creates the virtual workspaces for the kedge hub.
 func BuildVirtualWorkspaces(config VirtualWorkspaceConfig) []NamedVirtualWorkspace {
 	logger := klog.Background().WithName("virtual-workspaces")
 
+	staticTokenSet := make(map[string]struct{}, len(config.StaticTokens))
+	for _, t := range config.StaticTokens {
+		staticTokenSet[t] = struct{}{}
+	}
 	vw := &virtualWorkspaces{
 		rootPathPrefix: config.RootPathPrefix,
 		connManager:    config.ConnManager,
 		kcpConfig:      config.KCPConfig,
+		staticTokens:   staticTokenSet,
 		logger:         logger,
 	}
 

@@ -204,7 +204,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
 	siteRoutes := builder.NewSiteRouteMap()
-	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, siteRoutes, logger)
+	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, siteRoutes, s.opts.StaticAuthTokens, logger)
 	router.PathPrefix("/tunnel/").Handler(http.StripPrefix("/tunnel", vws.EdgeProxyHandler()))
 	router.PathPrefix("/proxy/").Handler(http.StripPrefix("/proxy", vws.AgentProxyHandler()))
 	router.PathPrefix("/services/site-proxy/").Handler(http.StripPrefix("/services/site-proxy", vws.SiteProxyHandler()))

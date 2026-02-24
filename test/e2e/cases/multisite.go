@@ -385,7 +385,7 @@ func SiteFailoverIsolation() features.Feature {
 			}
 
 			// Wait for site-1 to become Disconnected.
-			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 8*time.Minute); err != nil {
+			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not become Disconnected: %v", err)
 			}
 
@@ -441,7 +441,7 @@ func SiteReconnect() features.Feature {
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
 				a.Stop()
 			}
-			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 8*time.Minute); err != nil {
+			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not go Disconnected: %v", err)
 			}
 
@@ -498,7 +498,7 @@ func SiteListAccuracyUnderChurn() features.Feature {
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
 				a.Stop()
 			}
-			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 8*time.Minute); err != nil {
+			if err := client.WaitForSitePhase(ctx, msSite1, "Disconnected", 3*time.Minute); err != nil {
 				t.Fatalf("site-1 did not show Disconnected: %v", err)
 			}
 			// site-2 must remain Ready during the churn.

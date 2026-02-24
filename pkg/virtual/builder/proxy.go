@@ -54,7 +54,8 @@ func (m *SiteRouteMap) Get(routeKey string) (string, bool) {
 type virtualWorkspaces struct {
 	rootPathPrefix string
 	connManager    *connman.ConnectionManager
-	kcpConfig      *rest.Config // kcp rest config for token verification (nil if kcp not configured)
+	kcpConfig      *rest.Config        // kcp rest config for token verification (nil if kcp not configured)
+	staticTokens   map[string]struct{} // static tokens that bypass JWT SA requirement
 	siteRoutes     *SiteRouteMap
 	logger         klog.Logger
 }
@@ -67,13 +68,18 @@ type VirtualWorkspaceHandlers struct {
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
 // kcpConfig is required for SA token authorization against kcp. A nil
 // kcpConfig causes the site-proxy handler to reject all requests with 503.
-func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, siteRoutes *SiteRouteMap, logger klog.Logger) *VirtualWorkspaceHandlers {
+func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, siteRoutes *SiteRouteMap, staticTokens []string, logger klog.Logger) *VirtualWorkspaceHandlers {
+	staticTokenSet := make(map[string]struct{}, len(staticTokens))
+	for _, t := range staticTokens {
+		staticTokenSet[t] = struct{}{}
+	}
 	return &VirtualWorkspaceHandlers{
 		vws: &virtualWorkspaces{
-			connManager: cm,
-			kcpConfig:   kcpConfig,
-			siteRoutes:  siteRoutes,
-			logger:      logger.WithName("virtual-workspaces"),
+			connManager:  cm,
+			kcpConfig:    kcpConfig,
+			siteRoutes:   siteRoutes,
+			staticTokens: staticTokenSet,
+			logger:       logger.WithName("virtual-workspaces"),
 		},
 	}
 }

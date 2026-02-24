@@ -126,21 +126,17 @@ func (s *SocketSSHSession) Run(ctx context.Context) error {
 		return s.wait(gCtx.Done())
 	})
 
-	// wsCloser: once the flush is guaranteed complete, close the WebSocket so
-	// that receiveWsMsg (blocked on ReadMessage) unblocks and the errgroup can
-	// finish.  Without this, non-interactive ("-- cmd") sessions would hang
-	// indefinitely because the CLI never sends another message after the initial
-	// command.
+	// wsCloser: wait until sendComboOutput has finished its final flush, then
+	// close the WebSocket so that receiveWsMsg (blocked on ReadMessage) unblocks
+	// and the errgroup can finish.
+	//
+	// We ONLY wait on flushDone (not gCtx.Done()) to guarantee the flush
+	// happens before the close.  flushDone is always closed via defer in the
+	// sendComboOutput goroutine, so wsCloser will never hang: even if
+	// sendComboOutput hits a write error it still returns and defers the close.
 	g.Go(func() error {
-		select {
-		case <-flushDone:
-			// Flush finished; close so receiveWsMsg unblocks.
-			s.wsConn.Close() //nolint:errcheck
-		case <-gCtx.Done():
-			// Some other goroutine already errored; flushDone may never fire.
-			// Close the WS anyway to unblock receiveWsMsg.
-			s.wsConn.Close() //nolint:errcheck
-		}
+		<-flushDone
+		s.wsConn.Close() //nolint:errcheck
 		return nil
 	})
 

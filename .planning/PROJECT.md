@@ -53,5 +53,22 @@ The reverse tunnel is already built. This feature adds the SSH protocol layer on
 - Multi-hop / jump hosts
 - Windows servers
 
+## Current Milestone: v1.1 — SSH Key Injection (issue #72)
+
+**Goal:** Hub fetches SSH private key from a referenced Kubernetes Secret and uses it when authenticating to the agent's sshd — no local key required on the client.
+
+**Target features:**
+- `Server.Spec.SSHKeySecretRef` — optional reference to a Kubernetes Secret holding an SSH private key
+- Hub reads the Secret at SSH session time and uses `gossh.PublicKeys()` auth instead of the current `Password("")` placeholder
+- RBAC: hub service account gets `get` access to the referenced secret namespace
+- Tests: unit (mock k8s client) + e2e (register server with key, verify SSH)
+
+**Background (from `agent_proxy_builder.go` TODO #54):**
+```go
+// TODO(#54): replace with key-based auth loaded from a Secret on the Server resource.
+Auth: []gossh.AuthMethod{gossh.Password("")},
+```
+This milestone implements that TODO.
+
 ---
-*Last updated: 2026-02-22 after initialization*
+*Last updated: 2026-02-25 after milestone v1.1 start (issue #72)*

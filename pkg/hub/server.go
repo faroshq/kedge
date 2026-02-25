@@ -37,6 +37,7 @@ import (
 
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
+	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/site"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
@@ -276,6 +277,17 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if err := site.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL, siteRoutes); err != nil {
 			return fmt.Errorf("setting up site mount controller: %w", err)
+		}
+
+		// Edge controllers (Phase 2 — replaces site controllers for Edge resources).
+		if err := edge.SetupLifecycleWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up edge lifecycle controller: %w", err)
+		}
+		if err := edge.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up edge RBAC controller: %w", err)
+		}
+		if err := edge.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up edge mount controller: %w", err)
 		}
 
 		go func() {

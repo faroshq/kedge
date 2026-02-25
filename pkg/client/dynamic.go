@@ -40,6 +40,11 @@ var (
 		Version:  kedgev1alpha1.Version,
 		Resource: "virtualworkloads",
 	}
+	EdgeGVR = schema.GroupVersionResource{
+		Group:    kedgev1alpha1.GroupName,
+		Version:  kedgev1alpha1.Version,
+		Resource: "edges",
+	}
 	SiteGVR = schema.GroupVersionResource{
 		Group:    kedgev1alpha1.GroupName,
 		Version:  kedgev1alpha1.Version,
@@ -98,6 +103,13 @@ func (c *Client) VirtualWorkloads(namespace string) *TypedResource[kedgev1alpha1
 func (c *Client) Servers() *TypedResource[kedgev1alpha1.Server, kedgev1alpha1.ServerList] {
 	return &TypedResource[kedgev1alpha1.Server, kedgev1alpha1.ServerList]{
 		client: c.dynamic.Resource(ServerGVR),
+	}
+}
+
+// Edges returns a typed interface for Edge resources (cluster-scoped).
+func (c *Client) Edges() *TypedResource[kedgev1alpha1.Edge, kedgev1alpha1.EdgeList] {
+	return &TypedResource[kedgev1alpha1.Edge, kedgev1alpha1.EdgeList]{
+		client: c.dynamic.Resource(EdgeGVR),
 	}
 }
 

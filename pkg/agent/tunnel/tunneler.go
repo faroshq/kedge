@@ -93,16 +93,12 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 	// key matches what the mount controller expects.
 	clusterName := extractClusterNameFromToken(token)
 
-	// resourceType controls the query parameter: "sites" agents use ?site=,
-	// "servers" agents use ?server=. The hub stores them under distinct keys so
-	// a Server and a Site with the same name never alias each other.
-	var edgeProxyURL string
-	switch resourceType {
-	case "servers":
-		edgeProxyURL = fmt.Sprintf("%s/tunnel/?cluster=%s&server=%s", hubURL, clusterName, siteName)
-	default:
-		edgeProxyURL = fmt.Sprintf("%s/tunnel/?cluster=%s&site=%s", hubURL, clusterName, siteName)
-	}
+	// All edge types (kubernetes and server) use the unified agent-proxy virtual
+	// workspace path introduced in Phase 3.
+	// resourceType is retained for legacy callers but no longer affects the URL.
+	_ = resourceType
+	edgeProxyURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/proxy",
+		hubURL, clusterName, siteName)
 
 	conn, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig)
 	if err != nil {

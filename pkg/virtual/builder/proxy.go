@@ -52,12 +52,13 @@ func (m *SiteRouteMap) Get(routeKey string) (string, bool) {
 
 // virtualWorkspaces holds state and dependencies for all virtual workspaces.
 type virtualWorkspaces struct {
-	rootPathPrefix string
-	connManager    *connman.ConnectionManager
-	kcpConfig      *rest.Config        // kcp rest config for token verification (nil if kcp not configured)
-	staticTokens   map[string]struct{} // static tokens that bypass JWT SA requirement
-	siteRoutes     *SiteRouteMap
-	logger         klog.Logger
+	rootPathPrefix  string
+	connManager     *connman.ConnectionManager
+	edgeConnManager *ConnManager        // shared between agent-proxy-v2 and edges-proxy builders
+	kcpConfig       *rest.Config        // kcp rest config for token verification (nil if kcp not configured)
+	staticTokens    map[string]struct{} // static tokens that bypass JWT SA requirement
+	siteRoutes      *SiteRouteMap
+	logger          klog.Logger
 }
 
 // VirtualWorkspaceHandlers provides access to the HTTP handlers for tunneling.
@@ -75,11 +76,12 @@ func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config,
 	}
 	return &VirtualWorkspaceHandlers{
 		vws: &virtualWorkspaces{
-			connManager:  cm,
-			kcpConfig:    kcpConfig,
-			siteRoutes:   siteRoutes,
-			staticTokens: staticTokenSet,
-			logger:       logger.WithName("virtual-workspaces"),
+			connManager:     cm,
+			edgeConnManager: NewConnManager(),
+			kcpConfig:       kcpConfig,
+			siteRoutes:      siteRoutes,
+			staticTokens:    staticTokenSet,
+			logger:          logger.WithName("virtual-workspaces"),
 		},
 	}
 }
@@ -97,4 +99,18 @@ func (h *VirtualWorkspaceHandlers) AgentProxyHandler() http.Handler {
 // SiteProxyHandler returns the handler for proxying kube API to sites via reverse tunnels.
 func (h *VirtualWorkspaceHandlers) SiteProxyHandler() http.Handler {
 	return h.vws.buildSiteProxyHandler()
+}
+
+// EdgeAgentProxyHandler returns the handler for Edge agent tunnel registration.
+// Agents connect to register their revdial tunnel for an Edge resource.
+// Mount at /services/agent-proxy/.
+func (h *VirtualWorkspaceHandlers) EdgeAgentProxyHandler() http.Handler {
+	return h.vws.buildEdgeAgentProxyHandler()
+}
+
+// EdgesProxyHandler returns the handler for user-facing access to Edge resources.
+// Supports the k8s (kubernetes API proxy) and ssh (WebSocket terminal) subresources.
+// Mount at /services/edges-proxy/.
+func (h *VirtualWorkspaceHandlers) EdgesProxyHandler() http.Handler {
+	return h.vws.buildEdgesProxyHandler()
 }

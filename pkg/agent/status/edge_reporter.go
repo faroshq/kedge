@@ -76,8 +76,6 @@ func (r *EdgeReporter) Run(ctx context.Context) error {
 }
 
 func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
-	now := metav1.Now()
-
 	status := kedgev1alpha1.EdgeStatus{
 		Phase:     kedgev1alpha1.EdgePhaseReady,
 		Connected: r.tunnelConnected,
@@ -85,9 +83,8 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	// The hub may set Hostname/WorkspaceURL; we only patch the fields we own.
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
-			"phase":             string(status.Phase),
-			"connected":         status.Connected,
-			"lastHeartbeatTime": now.Format(time.RFC3339),
+			"phase":     string(status.Phase),
+			"connected": status.Connected,
 		},
 	}
 

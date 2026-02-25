@@ -38,6 +38,16 @@ const (
 	// ClusterProxyVirtualWorkspaceName is the name of the cluster proxy virtual workspace
 	// that routes requests to appropriate workspaces.
 	ClusterProxyVirtualWorkspaceName = "cluster-proxy"
+
+	// EdgeAgentProxyVirtualWorkspaceName is the name of the new agent-facing virtual
+	// workspace where Edge agents register their revdial tunnel connections.
+	// Mount point: /services/agent-proxy/
+	EdgeAgentProxyVirtualWorkspaceName = "edge-agent-proxy"
+
+	// EdgesProxyVirtualWorkspaceName is the name of the new user-facing virtual
+	// workspace that proxies requests to Edge resources (k8s, ssh subresources).
+	// Mount point: /services/edges-proxy/
+	EdgesProxyVirtualWorkspaceName = "edges-proxy"
 )
 
 // NamedVirtualWorkspace represents a virtual workspace with a name and HTTP handler.
@@ -62,12 +72,15 @@ func BuildVirtualWorkspaces(config VirtualWorkspaceConfig) []NamedVirtualWorkspa
 	for _, t := range config.StaticTokens {
 		staticTokenSet[t] = struct{}{}
 	}
+	edgeCM := NewConnManager()
+
 	vw := &virtualWorkspaces{
-		rootPathPrefix: config.RootPathPrefix,
-		connManager:    config.ConnManager,
-		kcpConfig:      config.KCPConfig,
-		staticTokens:   staticTokenSet,
-		logger:         logger,
+		rootPathPrefix:  config.RootPathPrefix,
+		connManager:     config.ConnManager,
+		edgeConnManager: edgeCM,
+		kcpConfig:       config.KCPConfig,
+		staticTokens:    staticTokenSet,
+		logger:          logger,
 	}
 
 	return []NamedVirtualWorkspace{
@@ -82,6 +95,15 @@ func BuildVirtualWorkspaces(config VirtualWorkspaceConfig) []NamedVirtualWorkspa
 		{
 			Name:    ClusterProxyVirtualWorkspaceName,
 			Handler: vw.buildClusterProxyHandler(),
+		},
+		// Phase 3: new Edge builders (coexist with existing builders until Phase 5 cleanup).
+		{
+			Name:    EdgeAgentProxyVirtualWorkspaceName,
+			Handler: vw.buildEdgeAgentProxyHandler(),
+		},
+		{
+			Name:    EdgesProxyVirtualWorkspaceName,
+			Handler: vw.buildEdgesProxyHandler(),
 		},
 	}
 }

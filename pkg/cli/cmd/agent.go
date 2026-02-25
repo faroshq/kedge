@@ -72,7 +72,14 @@ func newAgentJoinCommand() *cobra.Command {
 	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site")
 	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "hub-insecure-skip-tls-verify", false, "Skip TLS certificate verification for the hub connection (insecure, for development only)")
 	cmd.Flags().IntVar(&opts.SSHProxyPort, "ssh-proxy-port", 22, "Local port of the SSH daemon to proxy connections to (default 22; set to a different port in test environments)")
-	cmd.Flags().StringVar((*string)(&opts.Mode), "mode", string(agent.AgentModeSite), `Agent mode: "site" (Kubernetes cluster) or "server" (bare-metal/systemd host with SSH access)`)
+	cmd.Flags().StringVar((*string)(&opts.Type), "type", string(agent.AgentTypeKubernetes),
+		`Edge type: "kubernetes" (Kubernetes cluster) or "server" (bare-metal/systemd host with SSH access)`)
+	// --mode is a deprecated alias for --type; kept for backward compatibility.
+	cmd.Flags().StringVar((*string)(&opts.Mode), "mode", "", //nolint:staticcheck
+		`Deprecated: use --type. Agent mode: "site" (→ kubernetes) or "server"`)
+	if err := cmd.Flags().MarkDeprecated("mode", "use --type instead (kubernetes|server)"); err != nil {
+		panic(err)
+	}
 
 	return cmd
 }

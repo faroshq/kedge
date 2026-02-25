@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package agent implements the kedge agent that connects sites to the hub.
+// Package agent implements the kedge agent that connects edges to the hub.
 package agent
 
 import (
@@ -36,16 +36,53 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
-// AgentMode controls whether the agent registers as a Kubernetes Site or a bare-metal Server.
-type AgentMode string
+// AgentType discriminates whether the agent connects a Kubernetes cluster or a
+// bare-metal / systemd server to the hub.
+type AgentType string
 
 const (
-	// AgentModeSite is the default mode: connects a Kubernetes cluster to the hub.
-	AgentModeSite AgentMode = "site"
-	// AgentModeServer is the systemd/bare-metal mode: connects a non-k8s host
-	// to the hub, exposing SSH access via the reverse tunnel.
-	AgentModeServer AgentMode = "server"
+	// AgentTypeKubernetes connects a Kubernetes cluster (registers an Edge with spec.type=kubernetes).
+	AgentTypeKubernetes AgentType = "kubernetes"
+	// AgentTypeServer connects a bare-metal / systemd host via SSH
+	// (registers an Edge with spec.type=server).
+	AgentTypeServer AgentType = "server"
 )
+
+// Deprecated mode aliases kept for backward-compatibility with existing callers.
+const (
+	// AgentModeSite is deprecated; use AgentTypeKubernetes.
+	AgentModeSite AgentType = "site"
+	// AgentModeServer is deprecated; use AgentTypeServer.
+	// Note: "server" maps to both AgentTypeServer and AgentModeServer; they are
+	// the same string and the alias exists purely for semantic documentation.
+	AgentModeServer = AgentTypeServer
+)
+
+// AgentMode is a deprecated type alias kept so that old code compiling against
+// this package (e.g. "opts.Mode = agent.AgentModeSite") still works.
+//
+// Deprecated: use AgentType.
+type AgentMode = AgentType
+
+// resolveType normalises a raw --type / --mode flag value to a canonical AgentType.
+// Deprecated mode aliases are mapped to their canonical equivalents:
+//   - "site"   → AgentTypeKubernetes
+//   - "server" → AgentTypeServer   (also the canonical value, not just an alias)
+func resolveType(raw string) (AgentType, error) {
+	switch raw {
+	case string(AgentTypeKubernetes), "site":
+		return AgentTypeKubernetes, nil
+	case string(AgentTypeServer):
+		return AgentTypeServer, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid type %q: must be %q or %q (deprecated aliases: %q, %q)",
+			raw,
+			string(AgentTypeKubernetes), string(AgentTypeServer),
+			string(AgentModeSite), string(AgentModeServer),
+		)
+	}
+}
 
 // Options holds configuration for the agent.
 type Options struct {
@@ -58,8 +95,16 @@ type Options struct {
 	Kubeconfig    string
 	Context       string
 	Labels        map[string]string
-	// Mode controls whether the agent registers as a Site (k8s cluster) or a
-	// Server (bare-metal / systemd host). Defaults to AgentModeSite.
+	// Type controls whether the agent registers as a Kubernetes edge or a
+	// Server edge. Defaults to AgentTypeKubernetes.
+	Type AgentType
+	// Mode is a deprecated alias for Type. When both are set and non-zero,
+	// Mode is used only if Type is still the default (AgentTypeKubernetes)
+	// or empty, otherwise Type takes precedence.
+	//
+	// Supported values: "site" (→ kubernetes), "server" (→ server).
+	//
+	// Deprecated: use Type.
 	Mode AgentMode
 	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
 	// connection. Should only be used in development/testing; never in production.
@@ -73,14 +118,15 @@ type Options struct {
 func NewOptions() *Options {
 	return &Options{
 		Labels:       make(map[string]string),
-		Mode:         AgentModeSite,
+		Type:         AgentTypeKubernetes,
 		SSHProxyPort: 22,
 	}
 }
 
-// Agent is the kedge agent that connects a site or server to the hub.
+// Agent is the kedge agent that connects an edge to the hub.
 type Agent struct {
 	opts             *Options
+	agentType        AgentType
 	hubConfig        *rest.Config
 	hubTLSConfig     *tls.Config
 	downstreamConfig *rest.Config // nil in server mode
@@ -91,13 +137,25 @@ func New(opts *Options) (*Agent, error) {
 	if opts.SiteName == "" {
 		return nil, fmt.Errorf("site name is required")
 	}
-	if opts.Mode != AgentModeSite && opts.Mode != AgentModeServer {
-		return nil, fmt.Errorf("invalid mode %q: must be %q or %q", string(opts.Mode), string(AgentModeSite), string(AgentModeServer))
+
+	// Resolve effective type: explicit Type takes precedence over deprecated Mode.
+	// If Type is still the default and Mode is explicitly set, honour Mode.
+	rawType := string(opts.Type)
+	if (rawType == "" || rawType == string(AgentTypeKubernetes)) &&
+		opts.Mode != "" && opts.Mode != AgentTypeKubernetes {
+		rawType = string(opts.Mode)
+	}
+	if rawType == "" {
+		rawType = string(AgentTypeKubernetes)
 	}
 
-	// Build hub config
+	agentType, err := resolveType(rawType)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build hub config.
 	var hubConfig *rest.Config
-	var err error
 	if opts.HubKubeconfig != "" {
 		rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: opts.HubKubeconfig}
 		overrides := &clientcmd.ConfigOverrides{}
@@ -130,12 +188,13 @@ func New(opts *Options) (*Agent, error) {
 
 	a := &Agent{
 		opts:         opts,
+		agentType:    agentType,
 		hubConfig:    hubConfig,
 		hubTLSConfig: hubTLSConfig,
 	}
 
 	// In server mode there is no downstream Kubernetes cluster to connect to.
-	if opts.Mode == AgentModeSite {
+	if agentType == AgentTypeKubernetes {
 		rules := clientcmd.NewDefaultClientConfigLoadingRules()
 		if opts.Kubeconfig != "" {
 			rules.ExplicitPath = opts.Kubeconfig
@@ -158,7 +217,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting kedge agent",
 		"siteName", a.opts.SiteName,
-		"mode", a.opts.Mode,
+		"type", a.agentType,
 		"labels", a.opts.Labels,
 	)
 
@@ -168,30 +227,30 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	hubClient := kedgeclient.NewFromDynamic(hubDynamic)
 
-	if a.opts.Mode == AgentModeServer {
+	if a.agentType == AgentTypeServer {
 		return a.runServerMode(ctx, logger, hubClient)
 	}
-	return a.runSiteMode(ctx, logger, hubClient)
+	return a.runKubernetesMode(ctx, logger, hubClient)
 }
 
-// runSiteMode is the original Kubernetes-cluster mode.
-func (a *Agent) runSiteMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
+// runKubernetesMode is the Kubernetes-cluster edge mode.
+func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
 	downstreamClient, err := kubernetes.NewForConfig(a.downstreamConfig)
 	if err != nil {
 		return fmt.Errorf("creating downstream client: %w", err)
 	}
 
-	if err := a.registerSite(ctx, hubClient); err != nil {
-		return fmt.Errorf("registering site: %w", err)
+	if err := a.registerEdge(ctx, hubClient); err != nil {
+		return fmt.Errorf("registering edge: %w", err)
 	}
-	logger.Info("Site registered")
+	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
 
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
 		tunnelURL = a.hubConfig.Host
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "sites", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -200,14 +259,14 @@ func (a *Agent) runSiteMode(ctx context.Context, logger klog.Logger, hubClient *
 		}
 	}()
 
-	reporter := agentStatus.NewReporter(a.opts.SiteName, hubClient, downstreamClient)
+	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
-			logger.Error(err, "Status reporter failed")
+			logger.Error(err, "Edge status reporter failed")
 		}
 	}()
 
-	logger.Info("Agent started successfully (site mode)")
+	logger.Info("Agent started successfully (kubernetes mode)")
 	<-ctx.Done()
 	logger.Info("Agent shutting down")
 	return nil
@@ -215,10 +274,10 @@ func (a *Agent) runSiteMode(ctx context.Context, logger klog.Logger, hubClient *
 
 // runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
 func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
-	if err := a.registerServer(ctx, hubClient); err != nil {
-		return fmt.Errorf("registering server: %w", err)
+	if err := a.registerEdge(ctx, hubClient); err != nil {
+		return fmt.Errorf("registering edge: %w", err)
 	}
-	logger.Info("Server registered")
+	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
 
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
@@ -226,12 +285,12 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 	tunnelState := make(chan bool, 1)
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "servers", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
 
-	reporter := agentStatus.NewServerReporter(a.opts.SiteName, hubClient, tunnelState)
+	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
-			logger.Error(err, "Server status reporter failed")
+			logger.Error(err, "Edge status reporter failed")
 		}
 	}()
 
@@ -241,82 +300,49 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	return nil
 }
 
-func (a *Agent) registerSite(ctx context.Context, client *kedgeclient.Client) error {
+// registerEdge ensures an Edge resource exists on the hub with the correct type.
+func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) error {
 	logger := klog.FromContext(ctx)
 
-	site := &kedgev1alpha1.Site{
+	edgeType := kedgev1alpha1.EdgeTypeKubernetes
+	if a.agentType == AgentTypeServer {
+		edgeType = kedgev1alpha1.EdgeTypeServer
+	}
+
+	edge := &kedgev1alpha1.Edge{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
-			Kind:       "Site",
+			Kind:       "Edge",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   a.opts.SiteName,
 			Labels: a.opts.Labels,
 		},
-		Spec: kedgev1alpha1.SiteSpec{
-			DisplayName: a.opts.SiteName,
+		Spec: kedgev1alpha1.EdgeSpec{
+			Type: edgeType,
 		},
 	}
 
-	existing, err := client.Sites().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
+	existing, err := client.Edges().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
 	if err != nil {
-		logger.Info("Creating Site", "name", a.opts.SiteName)
-		_, err := client.Sites().Create(ctx, site, metav1.CreateOptions{})
+		logger.Info("Creating Edge", "name", a.opts.SiteName, "type", edgeType)
+		_, err := client.Edges().Create(ctx, edge, metav1.CreateOptions{})
 		if err != nil {
-			return fmt.Errorf("creating site: %w", err)
+			return fmt.Errorf("creating edge: %w", err)
 		}
 	} else {
-		logger.Info("Updating Site", "name", a.opts.SiteName)
+		logger.Info("Updating Edge", "name", a.opts.SiteName, "type", edgeType)
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string)
 		}
 		for k, v := range a.opts.Labels {
 			existing.Labels[k] = v
 		}
-		_, err := client.Sites().Update(ctx, existing, metav1.UpdateOptions{})
+		// Ensure spec.type is kept in sync.
+		existing.Spec.Type = edgeType
+		_, err := client.Edges().Update(ctx, existing, metav1.UpdateOptions{})
 		if err != nil {
-			return fmt.Errorf("updating site: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func (a *Agent) registerServer(ctx context.Context, client *kedgeclient.Client) error {
-	logger := klog.FromContext(ctx)
-
-	server := &kedgev1alpha1.Server{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
-			Kind:       "Server",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   a.opts.SiteName,
-			Labels: a.opts.Labels,
-		},
-		Spec: kedgev1alpha1.ServerSpec{
-			DisplayName: a.opts.SiteName,
-		},
-	}
-
-	existing, err := client.Servers().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
-	if err != nil {
-		logger.Info("Creating Server", "name", a.opts.SiteName)
-		_, err := client.Servers().Create(ctx, server, metav1.CreateOptions{})
-		if err != nil {
-			return fmt.Errorf("creating server: %w", err)
-		}
-	} else {
-		logger.Info("Updating Server", "name", a.opts.SiteName)
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string)
-		}
-		for k, v := range a.opts.Labels {
-			existing.Labels[k] = v
-		}
-		_, err := client.Servers().Update(ctx, existing, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("updating server: %w", err)
+			return fmt.Errorf("updating edge: %w", err)
 		}
 	}
 

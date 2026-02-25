@@ -75,7 +75,7 @@ func (s *ServerProcess) Start(ctx context.Context) error {
 	s.agentCmd = exec.CommandContext(agentCtx,
 		s.AgentBin,
 		"agent", "join",
-		"--mode=server",
+		"--type=server",
 		"--hub-url="+s.HubURL,
 		"--token="+s.Token,
 		"--site-name="+s.ServerName,

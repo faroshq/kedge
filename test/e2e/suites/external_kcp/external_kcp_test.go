@@ -39,15 +39,15 @@ func TestStaticTokenLogin(t *testing.T) {
 	testenv.Test(t, cases.StaticTokenLogin())
 }
 
-// TestSiteLifecycle creates, lists, and deletes a site via the kedge CLI.
-func TestSiteLifecycle(t *testing.T) {
-	testenv.Test(t, cases.SiteLifecycle())
+// TestEdgeLifecycle creates, lists, and deletes an edge via kubectl.
+func TestEdgeLifecycle(t *testing.T) {
+	testenv.Test(t, cases.EdgeLifecycle())
 }
 
-// TestAgentJoin starts a kedge-agent against the hub and verifies the site
+// TestAgentEdgeJoin starts a kedge-agent against the hub and verifies the edge
 // transitions to Ready with the proxy reachable.
-func TestAgentJoin(t *testing.T) {
-	testenv.Test(t, cases.AgentJoin())
+func TestAgentEdgeJoin(t *testing.T) {
+	testenv.Test(t, cases.AgentEdgeJoin())
 }
 
 // Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).

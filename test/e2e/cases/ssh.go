@@ -36,7 +36,7 @@ const (
 
 // SSHServerModeConnect verifies the full SSH path end-to-end:
 //  1. Start an embedded test SSH server + kedge agent (--mode=server) as subprocesses
-//  2. Wait for the Server resource to become Ready on the hub
+//  2. Wait for the Edge resource to become Ready on the hub
 //  3. Run `kedge ssh <name> -- echo <marker>` and verify the marker in output
 //  4. Verify interactive PTY (WebSocket, resize, keystrokes, output)
 //  5. Hold the session for the configured duration and assert it stays alive
@@ -63,13 +63,13 @@ func SSHServerModeConnect() features.Feature {
 
 			return framework.WithServerProcess(ctx, proc)
 		}).
-		Assess("server_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
 			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
 				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
-					"get", "servers", sshServerName,
-					"-o", "jsonpath={.status.phase},{.status.tunnelConnected}",
+					"get", "edges", sshServerName,
+					"-o", "jsonpath={.status.phase},{.status.connected}",
 				)
 				if err != nil {
 					return false, nil
@@ -80,7 +80,7 @@ func SSHServerModeConnect() features.Feature {
 				if proc != nil {
 					t.Logf("agent logs:\n%s", proc.Logs())
 				}
-				t.Fatalf("Server %s did not become Ready within 2 minutes", sshServerName)
+				t.Fatalf("Edge %s did not become Ready within 2 minutes", sshServerName)
 			}
 
 			return ctx
@@ -190,7 +190,7 @@ func SSHServerModeConnect() features.Feature {
 
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
-				"delete", "servers", sshServerName, "--ignore-not-found",
+				"delete", "edges", sshServerName, "--ignore-not-found",
 			)
 			return ctx
 		}).
@@ -227,20 +227,20 @@ func SSHDockerServerModeConnect() features.Feature {
 
 			return framework.WithServerContainer(ctx, container)
 		}).
-		Assess("docker_server_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("docker_edge_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
 			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
 				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
-					"get", "servers", dockerServerName,
-					"-o", "jsonpath={.status.phase},{.status.tunnelConnected}",
+					"get", "edges", dockerServerName,
+					"-o", "jsonpath={.status.phase},{.status.connected}",
 				)
 				if err != nil {
 					return false, nil
 				}
 				return strings.TrimSpace(out) == "Ready,true", nil
 			}); err != nil {
-				t.Fatalf("Docker Server %s did not become Ready", dockerServerName)
+				t.Fatalf("Docker Edge %s did not become Ready", dockerServerName)
 			}
 
 			return ctx
@@ -272,7 +272,7 @@ func SSHDockerServerModeConnect() features.Feature {
 
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
-				"delete", "servers", dockerServerName, "--ignore-not-found",
+				"delete", "edges", dockerServerName, "--ignore-not-found",
 			)
 			return ctx
 		}).

@@ -25,11 +25,11 @@ import (
 // The tests below delegate to shared case builders so the same logic runs
 // in every suite that imports cases/. Suite-specific setup lives in main_test.go.
 
-func TestHubHealth(t *testing.T)        { testenv.Test(t, cases.HubHealth()) }
-func TestStaticTokenLogin(t *testing.T) { testenv.Test(t, cases.StaticTokenLogin()) }
-func TestSiteLifecycle(t *testing.T)    { testenv.Test(t, cases.SiteLifecycle()) }
-func TestAgentJoin(t *testing.T)        { testenv.Test(t, cases.AgentJoin()) }
-func TestTunnelResilience(t *testing.T) { testenv.Test(t, cases.TunnelResilience()) }
+func TestHubHealth(t *testing.T)            { testenv.Test(t, cases.HubHealth()) }
+func TestStaticTokenLogin(t *testing.T)     { testenv.Test(t, cases.StaticTokenLogin()) }
+func TestEdgeLifecycle(t *testing.T)        { testenv.Test(t, cases.EdgeLifecycle()) }
+func TestAgentEdgeJoin(t *testing.T)        { testenv.Test(t, cases.AgentEdgeJoin()) }
+func TestEdgeTunnelResilience(t *testing.T) { testenv.Test(t, cases.EdgeTunnelResilience()) }
 
 // Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }

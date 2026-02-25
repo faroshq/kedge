@@ -319,3 +319,121 @@ func (k *KedgeClient) ExtractSiteKubeconfig(ctx context.Context, siteName, destP
 		return true, nil
 	})
 }
+
+// ─── Edge resource helpers (Phase 5 — replaces Site / Server helpers) ────────
+
+// EdgeCreate creates an Edge resource via kubectl with the given name, type,
+// and optional comma-separated labels.
+// type must be "kubernetes" or "server".
+func (k *KedgeClient) EdgeCreate(ctx context.Context, name, edgeType string, labels ...string) error {
+	labelStr := strings.Join(labels, ",")
+	labelsYAML := ""
+	if labelStr != "" {
+		labelsYAML = "\n  labels:"
+		for _, kv := range strings.Split(labelStr, ",") {
+			parts := strings.SplitN(strings.TrimSpace(kv), "=", 2)
+			if len(parts) == 2 {
+				labelsYAML += "\n    " + parts[0] + ": " + parts[1]
+			}
+		}
+	}
+
+	manifest := fmt.Sprintf(`apiVersion: kedge.faros.sh/v1alpha1
+kind: Edge
+metadata:
+  name: %s%s
+spec:
+  type: %s
+`, name, labelsYAML, edgeType)
+
+	return k.ApplyManifest(ctx, manifest)
+}
+
+// EdgeList returns raw kubectl output for listing all edges.
+func (k *KedgeClient) EdgeList(ctx context.Context) (string, error) {
+	return k.Kubectl(ctx,
+		"get", "edges",
+		"-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase,CONNECTED:.status.connected",
+		"--no-headers",
+		"--insecure-skip-tls-verify",
+	)
+}
+
+// EdgeDelete deletes an Edge resource by name.
+func (k *KedgeClient) EdgeDelete(ctx context.Context, name string) error {
+	_, err := k.Kubectl(ctx,
+		"delete", "edge", name,
+		"--ignore-not-found",
+		"--insecure-skip-tls-verify",
+	)
+	return err
+}
+
+// WaitForEdgeReady polls until the given Edge resource has phase "Ready".
+func (k *KedgeClient) WaitForEdgeReady(ctx context.Context, edgeName string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "edge", edgeName,
+			"-o", "jsonpath={.status.phase}",
+			"--insecure-skip-tls-verify",
+		)
+		if err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(out) == "Ready", nil
+	})
+}
+
+// WaitForEdgePhase polls until the given Edge resource has the expected phase.
+func (k *KedgeClient) WaitForEdgePhase(ctx context.Context, edgeName, phase string, timeout time.Duration) error {
+	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "edge", edgeName,
+			"-o", "jsonpath={.status.phase}",
+			"--insecure-skip-tls-verify",
+		)
+		if err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(out) == phase, nil
+	})
+}
+
+// ExtractEdgeKubeconfig waits for the edge kubeconfig secret to appear in the
+// hub cluster and writes the base64-decoded content to destPath.
+// Secret name format: edge-<edgeName>-kubeconfig in namespace kedge-system.
+func (k *KedgeClient) ExtractEdgeKubeconfig(ctx context.Context, edgeName, destPath string) error {
+	secretName := "edge-" + edgeName + "-kubeconfig"
+
+	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "secret", secretName,
+			"-n", "kedge-system",
+			"-o", "json",
+		)
+		if err != nil || out == "" {
+			return false, nil
+		}
+
+		var secret struct {
+			Data map[string]string `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(out), &secret); err != nil {
+			return false, nil
+		}
+		encoded, ok := secret.Data["kubeconfig"]
+		if !ok || encoded == "" {
+			return false, nil
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return false, nil
+		}
+
+		if err := os.WriteFile(destPath, decoded, 0600); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+}

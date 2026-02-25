@@ -56,7 +56,7 @@ type SSHWebSocketClient struct {
 	msgs chan []byte
 }
 
-// DialSSH connects to the hub SSH WebSocket endpoint for the given server/site name.
+// DialSSH connects to the hub SSH WebSocket endpoint for the given edge name.
 // kubeconfig is used to extract the hub URL and bearer token.
 func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -80,7 +80,7 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 	default:
 		u.Scheme = "wss"
 	}
-	u.Path = fmt.Sprintf("/proxy/apis/kedge.faros.sh/v1alpha1/sites/%s/ssh", name)
+	u.Path = fmt.Sprintf("/services/edges-proxy/clusters/default/apis/kedge.faros.sh/v1alpha1/edges/%s/ssh", name)
 	wsURL := u.String()
 
 	headers := http.Header{}

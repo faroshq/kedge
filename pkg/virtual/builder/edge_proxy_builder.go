@@ -126,9 +126,12 @@ func (p *virtualWorkspaces) buildEdgeProxyHandler() http.Handler {
 }
 
 // getKey creates a unique connection-manager key for a Site tunnel.
-// Format: "<clusterName>/sites/<siteName>"
+// Format: "<clusterName>/<siteName>"
+// This is the original format kept intentionally simple for sites; servers use
+// getServerKey() with a "/servers/" infix to avoid aliasing a Site and a Server
+// that share the same name.
 func (p *virtualWorkspaces) getKey(clusterName, siteName string) string {
-	return clusterName + "/sites/" + siteName
+	return clusterName + "/" + siteName
 }
 
 // getServerKey creates a unique connection-manager key for a Server tunnel.

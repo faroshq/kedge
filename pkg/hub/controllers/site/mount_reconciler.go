@@ -98,8 +98,8 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 
 	routeKey := req.ClusterName + ":" + site.Name
 	// tunnelKey must match the key stored by the edge-proxy handler in the
-	// connection manager: "<clusterName>/sites/<siteName>".
-	tunnelKey := req.ClusterName + "/sites/" + site.Name
+	// connection manager: "<clusterName>/<siteName>".
+	tunnelKey := req.ClusterName + "/" + site.Name
 
 	// Register in route map so the site proxy handler can find this site.
 	r.siteRoutes.Set(routeKey, tunnelKey)

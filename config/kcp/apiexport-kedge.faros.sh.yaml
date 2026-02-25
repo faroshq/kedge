@@ -64,6 +64,11 @@ spec:
     - delete
   resources:
   - group: kedge.faros.sh
+    name: edges
+    schema: v260225-fa2316e.edges.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
     name: placements
     schema: v260217-7570c9b.placements.kedge.faros.sh
     storage:

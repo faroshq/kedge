@@ -47,6 +47,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&SiteList{},
 		&Placement{},
 		&PlacementList{},
+		&Edge{},
+		&EdgeList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package builder constructs virtual workspace HTTP handlers for the kedge hub.
 package builder
 
 import (
 	"net/http"
-	"sync"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -26,38 +26,12 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 )
 
-// SiteRouteMap maps URL route keys to connManager tunnel keys.
-// Route key format: "{clusterName}:{siteName}" (used in URL path).
-// Tunnel key format: "{clusterName}/{siteName}" (used by connManager).
-type SiteRouteMap struct {
-	routes sync.Map
-}
-
-// NewSiteRouteMap creates a new SiteRouteMap.
-func NewSiteRouteMap() *SiteRouteMap { return &SiteRouteMap{} }
-
-// Set registers a mapping from route key to tunnel key.
-func (m *SiteRouteMap) Set(routeKey, tunnelKey string) {
-	m.routes.Store(routeKey, tunnelKey)
-}
-
-// Get looks up the tunnel key for a route key.
-func (m *SiteRouteMap) Get(routeKey string) (string, bool) {
-	v, ok := m.routes.Load(routeKey)
-	if !ok {
-		return "", false
-	}
-	return v.(string), true
-}
-
 // virtualWorkspaces holds state and dependencies for all virtual workspaces.
 type virtualWorkspaces struct {
-	rootPathPrefix  string
 	connManager     *connman.ConnectionManager
 	edgeConnManager *ConnManager        // shared between agent-proxy-v2 and edges-proxy builders
 	kcpConfig       *rest.Config        // kcp rest config for token verification (nil if kcp not configured)
 	staticTokens    map[string]struct{} // static tokens that bypass JWT SA requirement
-	siteRoutes      *SiteRouteMap
 	logger          klog.Logger
 }
 
@@ -67,9 +41,8 @@ type VirtualWorkspaceHandlers struct {
 }
 
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
-// kcpConfig is required for SA token authorization against kcp. A nil
-// kcpConfig causes the site-proxy handler to reject all requests with 503.
-func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, siteRoutes *SiteRouteMap, staticTokens []string, logger klog.Logger) *VirtualWorkspaceHandlers {
+// kcpConfig is required for SA token authorization against kcp.
+func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, staticTokens []string, logger klog.Logger) *VirtualWorkspaceHandlers {
 	staticTokenSet := make(map[string]struct{}, len(staticTokens))
 	for _, t := range staticTokens {
 		staticTokenSet[t] = struct{}{}
@@ -79,26 +52,10 @@ func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config,
 			connManager:     cm,
 			edgeConnManager: NewConnManager(),
 			kcpConfig:       kcpConfig,
-			siteRoutes:      siteRoutes,
 			staticTokens:    staticTokenSet,
 			logger:          logger.WithName("virtual-workspaces"),
 		},
 	}
-}
-
-// EdgeProxyHandler returns the HTTP handler for agent tunnel registration.
-func (h *VirtualWorkspaceHandlers) EdgeProxyHandler() http.Handler {
-	return h.vws.buildEdgeProxyHandler()
-}
-
-// AgentProxyHandler returns the HTTP handler for accessing agent resources.
-func (h *VirtualWorkspaceHandlers) AgentProxyHandler() http.Handler {
-	return h.vws.buildAgentProxyHandler()
-}
-
-// SiteProxyHandler returns the handler for proxying kube API to sites via reverse tunnels.
-func (h *VirtualWorkspaceHandlers) SiteProxyHandler() http.Handler {
-	return h.vws.buildSiteProxyHandler()
 }
 
 // EdgeAgentProxyHandler returns the handler for Edge agent tunnel registration.

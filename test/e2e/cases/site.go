@@ -205,12 +205,3 @@ func EdgeTunnelResilience() features.Feature {
 		}).
 		Feature()
 }
-
-// Deprecated: Use EdgeLifecycle instead.
-func SiteLifecycle() features.Feature { return EdgeLifecycle() }
-
-// Deprecated: Use AgentEdgeJoin instead.
-func AgentJoin() features.Feature { return AgentEdgeJoin() }
-
-// Deprecated: Use EdgeTunnelResilience instead.
-func TunnelResilience() features.Feature { return EdgeTunnelResilience() }

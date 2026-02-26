@@ -39,7 +39,6 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/site"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
@@ -204,13 +203,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
-	siteRoutes := builder.NewSiteRouteMap()
-	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, siteRoutes, s.opts.StaticAuthTokens, logger)
-	router.PathPrefix("/tunnel/").Handler(http.StripPrefix("/tunnel", vws.EdgeProxyHandler()))
-	router.PathPrefix("/proxy/").Handler(http.StripPrefix("/proxy", vws.AgentProxyHandler()))
-	router.PathPrefix("/services/site-proxy/").Handler(http.StripPrefix("/services/site-proxy", vws.SiteProxyHandler()))
-
-	// Phase 3: new Edge virtual workspace builders (alongside existing builders; Phase 5 cleanup).
+	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, logger)
 	router.PathPrefix("/services/agent-proxy/").Handler(http.StripPrefix("/services/agent-proxy", vws.EdgeAgentProxyHandler()))
 	router.PathPrefix("/services/edges-proxy/").Handler(http.StripPrefix("/services/edges-proxy", vws.EdgesProxyHandler()))
 
@@ -273,17 +266,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := status.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up status aggregator: %w", err)
 		}
-		if err := site.SetupLifecycleWithManager(mgr); err != nil {
-			return fmt.Errorf("setting up site lifecycle controller: %w", err)
-		}
-		if err := site.SetupRBACWithManager(mgr, s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up site RBAC controller: %w", err)
-		}
-		if err := site.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL, siteRoutes); err != nil {
-			return fmt.Errorf("setting up site mount controller: %w", err)
-		}
-
-		// Edge controllers (Phase 2 — replaces site controllers for Edge resources).
+		// Edge controllers.
 		if err := edge.SetupLifecycleWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up edge lifecycle controller: %w", err)
 		}

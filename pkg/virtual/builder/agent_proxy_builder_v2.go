@@ -17,6 +17,7 @@ limitations under the License.
 package builder
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -121,6 +122,11 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		<-dialer.Done()
 		p.edgeConnManager.Delete(key)
 		p.logger.Info("Edge agent tunnel closed", "key", key)
+
+		// Proactively mark the Edge as Disconnected in the hub.  Agents may die
+		// without sending a clean disconnect heartbeat (e.g. SIGKILL), so the
+		// hub must be the authoritative source for connectivity state.
+		go p.markEdgeDisconnected(context.Background(), cluster, name)
 	})
 
 	return mux

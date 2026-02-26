@@ -1,5 +1,8 @@
 # Binaries
 bin/
+kedge
+kedge-hub
+kedge-agent
 *.exe
 *.exe~
 *.dll

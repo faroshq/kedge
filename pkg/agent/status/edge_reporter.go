@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package status reports agent status back to the hub.
 package status
 
 import (
@@ -27,6 +28,11 @@ import (
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+)
+
+const (
+	// HeartbeatInterval is how often the agent sends heartbeats to the hub.
+	HeartbeatInterval = 30 * time.Second
 )
 
 // EdgeReporter sends heartbeats for an Edge resource.

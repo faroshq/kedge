@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-site-create dev-create-workload dev-run-agent dev-server-create dev-run-server-agent dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -148,15 +148,10 @@ dev-login: build-kedge
 dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
 	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
-DEV_SITE_NAME ?= dev-site-1
-DEV_SERVER_NAME ?= dev-server-1
 DEV_EDGE_NAME ?= dev-edge-1
 # TYPE selects the Edge type for dev-edge-create and dev-run-edge.
 # Values: kubernetes (default) | server
 TYPE ?= kubernetes
-
-## New unified Edge targets (replaces dev-site-create / dev-run-agent and
-## dev-server-create / dev-run-server-agent).
 
 dev-edge-create: build-kedge ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
@@ -187,44 +182,8 @@ dev-create-workload: ## Create a demo VirtualWorkload targeting dev sites
 	kubectl apply -f hack/dev/examples/virtualworkload-nginx.yaml
 
 -include .env
--include .env.server
 -include .env.edge
 export
-
-## Deprecated targets — kept for backward compatibility.
-## Please migrate to the equivalent 'dev-edge-*' targets.
-
-dev-site-create: ## [DEPRECATED] Use 'make dev-edge-create TYPE=kubernetes' instead
-	@echo "WARNING: dev-site-create is deprecated. Use 'make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=$(DEV_SITE_NAME)'" >&2
-	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-site-setup.sh $(DEV_SITE_NAME) "env=dev,provider=local"
-
-dev-run-agent: ## [DEPRECATED] Use 'make dev-run-edge TYPE=kubernetes' instead
-	@echo "WARNING: dev-run-agent is deprecated. Use 'make dev-run-edge TYPE=kubernetes'" >&2
-	@test -f .env || (echo "Run 'make dev-site-create' first"; exit 1)
-	hack/scripts/ensure-kind-cluster.sh
-	$(BINDIR)/kedge-agent join \
-		--hub-kubeconfig=$(KEDGE_SITE_KUBECONFIG) \
-		--kubeconfig=.kubeconfig-kedge-agent \
-		--tunnel-url=https://localhost:8443 \
-		--site-name=$(KEDGE_SITE_NAME) \
-		--labels=$(KEDGE_LABELS)
-
-dev-server-create: ## [DEPRECATED] Use 'make dev-edge-create TYPE=server' instead
-	@echo "WARNING: dev-server-create is deprecated. Use 'make dev-edge-create TYPE=server DEV_EDGE_NAME=$(DEV_SERVER_NAME)'" >&2
-	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-server-setup.sh $(DEV_SERVER_NAME) "env=dev,provider=bare-metal"
-
-dev-run-server-agent: ## [DEPRECATED] Use 'make dev-run-edge TYPE=server' instead
-	@echo "WARNING: dev-run-server-agent is deprecated. Use 'make dev-run-edge TYPE=server'" >&2
-	@test -f .env.server || (echo "Run 'make dev-server-create' first"; exit 1)
-	$(BINDIR)/kedge-agent \
-		--hub-url=https://localhost:8443 \
-		--insecure-skip-tls-verify \
-		--token=$(STATIC_AUTH_TOKEN) \
-		--tunnel-url=https://localhost:8443 \
-		--site-name=$(KEDGE_SERVER_NAME) \
-		--labels=$(KEDGE_SERVER_LABELS) \
-		--mode=server
-
 
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)
 	hack/scripts/dev-infra.sh

@@ -31,8 +31,8 @@ Built on [kcp](https://github.com/kcp-dev/kcp) for multi-tenant workspace isolat
 
 | Resource | Scope | Description |
 |---|---|---|
-| `Site` | Cluster | A connected Kubernetes cluster |
-| `Server` | Cluster | A non-Kubernetes host (bare metal, VM) reachable via SSH through the hub |
+| `Edge` (`type: kubernetes`) | Cluster | A connected Kubernetes cluster |
+| `Edge` (`type: server`) | Cluster | A non-Kubernetes host (bare metal, VM) reachable via SSH through the hub |
 | `VirtualWorkload` | Namespace | Workload definition with placement rules |
 | `Placement` | Namespace | Binding of a workload to a specific site |
 
@@ -47,10 +47,10 @@ make build
 # Terminal 1: Run the hub (embedded kcp + static token auth)
 make run-hub-embedded-static
 
-# Terminal 2: Login and register a site
+# Terminal 2: Login and register an edge
 make dev-login-static    # Authenticate with static token
-make dev-site-create     # Register a site
-make dev-run-agent       # Start the agent on a local kind cluster
+make dev-edge-create     # Register an edge (default: kubernetes type)
+make dev-run-edge        # Start the agent on a local kind cluster
 ```
 
 That's it! The hub runs with embedded kcp and static token authentication — no external dependencies required.
@@ -85,14 +85,15 @@ Kedge can manage **non-Kubernetes hosts** — bare metal machines, VMs, or any s
 
 ### Setup
 
-**1. Register the server** (the agent does this automatically on first start, or create the CRD manually):
+**1. Register the edge** (the agent does this automatically on first start, or create the CRD manually):
 
 ```yaml
 apiVersion: kedge.faros.sh/v1alpha1
-kind: Server
+kind: Edge
 metadata:
   name: my-server
 spec:
+  type: server
   displayName: my-server
   hostname: my-server.example.com
   provider: bare-metal   # aws | gcp | onprem | bare-metal
@@ -106,24 +107,24 @@ kedge agent join \
   --hub-url https://hub.example.com \
   --token <bootstrap-token> \
   --site-name my-server \
-  --mode server
+  --type=server
 ```
 
-The `--mode server` flag skips the downstream Kubernetes config — only the SSH tunnel is started.
+The `--type=server` flag skips the downstream Kubernetes config — only the SSH tunnel is started.
 
 ### Developer Quick-Start
 
-Use the convenience `make` targets to try SSH server mode against a local dev hub (requires `make dev-login` first):
+Use the convenience `make` targets to try SSH server mode against a local dev hub (requires `make dev-login-static` first):
 
 ```bash
-# Terminal 1 — register a dev Server resource and write .env.server
-make dev-server-create
+# Terminal 1 — register a dev Edge (server type) resource and write .env.edge
+make dev-edge-create TYPE=server
 
 # Terminal 2 — start the agent in server mode (SSH reverse tunnel to localhost:22)
-make dev-run-server-agent
+make dev-run-edge TYPE=server
 ```
 
-These mirror the existing `make dev-site-create` / `make dev-run-agent` pattern. The server name defaults to `dev-server-1`; override with `DEV_SERVER_NAME=my-host make dev-server-create`.
+The edge name defaults to `dev-edge-1`; override with `DEV_EDGE_NAME=my-host make dev-edge-create TYPE=server`.
 
 ### Usage
 

@@ -99,47 +99,6 @@ func (k *KedgeClient) Login(ctx context.Context, token string) error {
 	return err
 }
 
-// SiteCreate creates a site with the given name and labels.
-func (k *KedgeClient) SiteCreate(ctx context.Context, name string, labels ...string) error {
-	args := []string{"site", "create", name}
-	if len(labels) > 0 {
-		args = append(args, "--labels", strings.Join(labels, ","))
-	}
-	_, err := k.run(ctx, args...)
-	return err
-}
-
-// SiteList returns the raw output of `kedge site list`.
-func (k *KedgeClient) SiteList(ctx context.Context) (string, error) {
-	return k.run(ctx, "site", "list")
-}
-
-// SiteDelete deletes a site by name.
-func (k *KedgeClient) SiteDelete(ctx context.Context, name string) error {
-	_, err := k.run(ctx, "site", "delete", name)
-	return err
-}
-
-// WaitForSiteReady polls until the given site appears with phase "Ready" in
-// `kedge site list` or the timeout expires. It avoids the substring-match
-// pitfall where "NotReady" would satisfy strings.Contains(…, "Ready").
-func (k *KedgeClient) WaitForSiteReady(ctx context.Context, siteName string, timeout time.Duration) error {
-	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
-		out, err := k.SiteList(ctx)
-		if err != nil {
-			return false, nil // not ready yet, retry
-		}
-		for _, line := range strings.Split(out, "\n") {
-			fields := strings.Fields(line)
-			// Expected columns: NAME STATUS K8S_VERSION PROVIDER REGION AGE
-			if len(fields) >= 2 && fields[0] == siteName && fields[1] == "Ready" {
-				return true, nil
-			}
-		}
-		return false, nil
-	})
-}
-
 // RunCmd runs an arbitrary command and returns its combined output (package-level helper).
 func RunCmd(ctx context.Context, name string, args ...string) (string, error) {
 	var buf bytes.Buffer
@@ -182,24 +141,6 @@ func (k *KedgeClient) Kubectl(ctx context.Context, args ...string) (string, erro
 func (k *KedgeClient) ApplyFile(ctx context.Context, path string) error {
 	_, err := k.Kubectl(ctx, "apply", "-f", path)
 	return err
-}
-
-// WaitForSitePhase polls until the given site has the expected phase in
-// `kedge site list` or the timeout expires.
-func (k *KedgeClient) WaitForSitePhase(ctx context.Context, siteName, phase string, timeout time.Duration) error {
-	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
-		out, err := k.SiteList(ctx)
-		if err != nil {
-			return false, nil // not ready yet, retry
-		}
-		for _, line := range strings.Split(out, "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && fields[0] == siteName && fields[1] == phase {
-				return true, nil
-			}
-		}
-		return false, nil
-	})
 }
 
 // ApplyManifest writes yaml to a temp file and applies it via kubectl.
@@ -279,45 +220,6 @@ func (k *KedgeClient) DeleteVirtualWorkload(ctx context.Context, name, namespace
 		"--ignore-not-found",
 	)
 	return err
-}
-
-// ExtractSiteKubeconfig waits for the site kubeconfig secret to appear in the
-// hub cluster and writes the base64-decoded content to destPath.
-// Secret name format: site-<siteName>-kubeconfig in namespace kedge-system.
-func (k *KedgeClient) ExtractSiteKubeconfig(ctx context.Context, siteName, destPath string) error {
-	secretName := "site-" + siteName + "-kubeconfig"
-
-	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
-		out, err := k.Kubectl(ctx,
-			"get", "secret", secretName,
-			"-n", "kedge-system",
-			"-o", "json",
-		)
-		if err != nil || out == "" {
-			return false, nil
-		}
-
-		var secret struct {
-			Data map[string]string `json:"data"`
-		}
-		if err := json.Unmarshal([]byte(out), &secret); err != nil {
-			return false, nil
-		}
-		encoded, ok := secret.Data["kubeconfig"]
-		if !ok || encoded == "" {
-			return false, nil
-		}
-
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return false, nil
-		}
-
-		if err := os.WriteFile(destPath, decoded, 0600); err != nil {
-			return false, err
-		}
-		return true, nil
-	})
 }
 
 // ─── Edge resource helpers (Phase 5 — replaces Site / Server helpers) ────────

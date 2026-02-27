@@ -235,7 +235,7 @@ func SetupClusters(workDir string) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after setup: %w", err)
 		}
 
@@ -316,7 +316,7 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 		// in Dex mode, so we authenticate with the test Dex user instead.
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
+		if err := WaitForEdgeAPIWithOIDC(apiCtx, workDir, DefaultHubURL); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after OIDC setup: %w", err)
 		}
 
@@ -377,7 +377,7 @@ func UseExistingClusters(workDir string) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("site API not ready for existing clusters: %w", err)
 		}
 
@@ -550,7 +550,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after external kcp setup: %w", err)
 		}
 
@@ -655,7 +655,7 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer apiCancel()
-		if err := WaitForSiteAPI(apiCtx, client, clusterEnv.Token); err != nil {
+		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("site API did not become available after setup: %w", err)
 		}
 

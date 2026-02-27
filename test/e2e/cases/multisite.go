@@ -473,10 +473,10 @@ func SiteReconnect() features.Feature {
 		Feature()
 }
 
-// SiteListAccuracyUnderChurn verifies that `kedge site list` accurately
+// EdgeListAccuracyUnderChurn verifies that `kedge edge list` accurately
 // reflects Ready / Disconnected state as agents stop and start.
-func SiteListAccuracyUnderChurn() features.Feature {
-	return features.New("site list accuracy under churn").
+func EdgeListAccuracyUnderChurn() features.Feature {
+	return features.New("edge list accuracy under churn").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			requireTwoAgentClusters(t, clusterEnv)

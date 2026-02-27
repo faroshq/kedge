@@ -56,8 +56,8 @@ func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedS
 func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
 func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
 func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
-func TestSiteListAccuracyUnderChurn(t *testing.T) {
-	testenv.Test(t, cases.SiteListAccuracyUnderChurn())
+func TestEdgeListAccuracyUnderChurn(t *testing.T) {
+	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
 }
 
 // TestKCPHealth verifies that the external kcp instance is reachable and
@@ -140,10 +140,10 @@ func TestKCPResilience(t *testing.T) {
 				t.Fatalf("kcp did not recover within timeout: %v", err)
 			}
 
-			// Verify the hub has reconnected: site list should succeed.
+			// Verify the hub has reconnected: edge list should succeed.
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			err = framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
-				_, err := client.SiteList(ctx)
+				_, err := client.EdgeList(ctx)
 				return err == nil, nil
 			})
 			if err != nil {

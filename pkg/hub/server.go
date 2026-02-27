@@ -39,6 +39,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
+	"github.com/faroshq/faros-kedge/pkg/hub/controllers/site"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
@@ -275,6 +276,10 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if err := edge.SetupMountWithManager(mgr, kcpConfig, s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up edge mount controller: %w", err)
+		}
+		// Site controllers.
+		if err := site.SetupHeartbeatWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up site heartbeat controller: %w", err)
 		}
 
 		go func() {

@@ -44,7 +44,7 @@ func vw(name, ns string, selector map[string]string, strategy kedgev1alpha1.Plac
 		Spec: kedgev1alpha1.VirtualWorkloadSpec{
 			Placement: kedgev1alpha1.PlacementSpec{
 				Strategy: strategy,
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: selector,
 				},
 			},

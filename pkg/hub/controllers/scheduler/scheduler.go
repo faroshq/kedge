@@ -30,13 +30,13 @@ const controllerName = "scheduler"
 
 // MatchEdges returns edges matching the given placement spec.
 func MatchEdges(edges []kedgev1alpha1.Edge, placement kedgev1alpha1.PlacementSpec) ([]kedgev1alpha1.Edge, error) {
-	if placement.SiteSelector == nil {
+	if placement.EdgeSelector == nil {
 		return edges, nil
 	}
 
-	selector, err := metav1.LabelSelectorAsSelector(placement.SiteSelector)
+	selector, err := metav1.LabelSelectorAsSelector(placement.EdgeSelector)
 	if err != nil {
-		return nil, fmt.Errorf("invalid site selector: %w", err)
+		return nil, fmt.Errorf("invalid edge selector: %w", err)
 	}
 
 	var matched []kedgev1alpha1.Edge

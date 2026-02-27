@@ -59,7 +59,7 @@ func TestMatchEdges(t *testing.T) {
 		{
 			name: "match prod env",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"env": "prod"},
 				},
 			},
@@ -68,7 +68,7 @@ func TestMatchEdges(t *testing.T) {
 		{
 			name: "match specific region",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"region": "us-east"},
 				},
 			},
@@ -77,7 +77,7 @@ func TestMatchEdges(t *testing.T) {
 		{
 			name: "match prod + us-east",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"env": "prod", "region": "us-east"},
 				},
 			},
@@ -86,7 +86,7 @@ func TestMatchEdges(t *testing.T) {
 		{
 			name: "no match",
 			placement: kedgev1alpha1.PlacementSpec{
-				SiteSelector: &metav1.LabelSelector{
+				EdgeSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"env": "dev"},
 				},
 			},

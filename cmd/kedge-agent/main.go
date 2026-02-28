@@ -67,6 +67,11 @@ func main() {
 		klog.Warning("failed to mark --mode as deprecated: ", err)
 	}
 	cmd.Flags().BoolVar(&opts.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification for hub connection (dev/test only)")
+	cmd.Flags().IntVar(&opts.SSHProxyPort, "ssh-proxy-port", 22, "Local SSH daemon port to proxy connections to")
+	cmd.Flags().StringVar(&opts.SSHUser, "ssh-user", "", "SSH username for server-type edges (default: current user)")
+	cmd.Flags().StringVar(&opts.SSHPassword, "ssh-password", "", "SSH password for password-based authentication (prefer --ssh-private-key for security)")
+	cmd.Flags().StringVar(&opts.SSHPrivateKeyPath, "ssh-private-key", "", "Path to SSH private key file for key-based authentication")
+	cmd.Flags().StringVar(&opts.Cluster, "cluster", "", "kcp logical cluster path (e.g., 'root:kedge:user-default'); required when using static token auth")
 
 	if err := cmd.Execute(); err != nil {
 		klog.Fatal(err)

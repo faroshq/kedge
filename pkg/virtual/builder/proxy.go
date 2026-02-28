@@ -20,18 +20,23 @@ package builder
 import (
 	"net/http"
 
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 )
 
 // virtualWorkspaces holds state and dependencies for all virtual workspaces.
 type virtualWorkspaces struct {
 	connManager     *connman.ConnectionManager
-	edgeConnManager *ConnManager        // shared between agent-proxy-v2 and edges-proxy builders
-	kcpConfig       *rest.Config        // kcp rest config for token verification (nil if kcp not configured)
-	staticTokens    map[string]struct{} // static tokens that bypass JWT SA requirement
+	edgeConnManager *ConnManager           // shared between agent-proxy-v2 and edges-proxy builders
+	kcpConfig       *rest.Config           // kcp rest config for token verification (nil if kcp not configured)
+	kcpK8sClient    kubernetes.Interface   // kubernetes client for fetching secrets
+	kedgeClient     *kedgeclient.Client    // kedge client for fetching Edge resources
+	staticTokens    map[string]struct{}    // static tokens that bypass JWT SA requirement
 	logger          klog.Logger
 }
 
@@ -41,21 +46,41 @@ type VirtualWorkspaceHandlers struct {
 }
 
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
-// kcpConfig is required for SA token authorization against kcp.
-func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, staticTokens []string, logger klog.Logger) *VirtualWorkspaceHandlers {
+// kcpConfig is required for SA token authorization against kcp and for fetching Edge resources/secrets.
+func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, staticTokens []string, logger klog.Logger) (*VirtualWorkspaceHandlers, error) {
 	staticTokenSet := make(map[string]struct{}, len(staticTokens))
 	for _, t := range staticTokens {
 		staticTokenSet[t] = struct{}{}
 	}
+
+	var kcpK8sClient kubernetes.Interface
+	var kedgeClient *kedgeclient.Client
+
+	if kcpConfig != nil {
+		var err error
+		kcpK8sClient, err = kubernetes.NewForConfig(kcpConfig)
+		if err != nil {
+			return nil, err
+		}
+
+		dynClient, err := dynamic.NewForConfig(kcpConfig)
+		if err != nil {
+			return nil, err
+		}
+		kedgeClient = kedgeclient.NewFromDynamic(dynClient)
+	}
+
 	return &VirtualWorkspaceHandlers{
 		vws: &virtualWorkspaces{
 			connManager:     cm,
 			edgeConnManager: NewConnManager(),
 			kcpConfig:       kcpConfig,
+			kcpK8sClient:    kcpK8sClient,
+			kedgeClient:     kedgeClient,
 			staticTokens:    staticTokenSet,
 			logger:          logger.WithName("virtual-workspaces"),
 		},
-	}
+	}, nil
 }
 
 // EdgeAgentProxyHandler returns the handler for Edge agent tunnel registration.

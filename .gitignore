@@ -62,3 +62,5 @@ site-kubeconfig
 .planning/logs/
 .planning/checkpoints/
 .env.server
+.edge-kubeconfig
+.env.edge

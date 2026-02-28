@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260225-fa2316e.edges.kedge.faros.sh
+  name: v260228-0f5e1a9.edges.kedge.faros.sh
 spec:
   group: kedge.faros.sh
   names:
@@ -111,6 +111,11 @@ spec:
         status:
           description: EdgeStatus defines the observed state of an Edge.
           properties:
+            URL:
+              description: |-
+                WorkspaceURL is the virtual workspace URL for this edge.
+                Only set for type=kubernetes edges.
+              type: string
             connected:
               description: Connected indicates whether the edge agent currently has
                 an active tunnel.
@@ -128,11 +133,47 @@ spec:
             phase:
               description: Phase describes the current lifecycle phase of the Edge.
               type: string
-            workspaceURL:
+            sshCredentials:
               description: |-
-                WorkspaceURL is the virtual workspace URL for this edge.
-                Only set for type=kubernetes edges.
-              type: string
+                SSHCredentials holds the SSH authentication credentials for server-type edges.
+                This is set by the agent and used by the hub for SSH connections.
+              properties:
+                passwordSecretRef:
+                  description: |-
+                    PasswordSecretRef references a Secret containing the SSH password.
+                    The secret must have a key named "password".
+                  properties:
+                    name:
+                      description: name is unique within a namespace to reference
+                        a secret resource.
+                      type: string
+                    namespace:
+                      description: namespace defines the space within which the secret
+                        name must be unique.
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                privateKeySecretRef:
+                  description: |-
+                    PrivateKeySecretRef references a Secret containing the SSH private key.
+                    The secret must have a key named "privateKey".
+                  properties:
+                    name:
+                      description: name is unique within a namespace to reference
+                        a secret resource.
+                      type: string
+                    namespace:
+                      description: namespace defines the space within which the secret
+                        name must be unique.
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                username:
+                  description: Username is the SSH username to authenticate as.
+                  type: string
+              required:
+              - username
+              type: object
           type: object
       type: object
     served: true

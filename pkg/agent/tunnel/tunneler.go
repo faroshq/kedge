@@ -49,7 +49,10 @@ import (
 // (bare-metal / systemd host agent). It controls the query parameter sent to
 // the hub's tunnel endpoint so that Sites and Servers are stored under
 // distinct connection-manager keys and never alias each other.
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) {
+//
+// cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
+// If empty, it's extracted from the token (for SA tokens) or defaults to "default".
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "siteName", siteName, "resourceType", resourceType)
 
@@ -68,7 +71,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, siteName, resourceType, downstream, tlsConfig, stateChannel, sshPort)
+		err := startTunneler(ctx, hubURL, token, siteName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -85,13 +88,15 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int) error {
+func startTunneler(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
-	// Extract the real kcp logical cluster name from the SA token so the tunnel
-	// key matches what the mount controller expects.
-	clusterName := extractClusterNameFromToken(token)
+	// Use explicit cluster if provided, otherwise extract from SA token.
+	clusterName := cluster
+	if clusterName == "" {
+		clusterName = extractClusterNameFromToken(token)
+	}
 
 	// All edge types (kubernetes and server) use the unified agent-proxy virtual
 	// workspace path introduced in Phase 3.

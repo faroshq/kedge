@@ -65,7 +65,7 @@ spec:
   resources:
   - group: kedge.faros.sh
     name: edges
-    schema: v260225-fa2316e.edges.kedge.faros.sh
+    schema: v260228-0f5e1a9.edges.kedge.faros.sh
     storage:
       crd: {}
   - group: kedge.faros.sh

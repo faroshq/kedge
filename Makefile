@@ -166,7 +166,11 @@ ifeq ($(TYPE),server)
 		--tunnel-url=https://localhost:8443 \
 		--site-name=$(KEDGE_EDGE_NAME) \
 		--labels=$(KEDGE_EDGE_LABELS) \
-		--type=server
+		--cluster=$(KEDGE_EDGE_CLUSTER) \
+		--type=server \
+		--ssh-proxy-port=2222 \
+		--ssh-user=kedge \
+		--ssh-password=password
 else
 	hack/scripts/ensure-kind-cluster.sh
 	$(BINDIR)/kedge-agent join \
@@ -219,6 +223,19 @@ run-dex: $(DEX) certs ## Run Dex OIDC server
 		DEX_PID=$$!; \
 		service_start dex $$DEX_PID; \
 		wait $$DEX_PID)
+
+dev-run-ssh-server:
+	docker run \
+  --name=openssh-server \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=Etc/UTC \
+  -e PASSWORD_ACCESS=true \
+  -e USER_PASSWORD=password \
+  -e USER_NAME=kedge \
+  -p 2222:2222 \
+  --restart unless-stopped \
+  lscr.io/linuxserver/openssh-server:latest
 
 # --- Hub configuration options ---
 # These can be combined to create different run configurations.

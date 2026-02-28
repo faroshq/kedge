@@ -203,7 +203,18 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 		{
 			APIGroups: []string{"kedge.faros.sh"},
 			Resources: []string{"edges", "edges/status"},
-			Verbs:     []string{"get", "list", "watch", "update", "patch"},
+			// "proxy" verb is required for accessing edge clusters through edges-proxy handler
+			Verbs: []string{"get", "list", "watch", "update", "patch", "proxy"},
+		},
+		{
+			APIGroups: []string{"kedge.faros.sh"},
+			Resources: []string{"placements"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"kedge.faros.sh"},
+			Resources: []string{"virtualworkloads", "virtualworkloads/status"},
+			Verbs:     []string{"get", "list", "watch"},
 		},
 	}
 }

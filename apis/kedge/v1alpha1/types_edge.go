@@ -131,12 +131,35 @@ type EdgeStatus struct {
 	// Hostname is the hostname reported by the connected edge agent.
 	Hostname string `json:"hostname,omitempty"`
 
-	// WorkspaceURL is the virtual workspace URL for this edge.
-	// Only set for type=kubernetes edges.
+	// URL is the proxy URL path for accessing this edge via the hub.
+	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
+	// For kubernetes edges, append /k8s/ for K8s API proxy.
+	// For server edges, append /ssh for SSH WebSocket terminal.
 	// +optional
-	WorkspaceURL string `json:"workspaceURL,omitempty"`
+	URL string `json:"URL,omitempty"`
 
 	// Labels are propagated from the edge agent (e.g. region, provider tags).
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
+
+	// SSHCredentials holds the SSH authentication credentials for server-type edges.
+	// This is set by the agent and used by the hub for SSH connections.
+	// +optional
+	SSHCredentials *SSHCredentials `json:"sshCredentials,omitempty"`
+}
+
+// SSHCredentials holds SSH authentication credentials for connecting to server-type edges.
+type SSHCredentials struct {
+	// Username is the SSH username to authenticate as.
+	Username string `json:"username"`
+
+	// PasswordSecretRef references a Secret containing the SSH password.
+	// The secret must have a key named "password".
+	// +optional
+	PasswordSecretRef *corev1.SecretReference `json:"passwordSecretRef,omitempty"`
+
+	// PrivateKeySecretRef references a Secret containing the SSH private key.
+	// The secret must have a key named "privateKey".
+	// +optional
+	PrivateKeySecretRef *corev1.SecretReference `json:"privateKeySecretRef,omitempty"`
 }

@@ -27,8 +27,12 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	utilssh "github.com/faroshq/faros-kedge/pkg/util/ssh"
 )
 
@@ -114,11 +118,12 @@ func (p *virtualWorkspaces) edgesK8sHandler(ctx context.Context, w http.Response
 
 	// Reverse-proxy to the agent's Kubernetes API server.
 	transport := &edgeDeviceConnTransport{conn: deviceConn}
+	path := extractEdgeK8sPath(r.URL.Path)
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "http"
 			req.URL.Host = "edge-agent"
-			req.URL.Path = extractEdgeK8sPath(r.URL.Path)
+			req.URL.Path = path // path already includes /k8s/ prefix
 		},
 		Transport: transport,
 	}
@@ -133,14 +138,20 @@ func (p *virtualWorkspaces) edgesSSHHandler(ctx context.Context, w http.Response
 }) {
 	logger := klog.FromContext(ctx)
 
-	// Derive the SSH username from the caller's bearer token.
-	token := extractBearerToken(r)
-	sshUser := sshUsernameFromToken(token)
+	// Parse cluster and edge name from the key (format: "edges/{cluster}/{name}")
+	cluster, edgeName := parseEdgeConnKey(key)
 
 	// Optional non-interactive exec mode (e.g. `kedge ssh <name> -- <cmd>`).
 	remoteCmd := r.URL.Query().Get("cmd")
 
-	logger.V(4).Info("Edges SSH handler", "key", key, "sshUser", sshUser, "exec", remoteCmd != "")
+	// Fetch SSH credentials from Edge status.
+	creds, err := p.fetchSSHCredentials(ctx, cluster, edgeName, logger)
+	if err != nil {
+		logger.Error(err, "failed to fetch SSH credentials", "key", key)
+		// Continue with nil credentials - will fall back to empty password auth
+	}
+
+	logger.V(4).Info("Edges SSH handler", "key", key, "hasCredentials", creds != nil, "exec", remoteCmd != "")
 
 	// Dial the agent via the reverse tunnel.
 	deviceConn, err := dialer.Dial(ctx)
@@ -171,7 +182,7 @@ func (p *virtualWorkspaces) edgesSSHHandler(ctx context.Context, w http.Response
 	defer wsConn.Close() //nolint:errcheck
 
 	// Build the SSH client over the tunnelled raw connection.
-	sshClient, err := newSSHClient(ctx, sshConn, sshUser, logger)
+	sshClient, err := newSSHClient(ctx, sshConn, creds, logger)
 	if err != nil {
 		logger.Error(err, "failed to create SSH client for edge")
 		return
@@ -195,6 +206,91 @@ func (p *virtualWorkspaces) edgesSSHHandler(ctx context.Context, w http.Response
 	if err := session.Run(ctx); err != nil {
 		logger.Error(err, "SSH session error for edge")
 	}
+}
+
+// parseEdgeConnKey extracts cluster and name from the connection key.
+// Key format: "edges/{cluster}/{name}"
+func parseEdgeConnKey(key string) (cluster, name string) {
+	parts := strings.Split(key, "/")
+	if len(parts) >= 3 && parts[0] == "edges" {
+		return parts[1], parts[2]
+	}
+	return "", ""
+}
+
+// fetchSSHCredentials retrieves SSH credentials from the Edge status and referenced secrets.
+// The cluster parameter is used to scope the kcp API calls to the correct logical cluster.
+func (p *virtualWorkspaces) fetchSSHCredentials(ctx context.Context, cluster, edgeName string, logger klog.Logger) (*SSHClientCredentials, error) {
+	if p.kcpConfig == nil {
+		logger.V(4).Info("No kcp config, skipping credential fetch")
+		return nil, nil
+	}
+
+	// Create cluster-scoped clients by modifying the host URL to include the cluster path.
+	clusterConfig := rest.CopyConfig(p.kcpConfig)
+	clusterConfig.Host = appendClusterPath(clusterConfig.Host, cluster)
+
+	kedgeClient, err := kedgeclient.NewForConfig(clusterConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating cluster-scoped kedge client: %w", err)
+	}
+
+	k8sClient, err := kubernetes.NewForConfig(clusterConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating cluster-scoped k8s client: %w", err)
+	}
+
+	// Fetch the Edge resource.
+	edge, err := kedgeClient.Edges().Get(ctx, edgeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("fetching edge %s: %w", edgeName, err)
+	}
+
+	if edge.Status.SSHCredentials == nil {
+		logger.V(4).Info("No SSH credentials configured for edge", "edge", edgeName)
+		return nil, nil
+	}
+
+	creds := &SSHClientCredentials{
+		Username: edge.Status.SSHCredentials.Username,
+	}
+
+	// Fetch password from secret if referenced.
+	if ref := edge.Status.SSHCredentials.PasswordSecretRef; ref != nil {
+		secret, err := k8sClient.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("fetching password secret %s/%s: %w", ref.Namespace, ref.Name, err)
+		}
+		if pw, ok := secret.Data["password"]; ok {
+			creds.Password = string(pw)
+		}
+	}
+
+	// Fetch private key from secret if referenced.
+	if ref := edge.Status.SSHCredentials.PrivateKeySecretRef; ref != nil {
+		secret, err := k8sClient.CoreV1().Secrets(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("fetching private key secret %s/%s: %w", ref.Namespace, ref.Name, err)
+		}
+		if key, ok := secret.Data["privateKey"]; ok {
+			creds.PrivateKey = key
+		}
+	}
+
+	logger.V(4).Info("Fetched SSH credentials", "edge", edgeName, "user", creds.Username,
+		"hasPassword", creds.Password != "", "hasPrivateKey", len(creds.PrivateKey) > 0)
+
+	return creds, nil
+}
+
+// appendClusterPath sets the /clusters/<path> segment on a kcp URL.
+// If the host already contains a /clusters/ path, it is replaced.
+func appendClusterPath(host, clusterPath string) string {
+	host = strings.TrimSuffix(host, "/")
+	if idx := strings.Index(host, "/clusters/"); idx != -1 {
+		host = host[:idx]
+	}
+	return host + "/clusters/" + clusterPath
 }
 
 // edgesHandleK8sUpgrade handles upgrade requests (exec, port-forward) to an
@@ -271,15 +367,19 @@ func parseEdgesProxyPath(path string) (cluster, name, subresource string, ok boo
 	return parts[1], parts[6], parts[7], true
 }
 
-// extractEdgeK8sPath strips the edges-proxy prefix from the request path so
-// that only the Kubernetes API path is forwarded to the agent.
+// extractEdgeK8sPath strips the edges-proxy prefix from the request path,
+// keeping the /k8s/ prefix that the agent expects.
 //
 // Input:  /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/k8s/api/v1/pods
-// Output: /api/v1/pods
+// Output: /k8s/api/v1/pods
 func extractEdgeK8sPath(path string) string {
 	idx := strings.Index(path, "/k8s/")
 	if idx >= 0 {
-		return path[idx+4:] // skip "/k8s", keep "/api/..."
+		return path[idx:] // keep "/k8s/api/..."
 	}
-	return "/"
+	// Handle case where path ends with just "/k8s" (no trailing slash)
+	if strings.HasSuffix(path, "/k8s") {
+		return "/k8s/"
+	}
+	return "/k8s/"
 }

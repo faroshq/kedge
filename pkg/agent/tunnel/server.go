@@ -138,6 +138,7 @@ func newSSHHandler(sshPort int) http.HandlerFunc {
 func k8sHandler(config *rest.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := klog.Background().WithName("k8s-handler")
+		logger.Info("K8s API request received", "path", r.URL.Path)
 
 		// Strip the /k8s prefix
 		k8sPath := strings.TrimPrefix(r.URL.Path, "/k8s")

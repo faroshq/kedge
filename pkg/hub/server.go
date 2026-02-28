@@ -203,7 +203,10 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Tunnel handlers (kcpConfig is used for SA token verification; nil if kcp not configured)
-	vws := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, logger)
+	vws, err := builder.NewVirtualWorkspaces(connManager, kcpConfig, s.opts.StaticAuthTokens, logger)
+	if err != nil {
+		return fmt.Errorf("creating virtual workspaces handlers: %w", err)
+	}
 	router.PathPrefix("/services/agent-proxy/").Handler(http.StripPrefix("/services/agent-proxy", vws.EdgeAgentProxyHandler()))
 	router.PathPrefix("/services/edges-proxy/").Handler(http.StripPrefix("/services/edges-proxy", vws.EdgesProxyHandler()))
 

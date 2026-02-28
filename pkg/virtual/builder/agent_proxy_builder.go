@@ -128,18 +128,55 @@ func (bc *bufferedConn) Read(b []byte) (int, error) {
 	return bc.reader.Read(b)
 }
 
+// SSHClientCredentials holds resolved SSH credentials for authentication.
+type SSHClientCredentials struct {
+	Username   string
+	Password   string // non-empty if password auth is available
+	PrivateKey []byte // non-empty if key auth is available
+}
+
 // newSSHClient creates an SSH client through a device connection.
-// sshUser is the Unix username to authenticate as on the remote host.
-func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, _ klog.Logger) (*gossh.Client, error) {
+// If creds is nil or empty, falls back to empty password authentication.
+func newSSHClient(_ context.Context, deviceConn net.Conn, creds *SSHClientCredentials, logger klog.Logger) (*gossh.Client, error) {
+	// Default to root user with empty password if no credentials provided.
+	sshUser := "root"
+	var authMethods []gossh.AuthMethod
+
+	if creds != nil && creds.Username != "" {
+		sshUser = creds.Username
+	}
+
+	if creds != nil {
+		// Prefer private key auth if available.
+		if len(creds.PrivateKey) > 0 {
+			signer, err := gossh.ParsePrivateKey(creds.PrivateKey)
+			if err != nil {
+				return nil, fmt.Errorf("parsing SSH private key: %w", err)
+			}
+			authMethods = append(authMethods, gossh.PublicKeys(signer))
+			logger.V(4).Info("Using SSH public key authentication", "user", sshUser)
+		}
+
+		// Add password auth if available (can be combined with key auth).
+		if creds.Password != "" {
+			authMethods = append(authMethods, gossh.Password(creds.Password))
+			logger.V(4).Info("Using SSH password authentication", "user", sshUser)
+		}
+	}
+
+	// Fallback to empty password if no auth methods configured.
+	if len(authMethods) == 0 {
+		authMethods = []gossh.AuthMethod{gossh.Password("")}
+		logger.V(4).Info("Using empty password authentication (fallback)", "user", sshUser)
+	}
+
 	// TODO(#64): InsecureIgnoreHostKey accepts any SSH host key — MITM risk.
-	// Store a known-good public key in the Site/Server CRD at registration time
+	// Store a known-good public key in the Edge CRD at registration time
 	// and use gossh.FixedHostKey or a custom HostKeyCallback here.
 	// https://github.com/faroshq/kedge/issues/64
 	sshConfig := &gossh.ClientConfig{
-		User: sshUser,
-		// Password("") allows connection to sshd configured with PermitEmptyPasswords.
-		// TODO(#54): replace with key-based auth loaded from a Secret on the Server resource.
-		Auth:            []gossh.AuthMethod{gossh.Password("")},
+		User:            sshUser,
+		Auth:            authMethods,
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // tracked in #64
 	}
 

@@ -98,8 +98,19 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	}
 
 	// Guard: server-type edges do NOT get a kcp workspace.
+	// If the type changed from kubernetes to server, delete the existing workspace.
 	if edge.Spec.Type == kedgev1alpha1.EdgeTypeServer {
-		logger.V(4).Info("Skipping workspace creation for server-type edge")
+		logger.V(4).Info("Server-type edge, ensuring no workspace exists")
+		if err := r.deleteMountWorkspace(ctx, logger, req.ClusterName, edge.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("deleting mount workspace for server edge: %w", err)
+		}
+		// Clear the URL since server edges don't use the k8s proxy URL.
+		if edge.Status.URL != "" {
+			edge.Status.URL = ""
+			if err := c.Status().Update(ctx, &edge); err != nil {
+				return ctrl.Result{}, fmt.Errorf("clearing edge URL: %w", err)
+			}
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -109,9 +120,9 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	// The URL is served by the hub's edge-proxy virtual workspace handler.
 	expectedURL := r.hubExternalURL + "/services/edges-proxy/clusters/" + req.ClusterName +
 		"/apis/kedge.faros.sh/v1alpha1/edges/" + edge.Name + "/k8s"
-	if edge.Status.WorkspaceURL != expectedURL {
+	if edge.Status.URL != expectedURL {
 		logger.Info("Setting edge workspace URL", "url", expectedURL)
-		edge.Status.WorkspaceURL = expectedURL
+		edge.Status.URL = expectedURL
 		if err := c.Status().Update(ctx, &edge); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating edge workspaceURL: %w", err)
 		}
@@ -171,6 +182,30 @@ func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.
 	}
 
 	logger.Info("Mount workspace created", "edge", edge.Name, "cluster", clusterName)
+	return nil
+}
+
+// deleteMountWorkspace deletes the mount workspace for an edge if it exists.
+// This is called when an edge type changes from kubernetes to server.
+func (r *MountReconciler) deleteMountWorkspace(ctx context.Context, logger klog.Logger, clusterName, edgeName string) error {
+	cfg := rest.CopyConfig(r.kcpConfig)
+	cfg.Host = kcp.AppendClusterPath(cfg.Host, clusterName)
+
+	client, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	err = client.Resource(workspaceGVR).Delete(ctx, edgeName, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		logger.V(4).Info("Mount workspace already deleted or never existed", "edge", edgeName)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("deleting mount workspace %s: %w", edgeName, err)
+	}
+
+	logger.Info("Mount workspace deleted", "edge", edgeName, "cluster", clusterName)
 	return nil
 }
 

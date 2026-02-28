@@ -33,7 +33,10 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+
+	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
 // wsSshMsg mirrors the wsMsg type used by pkg/util/ssh.
@@ -44,13 +47,7 @@ type wsSSHMsg struct {
 	Rows int    `json:"rows,omitempty"`
 }
 
-type sshOptions struct {
-	cluster string
-}
-
 func newSSHCommand() *cobra.Command {
-	opts := &sshOptions{}
-
 	cmd := &cobra.Command{
 		Use:   "ssh <name> [-- command [args...]]",
 		Short: "Open an SSH session to an edge via the hub",
@@ -63,23 +60,18 @@ Examples:
 
   # Run a single command (non-interactive)
   kedge ssh my-server -- echo hello
-
-  # Specify a non-default workspace cluster
-  kedge ssh my-server --cluster my-workspace
 `,
 		Args:               cobra.MinimumNArgs(1),
 		DisableFlagParsing: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSSH(cmd, args, opts)
+			return runSSH(cmd, args)
 		},
 	}
-
-	cmd.Flags().StringVar(&opts.cluster, "cluster", "default", "kcp workspace cluster name the Edge belongs to")
 
 	return cmd
 }
 
-func runSSH(cmd *cobra.Command, args []string, opts *sshOptions) error {
+func runSSH(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	// Everything after "--" is the remote command.
@@ -96,7 +88,22 @@ func runSSH(cmd *cobra.Command, args []string, opts *sshOptions) error {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
-	wsURL, err := buildSSHWebSocketURL(config, opts.cluster, name, remoteCmd)
+	// Fetch the Edge resource to get the proxy URL from status.
+	client, err := kedgeclient.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("creating kedge client: %w", err)
+	}
+
+	edge, err := client.Edges().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("fetching edge %q: %w", name, err)
+	}
+
+	if edge.Status.URL == "" {
+		return fmt.Errorf("edge %q has no proxy URL in status; is the agent running?", name)
+	}
+
+	wsURL, err := buildSSHWebSocketURL(config, edge.Status.URL, remoteCmd)
 	if err != nil {
 		return fmt.Errorf("building SSH endpoint URL: %w", err)
 	}
@@ -123,15 +130,19 @@ func runSSH(cmd *cobra.Command, args []string, opts *sshOptions) error {
 }
 
 // buildSSHWebSocketURL constructs the WebSocket URL for the hub SSH subresource
-// using the unified /edges/{name}/ssh path introduced in the Edge refactor.
+// using the edge's proxy URL from status.
 //
 // URL format:
 //
-//	wss://<hub>/services/edges-proxy/clusters/<cluster>/apis/kedge.faros.sh/v1alpha1/edges/<name>/ssh
+//	wss://<hub>/services/edges-proxy<edgeURL>/ssh
+//
+// edgeURL comes from Edge.Status.URL and has format:
+//
+//	/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
 //
 // If remoteCmd is non-empty it is embedded as the "cmd" query parameter so
 // the hub runs it via SSH exec (no PTY, no shell startup overhead).
-func buildSSHWebSocketURL(config *rest.Config, cluster, name, remoteCmd string) (string, error) {
+func buildSSHWebSocketURL(config *rest.Config, edgeURL, remoteCmd string) (string, error) {
 	base := strings.TrimRight(config.Host, "/")
 
 	u, err := url.Parse(base)
@@ -148,8 +159,9 @@ func buildSSHWebSocketURL(config *rest.Config, cluster, name, remoteCmd string) 
 		u.Scheme = "wss"
 	}
 
-	u.Path = fmt.Sprintf("/services/edges-proxy/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/ssh",
-		cluster, name)
+	// edgeURL is like /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
+	// We need /services/edges-proxy{edgeURL}/ssh
+	u.Path = "/services/edges-proxy" + edgeURL + "/ssh"
 
 	if remoteCmd != "" {
 		q := url.Values{}

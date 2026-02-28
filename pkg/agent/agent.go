@@ -20,9 +20,15 @@ package agent
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/user"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -112,6 +118,18 @@ type Options struct {
 	// SSHProxyPort is the local port of the SSH daemon the agent proxies to.
 	// Defaults to 22; override in tests to avoid conflicts with the host sshd.
 	SSHProxyPort int
+	// SSHUser is the SSH username to authenticate as on server-type edges.
+	// Defaults to the current user if not set.
+	SSHUser string
+	// SSHPassword is the SSH password for password-based authentication.
+	// Prefer SSHPrivateKeyPath for better security.
+	SSHPassword string
+	// SSHPrivateKeyPath is the path to an SSH private key file for key-based auth.
+	SSHPrivateKeyPath string
+	// Cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
+	// If not set, it's extracted from the SA token (for kubeconfig-based auth)
+	// or defaults to "default" (for static token auth).
+	Cluster string
 }
 
 // NewOptions returns default agent options.
@@ -250,7 +268,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		tunnelURL = a.hubConfig.Host
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.opts.Cluster)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -279,13 +297,18 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
 
+	// Set up SSH credentials if provided.
+	if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
+		return fmt.Errorf("setting up SSH credentials: %w", err)
+	}
+
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
 		tunnelURL = a.hubConfig.Host
 	}
 	tunnelState := make(chan bool, 1)
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.opts.Cluster)
 
 	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
 	go func() {
@@ -297,6 +320,145 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	logger.Info("Agent started successfully (server mode)")
 	<-ctx.Done()
 	logger.Info("Agent shutting down")
+	return nil
+}
+
+const (
+	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
+	sshCredentialsNamespace = "kedge-system"
+)
+
+// setupSSHCredentials creates a Secret with SSH credentials and updates the Edge status.
+func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
+	// Determine SSH username.
+	sshUser := a.opts.SSHUser
+	if sshUser == "" {
+		// Default to current user.
+		if u, err := user.Current(); err == nil {
+			sshUser = u.Username
+		} else {
+			sshUser = "root"
+		}
+	}
+
+	// Check if we have any credentials to set up.
+	hasPassword := a.opts.SSHPassword != ""
+	hasPrivateKey := a.opts.SSHPrivateKeyPath != ""
+
+	if !hasPassword && !hasPrivateKey {
+		logger.Info("No SSH credentials provided, skipping credential setup",
+			"hint", "use --ssh-user with --ssh-password or --ssh-private-key")
+		return nil
+	}
+
+	secretName := a.opts.SiteName + "-ssh-credentials"
+	secretData := make(map[string][]byte)
+
+	if hasPassword {
+		secretData["password"] = []byte(a.opts.SSHPassword)
+		logger.Info("Using SSH password authentication", "user", sshUser)
+	}
+
+	if hasPrivateKey {
+		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
+		if err != nil {
+			return fmt.Errorf("reading SSH private key from %s: %w", a.opts.SSHPrivateKeyPath, err)
+		}
+		secretData["privateKey"] = keyData
+		logger.Info("Using SSH private key authentication", "user", sshUser, "keyPath", a.opts.SSHPrivateKeyPath)
+	}
+
+	// Create or update the Secret via the hub's dynamic client.
+	// We use the kubernetes clientset for core resources.
+	hubK8s, err := kubernetes.NewForConfig(a.hubConfig)
+	if err != nil {
+		return fmt.Errorf("creating hub kubernetes client: %w", err)
+	}
+
+	// Ensure namespace exists.
+	_, err = hubK8s.CoreV1().Namespaces().Get(ctx, sshCredentialsNamespace, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = hubK8s.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: sshCredentialsNamespace},
+		}, metav1.CreateOptions{})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating namespace %s: %w", sshCredentialsNamespace, err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking namespace %s: %w", sshCredentialsNamespace, err)
+	}
+
+	// Create or update the secret.
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: sshCredentialsNamespace,
+			Labels: map[string]string{
+				"kedge.faros.sh/edge": a.opts.SiteName,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: secretData,
+	}
+
+	_, err = hubK8s.CoreV1().Secrets(sshCredentialsNamespace).Get(ctx, secretName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = hubK8s.CoreV1().Secrets(sshCredentialsNamespace).Create(ctx, secret, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("creating SSH credentials secret: %w", err)
+		}
+		logger.Info("Created SSH credentials secret", "secret", sshCredentialsNamespace+"/"+secretName)
+	} else if err != nil {
+		return fmt.Errorf("checking SSH credentials secret: %w", err)
+	} else {
+		_, err = hubK8s.CoreV1().Secrets(sshCredentialsNamespace).Update(ctx, secret, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("updating SSH credentials secret: %w", err)
+		}
+		logger.Info("Updated SSH credentials secret", "secret", sshCredentialsNamespace+"/"+secretName)
+	}
+
+	// Update Edge status with SSH credentials reference.
+	sshCreds := kedgev1alpha1.SSHCredentials{
+		Username: sshUser,
+	}
+	if hasPassword {
+		sshCreds.PasswordSecretRef = &corev1.SecretReference{
+			Name:      secretName,
+			Namespace: sshCredentialsNamespace,
+		}
+	}
+	if hasPrivateKey {
+		sshCreds.PrivateKeySecretRef = &corev1.SecretReference{
+			Name:      secretName,
+			Namespace: sshCredentialsNamespace,
+		}
+	}
+
+	// Build the proxy URL path for this edge.
+	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
+	edgeURL := fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s",
+		a.opts.Cluster, a.opts.SiteName)
+
+	patch := map[string]interface{}{
+		"status": map[string]interface{}{
+			"sshCredentials": sshCreds,
+			"URL":            edgeURL,
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshaling edge status patch: %w", err)
+	}
+
+	_, err = hubClient.Edges().Patch(ctx, a.opts.SiteName,
+		types.MergePatchType, patchBytes,
+		metav1.PatchOptions{}, "status")
+	if err != nil {
+		return fmt.Errorf("updating edge status with SSH credentials: %w", err)
+	}
+
+	logger.Info("Edge status updated with SSH credentials", "user", sshUser)
 	return nil
 }
 

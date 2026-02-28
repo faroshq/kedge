@@ -50,6 +50,16 @@ func TestAgentEdgeJoin(t *testing.T) {
 	testenv.Test(t, cases.AgentEdgeJoin())
 }
 
+// TestEdgeURLSet verifies that status.URL is populated for kubernetes-type edges.
+func TestEdgeURLSet(t *testing.T) {
+	testenv.Test(t, cases.EdgeURLSet())
+}
+
+// TestK8sProxyAccess verifies that kubectl works against the edge proxy URL.
+func TestK8sProxyAccess(t *testing.T) {
+	testenv.Test(t, cases.K8sProxyAccess())
+}
+
 // Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
 func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }

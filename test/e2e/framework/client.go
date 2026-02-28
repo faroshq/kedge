@@ -301,6 +301,53 @@ func (k *KedgeClient) WaitForEdgePhase(ctx context.Context, edgeName, phase stri
 	})
 }
 
+// GetEdgeURL polls until edge.status.URL is populated and returns it.
+// It returns an error if the URL is not set within 2 minutes.
+func (k *KedgeClient) GetEdgeURL(ctx context.Context, name string) (string, error) {
+	var edgeURL string
+	err := Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+		out, err := k.Kubectl(ctx,
+			"get", "edge", name,
+			"-o", "jsonpath={.status.URL}",
+			"--insecure-skip-tls-verify",
+		)
+		if err != nil {
+			return false, nil
+		}
+		u := strings.TrimSpace(out)
+		if u == "" {
+			return false, nil
+		}
+		edgeURL = u
+		return true, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("edge %q status.URL not populated within timeout: %w", name, err)
+	}
+	return edgeURL, nil
+}
+
+// KubectlWithURL runs kubectl against a specific server URL using credentials
+// from the hub kubeconfig. The hub bearer token is passed transparently to the
+// edge proxy endpoint on the hub.
+func (k *KedgeClient) KubectlWithURL(ctx context.Context, serverURL string, args ...string) (string, error) {
+	var buf bytes.Buffer
+	allArgs := append([]string{
+		"--kubeconfig", k.kubeconfig,
+		"--server", serverURL,
+		"--insecure-skip-tls-verify",
+	}, args...)
+	cmd := exec.CommandContext(ctx, "kubectl", allArgs...)
+	cmd.Dir = k.workDir
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return buf.String(), fmt.Errorf("kubectl --server %s %s failed: %w\noutput: %s",
+			serverURL, strings.Join(args, " "), err, buf.String())
+	}
+	return buf.String(), nil
+}
+
 // ExtractEdgeKubeconfig waits for the edge kubeconfig secret to appear in the
 // hub cluster and writes the base64-decoded content to destPath.
 // Secret name format: edge-<edgeName>-kubeconfig in namespace kedge-system.

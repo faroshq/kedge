@@ -30,6 +30,8 @@ func TestStaticTokenLogin(t *testing.T)     { testenv.Test(t, cases.StaticTokenL
 func TestEdgeLifecycle(t *testing.T)        { testenv.Test(t, cases.EdgeLifecycle()) }
 func TestAgentEdgeJoin(t *testing.T)        { testenv.Test(t, cases.AgentEdgeJoin()) }
 func TestEdgeTunnelResilience(t *testing.T) { testenv.Test(t, cases.EdgeTunnelResilience()) }
+func TestEdgeURLSet(t *testing.T)           { testenv.Test(t, cases.EdgeURLSet()) }
+func TestK8sProxyAccess(t *testing.T)       { testenv.Test(t, cases.K8sProxyAccess()) }
 
 // Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }

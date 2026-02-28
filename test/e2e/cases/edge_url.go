@@ -29,58 +29,15 @@ import (
 	"github.com/faroshq/faros-kedge/test/e2e/framework"
 )
 
-// agentKey is a context key for a running Agent in AgentEdgeJoin / EdgeTunnelResilience.
-type agentKey struct{}
+// edgeURLAgentKey is a context key for the Agent in EdgeURLSet / K8sProxyAccess.
+type edgeURLAgentKey struct{}
 
-// EdgeLifecycle returns a feature that creates, lists, and deletes an edge.
-func EdgeLifecycle() features.Feature {
-	const edgeName = "e2e-test-edge"
+// EdgeURLSet verifies that status.URL is populated after a kubernetes-type edge
+// connects and that the URL ends in "/k8s".
+func EdgeURLSet() features.Feature {
+	const edgeName = "e2e-url-edge"
 
-	return features.New("edge lifecycle").
-		Assess("create edge", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
-
-			if err := client.Login(ctx, framework.DevToken); err != nil {
-				t.Fatalf("login failed: %v", err)
-			}
-			if err := client.EdgeCreate(ctx, edgeName, "kubernetes", "env=e2e"); err != nil {
-				t.Fatalf("edge create failed: %v", err)
-			}
-			return ctx
-		}).
-		Assess("edge appears in list", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
-
-			out, err := client.EdgeList(ctx)
-			if err != nil {
-				t.Fatalf("edge list failed: %v", err)
-			}
-			if !strings.Contains(out, edgeName) {
-				t.Fatalf("expected edge %q in list output, got:\n%s", edgeName, out)
-			}
-			return ctx
-		}).
-		Assess("delete edge", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
-
-			if err := client.EdgeDelete(ctx, edgeName); err != nil {
-				t.Fatalf("edge delete failed: %v", err)
-			}
-			return ctx
-		}).
-		Feature()
-}
-
-// AgentEdgeJoin returns a feature that starts a kedge-agent, waits for the
-// edge to become Ready, and asserts the edge proxy is reachable.
-// Only use this in suites that set up both a hub and an agent cluster.
-func AgentEdgeJoin() features.Feature {
-	const edgeName = "e2e-agent-edge"
-
-	return features.New("agent edge join").
+	return features.New("edge URL set").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
@@ -101,7 +58,7 @@ func AgentEdgeJoin() features.Feature {
 			if err := agent.Start(ctx); err != nil {
 				t.Fatalf("failed to start agent: %v", err)
 			}
-			return context.WithValue(ctx, agentKey{}, agent)
+			return context.WithValue(ctx, edgeURLAgentKey{}, agent)
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
@@ -112,30 +69,22 @@ func AgentEdgeJoin() features.Feature {
 			}
 			return ctx
 		}).
-		Assess("edge proxy is reachable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("status.URL is populated and ends with /k8s", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			// Get the edge proxy URL from status and run kubectl through it.
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
-				t.Fatalf("getting edge proxy URL: %v", err)
+				t.Fatalf("getting edge URL: %v", err)
 			}
 			if !strings.HasSuffix(edgeURL, "/k8s") {
 				t.Fatalf("expected edge URL to end with '/k8s', got: %s", edgeURL)
 			}
-
-			out, err := client.KubectlWithURL(ctx, edgeURL, "get", "namespaces")
-			if err != nil {
-				t.Fatalf("edge proxy kubectl failed: %v", err)
-			}
-			if !strings.Contains(out, "default") {
-				t.Fatalf("expected 'default' namespace in proxy output, got:\n%s", out)
-			}
+			t.Logf("edge URL: %s", edgeURL)
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if a, ok := ctx.Value(agentKey{}).(*framework.Agent); ok {
+			if a, ok := ctx.Value(edgeURLAgentKey{}).(*framework.Agent); ok {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
@@ -146,12 +95,18 @@ func AgentEdgeJoin() features.Feature {
 		Feature()
 }
 
-// EdgeTunnelResilience returns a feature that verifies the agent reconnects
-// after a brief disconnect.  Only use this in suites that set up an agent cluster.
-func EdgeTunnelResilience() features.Feature {
-	const edgeName = "e2e-resilience-edge"
+// k8sProxyAgentKey is a context key for the Agent in K8sProxyAccess.
+type k8sProxyAgentKey struct{}
 
-	return features.New("edge tunnel resilience").
+// K8sProxyAccess verifies that kubectl against status.URL returns the edge
+// cluster's resources (nodes and namespaces).  This is an end-to-end test of
+// the k8s proxy path through the hub.
+//
+// Only use this in suites that set up both a hub and at least one agent cluster.
+func K8sProxyAccess() features.Feature {
+	const edgeName = "e2e-proxy-edge"
+
+	return features.New("k8s proxy access").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
@@ -172,39 +127,60 @@ func EdgeTunnelResilience() features.Feature {
 			if err := agent.Start(ctx); err != nil {
 				t.Fatalf("failed to start agent: %v", err)
 			}
-			return context.WithValue(ctx, agentKey{}, agent)
+			return context.WithValue(ctx, k8sProxyAgentKey{}, agent)
 		}).
-		Assess("edge becomes Ready initially", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
-				t.Fatalf("edge did not become Ready: %v", err)
+				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
 			}
 			return ctx
 		}).
-		Assess("edge recovers after agent restart", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("kubectl get nodes via status.URL returns edge cluster nodes", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			agent := ctx.Value(agentKey{}).(*framework.Agent)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			agent.Stop()
-			time.Sleep(5 * time.Second)
-
-			edgeKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "edge-"+edgeName+".kubeconfig")
-			newAgent := framework.NewAgent(framework.RepoRoot(), edgeKubeconfigPath, clusterEnv.AgentKubeconfig, edgeName)
-			if err := newAgent.Start(ctx); err != nil {
-				t.Fatalf("failed to restart agent: %v", err)
+			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
+			if err != nil {
+				t.Fatalf("getting edge URL: %v", err)
 			}
-			ctx = context.WithValue(ctx, agentKey{}, newAgent)
-
-			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
-				t.Fatalf("edge did not recover after agent restart: %v", err)
+			if !strings.HasSuffix(edgeURL, "/k8s") {
+				t.Fatalf("expected edge URL to end with '/k8s', got: %s", edgeURL)
 			}
+
+			out, err := client.KubectlWithURL(ctx, edgeURL, "get", "nodes")
+			if err != nil {
+				t.Fatalf("kubectl get nodes via edge proxy failed: %v", err)
+			}
+			if out == "" {
+				t.Fatalf("expected non-empty node list via edge proxy, got empty output")
+			}
+			t.Logf("kubectl get nodes via edge proxy:\n%s", out)
+			return ctx
+		}).
+		Assess("kubectl get namespaces via status.URL returns default namespace", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
+			if err != nil {
+				t.Fatalf("getting edge URL: %v", err)
+			}
+
+			out, err := client.KubectlWithURL(ctx, edgeURL, "get", "namespaces")
+			if err != nil {
+				t.Fatalf("kubectl get namespaces via edge proxy failed: %v", err)
+			}
+			if !strings.Contains(out, "default") {
+				t.Fatalf("expected 'default' namespace in proxy output, got:\n%s", out)
+			}
+			t.Logf("kubectl get namespaces via edge proxy:\n%s", out)
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if a, ok := ctx.Value(agentKey{}).(*framework.Agent); ok {
+			if a, ok := ctx.Value(k8sProxyAgentKey{}).(*framework.Agent); ok {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)

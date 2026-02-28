@@ -118,11 +118,11 @@ func TestOIDCWrongPasswordFails(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// TestOIDCUserCanListSites verifies that a kubeconfig obtained via OIDC can be
-// used to call the kedge API (list sites).
-func TestOIDCUserCanListSites(t *testing.T) {
+// TestOIDCUserCanListEdges verifies that a kubeconfig obtained via OIDC can be
+// used to call the kedge API (list edges).
+func TestOIDCUserCanListEdges(t *testing.T) {
 	f := features.New("oidc user access").
-		Assess("oidc kubeconfig can list sites", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("oidc kubeconfig can list edges", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			dexEnv := framework.DexEnvFrom(ctx)
 			if clusterEnv == nil || dexEnv == nil {
@@ -161,11 +161,11 @@ func TestOIDCUserCanListSites(t *testing.T) {
 			client := framework.NewKedgeClient(framework.RepoRoot(), kcFile, clusterEnv.HubURL)
 			siteCtx, siteCancel := context.WithTimeout(ctx, 30*time.Second)
 			defer siteCancel()
-			out, err := client.Run(siteCtx, "site", "list")
+			out, err := client.Run(siteCtx, "edge", "list")
 			if err != nil {
-				t.Fatalf("kedge site list with OIDC token failed: %v\noutput: %s", err, out)
+				t.Fatalf("kedge edge list with OIDC token failed: %v\noutput: %s", err, out)
 			}
-			t.Logf("OIDC user can list sites: %s", out)
+			t.Logf("OIDC user can list edges: %s", out)
 			return ctx
 		}).Feature()
 	testenv.Test(t, f)

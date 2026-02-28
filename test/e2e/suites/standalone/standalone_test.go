@@ -32,6 +32,9 @@ func TestAgentEdgeJoin(t *testing.T)        { testenv.Test(t, cases.AgentEdgeJoi
 func TestEdgeTunnelResilience(t *testing.T) { testenv.Test(t, cases.EdgeTunnelResilience()) }
 func TestEdgeURLSet(t *testing.T)           { testenv.Test(t, cases.EdgeURLSet()) }
 func TestK8sProxyAccess(t *testing.T)       { testenv.Test(t, cases.K8sProxyAccess()) }
+func TestK8sProxyWrite(t *testing.T)        { testenv.Test(t, cases.K8sProxyWrite()) }
+func TestK8sProxyExec(t *testing.T)         { testenv.Test(t, cases.K8sProxyExec()) }
+func TestWorkloadDeployment(t *testing.T)   { testenv.Test(t, cases.WorkloadDeployment()) }
 
 // Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }

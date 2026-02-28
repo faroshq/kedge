@@ -32,11 +32,11 @@ import (
 // virtualWorkspaces holds state and dependencies for all virtual workspaces.
 type virtualWorkspaces struct {
 	connManager     *connman.ConnectionManager
-	edgeConnManager *ConnManager           // shared between agent-proxy-v2 and edges-proxy builders
-	kcpConfig       *rest.Config           // kcp rest config for token verification (nil if kcp not configured)
-	kcpK8sClient    kubernetes.Interface   // kubernetes client for fetching secrets
-	kedgeClient     *kedgeclient.Client    // kedge client for fetching Edge resources
-	staticTokens    map[string]struct{}    // static tokens that bypass JWT SA requirement
+	edgeConnManager *ConnManager         // shared between agent-proxy-v2 and edges-proxy builders
+	kcpConfig       *rest.Config         // kcp rest config for token verification (nil if kcp not configured)
+	kcpK8sClient    kubernetes.Interface // kubernetes client for fetching secrets
+	kedgeClient     *kedgeclient.Client  // kedge client for fetching Edge resources
+	staticTokens    map[string]struct{}  // static tokens that bypass JWT SA requirement
 	logger          klog.Logger
 }
 

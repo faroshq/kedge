@@ -46,11 +46,12 @@ func SSHServerModeConnect() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
 			proc := &framework.ServerProcess{
-				ServerName: sshServerName,
-				HubURL:     clusterEnv.HubURL,
-				Token:      framework.DevToken,
-				AgentBin:   framework.AgentBinPath(),
-				SSHPort:    framework.DefaultTestSSHPort,
+				ServerName:    sshServerName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       framework.DefaultTestSSHPort,
 			}
 
 			if err := proc.Start(ctx); err != nil {
@@ -208,11 +209,12 @@ func SSHEdgeURLSet() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
 			proc := &framework.ServerProcess{
-				ServerName: sshURLEdgeName,
-				HubURL:     clusterEnv.HubURL,
-				Token:      framework.DevToken,
-				AgentBin:   framework.AgentBinPath(),
-				SSHPort:    framework.DefaultTestSSHPort + 1, // avoid port conflict with SSHServerModeConnect
+				ServerName:    sshURLEdgeName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       framework.DefaultTestSSHPort + 1, // avoid port conflict with SSHServerModeConnect
 			}
 
 			if err := proc.Start(ctx); err != nil {
@@ -290,6 +292,7 @@ func SSHDockerServerModeConnect() features.Feature {
 				Name:       "kedge-e2e-ssh-docker",
 				ServerName: dockerServerName,
 				HubURL:     clusterEnv.HubURL,
+				HubCluster: framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig),
 				Token:      framework.DevToken,
 				AgentBin:   framework.AgentBinPath(),
 			}

@@ -42,6 +42,21 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
 
+// clusterFromConfig returns the kcp cluster name embedded in the hub config's
+// Host URL (e.g. "https://hub:8443/clusters/abc123" → "abc123").
+// Returns "" when no /clusters/ segment is present so that the caller can
+// fall back to other sources (explicit --cluster flag, SA token claim, etc.).
+func clusterFromConfig(cfg *rest.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	_, cluster := tunnel.SplitBaseAndCluster(cfg.Host)
+	if cluster == "default" {
+		return ""
+	}
+	return cluster
+}
+
 // AgentType discriminates whether the agent connects a Kubernetes cluster or a
 // bare-metal / systemd server to the hub.
 type AgentType string
@@ -263,12 +278,21 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	}
 	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
 
+	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
+	clusterName := a.opts.Cluster
+	if clusterName == "" {
+		clusterName = clusterFromConfig(a.hubConfig)
+	}
+
+	// Always connect the tunnel to the base hub URL (strip any /clusters/...
+	// path so the request hits /services/agent-proxy/ on the hub's own mux).
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
-		tunnelURL = a.hubConfig.Host
+		baseURL, _ := tunnel.SplitBaseAndCluster(a.hubConfig.Host)
+		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.opts.Cluster)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -302,13 +326,21 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		return fmt.Errorf("setting up SSH credentials: %w", err)
 	}
 
+	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
+	serverClusterName := a.opts.Cluster
+	if serverClusterName == "" {
+		serverClusterName = clusterFromConfig(a.hubConfig)
+	}
+
+	// Always connect the tunnel to the base hub URL.
 	tunnelURL := a.opts.TunnelURL
 	if tunnelURL == "" {
-		tunnelURL = a.hubConfig.Host
+		baseURL, _ := tunnel.SplitBaseAndCluster(a.hubConfig.Host)
+		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.opts.Cluster)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName)
 
 	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
 	go func() {

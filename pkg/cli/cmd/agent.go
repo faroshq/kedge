@@ -80,6 +80,8 @@ func newAgentJoinCommand() *cobra.Command {
 	if err := cmd.Flags().MarkDeprecated("mode", "use --type instead (kubernetes|server)"); err != nil {
 		panic(err)
 	}
+	cmd.Flags().StringVar(&opts.Cluster, "cluster", "",
+		"kcp logical cluster name (e.g. '1tww43gelbj45g0k'); required when using static token auth without a cluster-scoped hub kubeconfig")
 
 	return cmd
 }

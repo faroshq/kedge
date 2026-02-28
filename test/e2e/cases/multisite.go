@@ -213,9 +213,10 @@ func virtualWorkloadManifest(name, namespace string, selector map[string]string,
 			selectorYAML += fmt.Sprintf("        %s: %s\n", k, v)
 		}
 	}
-	siteSelectorBlock := ""
+	// PlacementSpec.EdgeSelector (json:"edgeSelector") is the correct field name.
+	edgeSelectorBlock := ""
 	if selectorYAML != "" {
-		siteSelectorBlock = "    siteSelector:\n" + selectorYAML
+		edgeSelectorBlock = "    edgeSelector:\n" + selectorYAML
 	}
 	return fmt.Sprintf(`apiVersion: kedge.faros.sh/v1alpha1
 kind: VirtualWorkload
@@ -226,7 +227,7 @@ spec:
   replicas: 1
   placement:
     strategy: %s
-%s`, name, namespace, strategy, siteSelectorBlock)
+%s`, name, namespace, strategy, edgeSelectorBlock)
 }
 
 // TwoAgentsJoin returns a feature that starts two kedge-agents connecting to

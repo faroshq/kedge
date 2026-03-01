@@ -38,14 +38,14 @@ func newStatusScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func placement(name, ns, vwName, siteName, phase string, readyReplicas int32) *kedgev1alpha1.Placement {
+func placement(name, ns, vwName, edgeName, phase string, readyReplicas int32) *kedgev1alpha1.Placement {
 	return &kedgev1alpha1.Placement{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
 			Labels:    map[string]string{"kedge.faros.sh/virtualworkload": vwName},
 		},
-		Spec:   kedgev1alpha1.PlacementObjSpec{EdgeName: siteName},
+		Spec:   kedgev1alpha1.PlacementObjSpec{EdgeName: edgeName},
 		Status: kedgev1alpha1.PlacementObjStatus{Phase: phase, ReadyReplicas: readyReplicas},
 	}
 }

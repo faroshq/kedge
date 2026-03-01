@@ -160,23 +160,23 @@ func (k *KedgeClient) ApplyManifest(ctx context.Context, yaml string) error {
 	return err
 }
 
-// WaitForPlacement polls until a Placement targeting siteName exists for the
+// WaitForPlacement polls until a Placement targeting edgeName exists for the
 // given VirtualWorkload or the timeout expires.
-func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, siteName string, timeout time.Duration) error {
+func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "placements",
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
 			"-l", "kedge.faros.sh/virtualworkload="+vwName,
-			"-o", "custom-columns=SITE:.spec.edgeName",
+			"-o", "custom-columns=EDGE:.spec.edgeName",
 			"--no-headers",
 		)
 		if err != nil {
 			return false, nil
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if strings.TrimSpace(line) == siteName {
+			if strings.TrimSpace(line) == edgeName {
 				return true, nil
 			}
 		}
@@ -184,18 +184,18 @@ func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, s
 	})
 }
 
-// WaitForNoPlacement polls until no Placement targeting siteName exists for the
-// given VirtualWorkload — i.e. the scheduler has not routed to that site.
+// WaitForNoPlacement polls until no Placement targeting edgeName exists for the
+// given VirtualWorkload — i.e. the scheduler has not routed to that edge.
 // Returns nil when the condition is confirmed within timeout; returns an error
 // if a matching placement still exists at deadline.
-func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace, siteName string, timeout time.Duration) error {
+func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "placements",
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
 			"-l", "kedge.faros.sh/virtualworkload="+vwName,
-			"-o", "custom-columns=SITE:.spec.edgeName",
+			"-o", "custom-columns=EDGE:.spec.edgeName",
 			"--no-headers",
 		)
 		if err != nil {
@@ -203,7 +203,7 @@ func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace,
 			return true, nil
 		}
 		for _, line := range strings.Split(out, "\n") {
-			if strings.TrimSpace(line) == siteName {
+			if strings.TrimSpace(line) == edgeName {
 				return false, nil // still present, keep polling
 			}
 		}

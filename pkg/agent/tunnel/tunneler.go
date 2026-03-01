@@ -52,9 +52,9 @@ import (
 //
 // cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
 // If empty, it's extracted from the token (for SA tokens) or defaults to "default".
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) {
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "siteName", siteName, "resourceType", resourceType)
+	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "edgeName", edgeName, "resourceType", resourceType)
 
 	backoff := wait.Backoff{
 		Duration: 1 * time.Second,
@@ -71,7 +71,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, siteName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster)
+		err := startTunneler(ctx, hubURL, token, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -88,7 +88,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, siteName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, siteName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) error {
+func startTunneler(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
@@ -112,7 +112,7 @@ func startTunneler(ctx context.Context, hubURL string, token string, siteName st
 	// resourceType is retained for legacy callers but no longer affects the URL.
 	_ = resourceType
 	edgeProxyURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/proxy",
-		baseHubURL, clusterName, siteName)
+		baseHubURL, clusterName, edgeName)
 
 	conn, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig)
 	if err != nil {

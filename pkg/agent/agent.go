@@ -69,38 +69,18 @@ const (
 	AgentTypeServer AgentType = "server"
 )
 
-// Deprecated mode aliases kept for backward-compatibility with existing callers.
-const (
-	// AgentModeSite is deprecated; use AgentTypeKubernetes.
-	AgentModeSite AgentType = "site"
-	// AgentModeServer is deprecated; use AgentTypeServer.
-	// Note: "server" maps to both AgentTypeServer and AgentModeServer; they are
-	// the same string and the alias exists purely for semantic documentation.
-	AgentModeServer = AgentTypeServer
-)
-
-// AgentMode is a deprecated type alias kept so that old code compiling against
-// this package (e.g. "opts.Mode = agent.AgentModeSite") still works.
-//
-// Deprecated: use AgentType.
-type AgentMode = AgentType
-
-// resolveType normalises a raw --type / --mode flag value to a canonical AgentType.
-// Deprecated mode aliases are mapped to their canonical equivalents:
-//   - "site"   → AgentTypeKubernetes
-//   - "server" → AgentTypeServer   (also the canonical value, not just an alias)
+// resolveType normalises a raw --type flag value to a canonical AgentType.
 func resolveType(raw string) (AgentType, error) {
 	switch raw {
-	case string(AgentTypeKubernetes), "site":
+	case string(AgentTypeKubernetes):
 		return AgentTypeKubernetes, nil
 	case string(AgentTypeServer):
 		return AgentTypeServer, nil
 	default:
 		return "", fmt.Errorf(
-			"invalid type %q: must be %q or %q (deprecated aliases: %q, %q)",
+			"invalid type %q: must be %q or %q",
 			raw,
 			string(AgentTypeKubernetes), string(AgentTypeServer),
-			string(AgentModeSite), string(AgentModeServer),
 		)
 	}
 }
@@ -119,14 +99,6 @@ type Options struct {
 	// Type controls whether the agent registers as a Kubernetes edge or a
 	// Server edge. Defaults to AgentTypeKubernetes.
 	Type AgentType
-	// Mode is a deprecated alias for Type. When both are set and non-zero,
-	// Mode is used only if Type is still the default (AgentTypeKubernetes)
-	// or empty, otherwise Type takes precedence.
-	//
-	// Supported values: "site" (→ kubernetes), "server" (→ server).
-	//
-	// Deprecated: use Type.
-	Mode AgentMode
 	// InsecureSkipTLSVerify disables TLS certificate verification for the hub
 	// connection. Should only be used in development/testing; never in production.
 	InsecureSkipTLSVerify bool
@@ -168,16 +140,10 @@ type Agent struct {
 // New creates a new agent.
 func New(opts *Options) (*Agent, error) {
 	if opts.EdgeName == "" {
-		return nil, fmt.Errorf("site name is required")
+		return nil, fmt.Errorf("edge name is required")
 	}
 
-	// Resolve effective type: explicit Type takes precedence over deprecated Mode.
-	// If Type is still the default and Mode is explicitly set, honour Mode.
 	rawType := string(opts.Type)
-	if (rawType == "" || rawType == string(AgentTypeKubernetes)) &&
-		opts.Mode != "" && opts.Mode != AgentTypeKubernetes {
-		rawType = string(opts.Mode)
-	}
 	if rawType == "" {
 		rawType = string(AgentTypeKubernetes)
 	}
@@ -249,7 +215,7 @@ func New(opts *Options) (*Agent, error) {
 func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting kedge agent",
-		"siteName", a.opts.EdgeName,
+		"edgeName", a.opts.EdgeName,
 		"type", a.agentType,
 		"labels", a.opts.Labels,
 	)

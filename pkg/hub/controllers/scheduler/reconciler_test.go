@@ -161,7 +161,7 @@ func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 			Namespace: "default",
 			Labels: map[string]string{
 				"kedge.faros.sh/virtualworkload": "vw-4",
-				"kedge.faros.sh/site":            "site-gone",
+				"kedge.faros.sh/edge":            "site-gone",
 			},
 		},
 		Spec: kedgev1alpha1.PlacementObjSpec{EdgeName: "site-gone"},

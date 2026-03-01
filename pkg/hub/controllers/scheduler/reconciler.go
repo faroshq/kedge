@@ -135,7 +135,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 				Namespace: vw.Namespace,
 				Labels: map[string]string{
 					"kedge.faros.sh/virtualworkload": vw.Name,
-					"kedge.faros.sh/site":            edge.Name,
+					"kedge.faros.sh/edge":            edge.Name,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{

@@ -60,12 +60,12 @@ func TestK8sProxyAccess(t *testing.T) {
 	testenv.Test(t, cases.K8sProxyAccess())
 }
 
-// Multi-site tests — require 2 agent clusters (DefaultAgentCount=2).
+// Multi-edge tests — require 2 agent clusters (DefaultAgentCount=2).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
 func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
 func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
-func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
-func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
+func TestEdgeFailoverIsolation(t *testing.T) { testenv.Test(t, cases.EdgeFailoverIsolation()) }
+func TestEdgeReconnect(t *testing.T)         { testenv.Test(t, cases.EdgeReconnect()) }
 func TestEdgeListAccuracyUnderChurn(t *testing.T) {
 	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
 }

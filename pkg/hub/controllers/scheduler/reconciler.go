@@ -165,7 +165,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 	}
 
-	// Requeue periodically so site reconnects are picked up even if the watch
+	// Requeue periodically so edge reconnects are picked up even if the watch
 	// event is missed (e.g. status-only changes may not always fire the mapper).
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }

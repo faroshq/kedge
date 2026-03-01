@@ -153,7 +153,7 @@ func (r *WorkloadReconciler) reconcile(ctx context.Context, key string) error {
 		return err
 	}
 
-	// Only handle placements for our site
+	// Only handle placements for our edge
 	if placement.Spec.EdgeName != r.edgeName {
 		return nil
 	}

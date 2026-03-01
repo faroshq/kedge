@@ -346,17 +346,17 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:8443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create a site in the hub:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge site create my-site --labels env=dev"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create an edge in the hub:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge edge create my-edge --labels env=dev"))
 	stepNum++
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the site kubeconfig secret and extract it:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system site-my-site-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > site-kubeconfig"))
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the site is registered)\n\n")
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the edge kubeconfig secret and extract it:\n", stepNum)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the edge is registered)\n\n")
 	stepNum++
 
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Deploy the agent into the agent cluster using Helm:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the site kubeconfig in the agent cluster:\n")
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the edge kubeconfig in the agent cluster:\n")
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
 		"kubectl --kubeconfig %s.kubeconfig create namespace kedge-system && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n kedge-system --from-file=kubeconfig=edge-kubeconfig",
 		o.AgentClusterName, o.AgentClusterName)))

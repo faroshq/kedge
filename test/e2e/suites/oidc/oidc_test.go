@@ -36,7 +36,7 @@ import (
 
 // ── Shared cases (also run in standalone) ─────────────────────────────────────
 // Only hub health is included here: static-token-dependent cases (StaticTokenLogin,
-// SiteLifecycle) are not run in the OIDC suite because static auth tokens are
+// EdgeLifecycle) are not run in the OIDC suite because static auth tokens are
 // intentionally disabled when --with-dex is active.
 
 func TestHubHealth(t *testing.T) { testenv.Test(t, cases.HubHealth()) }
@@ -171,12 +171,12 @@ func TestOIDCUserCanListEdges(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// Multi-site tests — use OIDC auth (no static token in OIDC suite).
+// Multi-edge tests — use OIDC auth (no static token in OIDC suite).
 func TestTwoAgentsJoin(t *testing.T)         { testenv.Test(t, cases.TwoAgentsJoin()) }
 func TestLabelBasedScheduling(t *testing.T)  { testenv.Test(t, cases.LabelBasedScheduling()) }
 func TestWorkloadIsolation(t *testing.T)     { testenv.Test(t, cases.WorkloadIsolation()) }
-func TestSiteFailoverIsolation(t *testing.T) { testenv.Test(t, cases.SiteFailoverIsolation()) }
-func TestSiteReconnect(t *testing.T)         { testenv.Test(t, cases.SiteReconnect()) }
+func TestEdgeFailoverIsolation(t *testing.T) { testenv.Test(t, cases.EdgeFailoverIsolation()) }
+func TestEdgeReconnect(t *testing.T)         { testenv.Test(t, cases.EdgeReconnect()) }
 func TestEdgeListAccuracyUnderChurn(t *testing.T) {
 	testenv.Test(t, cases.EdgeListAccuracyUnderChurn())
 }

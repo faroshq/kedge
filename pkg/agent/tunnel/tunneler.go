@@ -45,9 +45,9 @@ import (
 // Pass nil to use a default (secure) TLS config; use InsecureSkipVerify only
 // in development environments.
 //
-// resourceType must be either "sites" (Kubernetes cluster agent) or "servers"
+// resourceType must be either "edges" (Kubernetes cluster agent) or "servers"
 // (bare-metal / systemd host agent). It controls the query parameter sent to
-// the hub's tunnel endpoint so that Sites and Servers are stored under
+// the hub's tunnel endpoint so that Edges and Servers are stored under
 // distinct connection-manager keys and never alias each other.
 //
 // cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").

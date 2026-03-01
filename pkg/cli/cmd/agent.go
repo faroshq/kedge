@@ -66,7 +66,11 @@ func newAgentJoinCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.HubContext, "hub-context", "", "Kubeconfig context for hub cluster")
 	cmd.Flags().StringVar(&opts.TunnelURL, "tunnel-url", "", "Hub tunnel URL (defaults to hub URL)")
 	cmd.Flags().StringVar(&opts.Token, "token", "", "Bootstrap token")
-	cmd.Flags().StringVar(&opts.SiteName, "site-name", "", "Name of this site")
+	cmd.Flags().StringVar(&opts.EdgeName, "edge-name", "", "Name of this edge")
+	cmd.Flags().StringVar(&opts.EdgeName, "site-name", "", "Deprecated: use --edge-name")
+	if err := cmd.Flags().MarkDeprecated("site-name", "use --edge-name instead"); err != nil {
+		panic(err)
+	}
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Path to target cluster kubeconfig")
 	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
 	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site")
@@ -96,18 +100,22 @@ func newAgentTokenCommand() *cobra.Command {
 
 	createCmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create a bootstrap token for a site",
+		Short: "Create a bootstrap token for an edge",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if siteName == "" {
-				return fmt.Errorf("--site-name is required")
+				return fmt.Errorf("--edge-name is required")
 			}
 
 			// TODO: Generate bootstrap token
-			fmt.Printf("Bootstrap token for site %s (not yet implemented)\n", siteName)
+			fmt.Printf("Bootstrap token for edge %s (not yet implemented)\n", siteName)
 			return nil
 		},
 	}
-	createCmd.Flags().StringVar(&siteName, "site-name", "", "Site name")
+	createCmd.Flags().StringVar(&siteName, "edge-name", "", "Edge name")
+	createCmd.Flags().StringVar(&siteName, "site-name", "", "Deprecated: use --edge-name")
+	if err := createCmd.Flags().MarkDeprecated("site-name", "use --edge-name instead"); err != nil {
+		panic(err)
+	}
 
 	cmd.AddCommand(createCmd)
 	return cmd

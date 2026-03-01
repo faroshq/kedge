@@ -154,7 +154,7 @@ func (r *WorkloadReconciler) reconcile(ctx context.Context, key string) error {
 	}
 
 	// Only handle placements for our site
-	if placement.Spec.SiteName != r.siteName {
+	if placement.Spec.EdgeName != r.siteName {
 		return nil
 	}
 

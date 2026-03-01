@@ -45,7 +45,7 @@ func placement(name, ns, vwName, siteName, phase string, readyReplicas int32) *k
 			Namespace: ns,
 			Labels:    map[string]string{"kedge.faros.sh/virtualworkload": vwName},
 		},
-		Spec:   kedgev1alpha1.PlacementObjSpec{SiteName: siteName},
+		Spec:   kedgev1alpha1.PlacementObjSpec{EdgeName: siteName},
 		Status: kedgev1alpha1.PlacementObjStatus{Phase: phase, ReadyReplicas: readyReplicas},
 	}
 }

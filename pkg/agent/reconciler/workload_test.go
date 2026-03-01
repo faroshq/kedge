@@ -46,7 +46,7 @@ func TestConvertToDeployment_Simple(t *testing.T) {
 			UID:  "test-uid",
 		},
 		Spec: kedgev1alpha1.PlacementObjSpec{
-			SiteName: "site1",
+			EdgeName: "site1",
 		},
 	}
 
@@ -96,7 +96,7 @@ func TestConvertToDeployment_Template(t *testing.T) {
 	placement := &kedgev1alpha1.Placement{
 		ObjectMeta: metav1.ObjectMeta{Name: "custom-app-site1"},
 		Spec: kedgev1alpha1.PlacementObjSpec{
-			SiteName: "site1",
+			EdgeName: "site1",
 		},
 	}
 
@@ -119,7 +119,7 @@ func TestConvertToDeployment_NoSpec(t *testing.T) {
 	placement := &kedgev1alpha1.Placement{
 		ObjectMeta: metav1.ObjectMeta{Name: "empty-site1"},
 		Spec: kedgev1alpha1.PlacementObjSpec{
-			SiteName: "site1",
+			EdgeName: "site1",
 		},
 	}
 
@@ -144,7 +144,7 @@ func TestConvertToDeployment_PlacementReplicaOverride(t *testing.T) {
 	placement := &kedgev1alpha1.Placement{
 		ObjectMeta: metav1.ObjectMeta{Name: "app-site1"},
 		Spec: kedgev1alpha1.PlacementObjSpec{
-			SiteName: "site1",
+			EdgeName: "site1",
 			Replicas: &placementReplicas,
 		},
 	}

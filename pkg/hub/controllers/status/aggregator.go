@@ -36,7 +36,7 @@ func AggregateStatus(placements []kedgev1alpha1.Placement) kedgev1alpha1.Virtual
 		totalReady += p.Status.ReadyReplicas
 
 		siteStatus := kedgev1alpha1.EdgeWorkloadStatus{
-			EdgeName:      p.Spec.SiteName,
+			EdgeName:      p.Spec.EdgeName,
 			Phase:         p.Status.Phase,
 			ReadyReplicas: p.Status.ReadyReplicas,
 		}

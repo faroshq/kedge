@@ -109,8 +109,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// Delete placements for edges no longer selected
 	for i := range placementList.Items {
 		p := &placementList.Items[i]
-		if !desiredEdges[p.Spec.SiteName] {
-			logger.Info("Deleting stale placement", "placement", p.Name, "edge", p.Spec.SiteName)
+		if !desiredEdges[p.Spec.EdgeName] {
+			logger.Info("Deleting stale placement", "placement", p.Name, "edge", p.Spec.EdgeName)
 			if err := c.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "Failed to delete placement", "name", p.Name)
 			}
@@ -120,7 +120,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// Build existing edge set
 	existingEdges := make(map[string]bool)
 	for _, p := range placementList.Items {
-		existingEdges[p.Spec.SiteName] = true
+		existingEdges[p.Spec.EdgeName] = true
 	}
 
 	// Create placements for newly selected edges
@@ -154,7 +154,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					Namespace:  vw.Namespace,
 					UID:        vw.UID,
 				},
-				SiteName: edge.Name,
+				EdgeName: edge.Name,
 				Replicas: vw.Spec.Replicas,
 			},
 		}

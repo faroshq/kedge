@@ -164,7 +164,7 @@ func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 				"kedge.faros.sh/site":            "site-gone",
 			},
 		},
-		Spec: kedgev1alpha1.PlacementObjSpec{SiteName: "site-gone"},
+		Spec: kedgev1alpha1.PlacementObjSpec{EdgeName: "site-gone"},
 	}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(workload, s1, stalePlacement).Build()
@@ -180,7 +180,7 @@ func TestSchedulerReconciler_StalePlacementDeleted(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	for _, p := range placements.Items {
-		if p.Spec.SiteName == "site-gone" {
+		if p.Spec.EdgeName == "site-gone" {
 			t.Errorf("stale placement for site-gone was not deleted")
 		}
 	}

@@ -54,7 +54,11 @@ func main() {
 	cmd.Flags().StringVar(&opts.HubContext, "hub-context", "", "Kubeconfig context for hub cluster")
 	cmd.Flags().StringVar(&opts.TunnelURL, "tunnel-url", "", "Hub tunnel URL (defaults to hub URL)")
 	cmd.Flags().StringVar(&opts.Token, "token", "", "Bootstrap token")
-	cmd.Flags().StringVar(&opts.SiteName, "site-name", "", "Name of this site")
+	cmd.Flags().StringVar(&opts.EdgeName, "edge-name", "", "Name of this edge")
+	cmd.Flags().StringVar(&opts.EdgeName, "site-name", "", "Deprecated: use --edge-name")
+	if err := cmd.Flags().MarkDeprecated("site-name", "use --edge-name instead"); err != nil {
+		klog.Warning("failed to mark --site-name as deprecated: ", err)
+	}
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Path to target cluster kubeconfig")
 	cmd.Flags().StringVar(&opts.Context, "context", "", "Kubeconfig context to use")
 	cmd.Flags().StringToStringVar(&opts.Labels, "labels", nil, "Labels for this site (key=value pairs)")

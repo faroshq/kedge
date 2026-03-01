@@ -112,7 +112,7 @@ type Options struct {
 	HubContext    string
 	TunnelURL     string // Separate URL for reverse tunnel (defaults to hubConfig.Host)
 	Token         string
-	SiteName      string
+	EdgeName      string
 	Kubeconfig    string
 	Context       string
 	Labels        map[string]string
@@ -167,7 +167,7 @@ type Agent struct {
 
 // New creates a new agent.
 func New(opts *Options) (*Agent, error) {
-	if opts.SiteName == "" {
+	if opts.EdgeName == "" {
 		return nil, fmt.Errorf("site name is required")
 	}
 
@@ -249,7 +249,7 @@ func New(opts *Options) (*Agent, error) {
 func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting kedge agent",
-		"siteName", a.opts.SiteName,
+		"siteName", a.opts.EdgeName,
 		"type", a.agentType,
 		"labels", a.opts.Labels,
 	)
@@ -292,16 +292,16 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName)
 
-	wkr := reconciler.NewWorkloadReconciler(a.opts.SiteName, hubClient, hubClient.Dynamic(), downstreamClient)
+	wkr := reconciler.NewWorkloadReconciler(a.opts.EdgeName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
 		if err := wkr.Run(ctx); err != nil {
 			logger.Error(err, "Workload reconciler failed")
 		}
 	}()
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
 			logger.Error(err, "Edge status reporter failed")
@@ -340,9 +340,9 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 	tunnelState := make(chan bool, 1)
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.SiteName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName)
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.SiteName, hubClient, tunnelState)
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState)
 	go func() {
 		if err := reporter.Run(ctx); err != nil {
 			logger.Error(err, "Edge status reporter failed")
@@ -383,7 +383,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		return nil
 	}
 
-	secretName := a.opts.SiteName + "-ssh-credentials"
+	secretName := a.opts.EdgeName + "-ssh-credentials"
 	secretData := make(map[string][]byte)
 
 	if hasPassword {
@@ -426,7 +426,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 			Name:      secretName,
 			Namespace: sshCredentialsNamespace,
 			Labels: map[string]string{
-				"kedge.faros.sh/edge": a.opts.SiteName,
+				"kedge.faros.sh/edge": a.opts.EdgeName,
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -470,7 +470,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 	// Build the proxy URL path for this edge.
 	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
 	edgeURL := fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s",
-		a.opts.Cluster, a.opts.SiteName)
+		a.opts.Cluster, a.opts.EdgeName)
 
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
@@ -483,7 +483,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		return fmt.Errorf("marshaling edge status patch: %w", err)
 	}
 
-	_, err = hubClient.Edges().Patch(ctx, a.opts.SiteName,
+	_, err = hubClient.Edges().Patch(ctx, a.opts.EdgeName,
 		types.MergePatchType, patchBytes,
 		metav1.PatchOptions{}, "status")
 	if err != nil {
@@ -509,7 +509,7 @@ func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) er
 			Kind:       "Edge",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   a.opts.SiteName,
+			Name:   a.opts.EdgeName,
 			Labels: a.opts.Labels,
 		},
 		Spec: kedgev1alpha1.EdgeSpec{
@@ -517,15 +517,15 @@ func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) er
 		},
 	}
 
-	existing, err := client.Edges().Get(ctx, a.opts.SiteName, metav1.GetOptions{})
+	existing, err := client.Edges().Get(ctx, a.opts.EdgeName, metav1.GetOptions{})
 	if err != nil {
-		logger.Info("Creating Edge", "name", a.opts.SiteName, "type", edgeType)
+		logger.Info("Creating Edge", "name", a.opts.EdgeName, "type", edgeType)
 		_, err := client.Edges().Create(ctx, edge, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("creating edge: %w", err)
 		}
 	} else {
-		logger.Info("Updating Edge", "name", a.opts.SiteName, "type", edgeType)
+		logger.Info("Updating Edge", "name", a.opts.EdgeName, "type", edgeType)
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string)
 		}

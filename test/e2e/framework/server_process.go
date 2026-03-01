@@ -85,7 +85,7 @@ func (s *ServerProcess) Start(ctx context.Context) error {
 	args := []string{
 		"agent", "join",
 		"--type=server",
-		"--site-name=" + s.ServerName,
+		"--edge-name=" + s.ServerName,
 		"--hub-insecure-skip-tls-verify",
 		fmt.Sprintf("--ssh-proxy-port=%d", port),
 	}

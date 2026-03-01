@@ -64,7 +64,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		"--hub-kubeconfig", a.hubKubeconfig,
 		"--kubeconfig", a.agentKubeconfig,
 		"--tunnel-url", DefaultHubURL,
-		"--site-name", a.siteName,
+		"--edge-name", a.siteName,
 	}
 	if len(a.labels) > 0 {
 		var pairs []string

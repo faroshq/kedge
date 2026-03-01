@@ -169,7 +169,7 @@ func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, s
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
 			"-l", "kedge.faros.sh/virtualworkload="+vwName,
-			"-o", "custom-columns=SITE:.spec.siteName",
+			"-o", "custom-columns=SITE:.spec.edgeName",
 			"--no-headers",
 		)
 		if err != nil {
@@ -195,7 +195,7 @@ func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace,
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
 			"-l", "kedge.faros.sh/virtualworkload="+vwName,
-			"-o", "custom-columns=SITE:.spec.siteName",
+			"-o", "custom-columns=SITE:.spec.edgeName",
 			"--no-headers",
 		)
 		if err != nil {

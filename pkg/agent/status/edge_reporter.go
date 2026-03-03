@@ -20,6 +20,8 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +31,36 @@ import (
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
+
+// sshdHostKeyPaths is the ordered list of sshd host public key files to try.
+var sshdHostKeyPaths = []string{
+	"/etc/ssh/ssh_host_ed25519_key.pub",
+	"/etc/ssh/ssh_host_ecdsa_key.pub",
+	"/etc/ssh/ssh_host_rsa_key.pub",
+}
+
+// readSSHHostKey attempts to read the sshd host public key from well-known paths.
+// It returns the key in authorized_keys format (without the trailing comment field),
+// or an empty string if no key file could be read.
+func readSSHHostKey(logger klog.Logger) string {
+	for _, path := range sshdHostKeyPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		// authorized_keys line: "<type> <base64> [comment]"
+		// Strip the comment (optional third field) to normalise the stored value.
+		line := strings.TrimSpace(string(data))
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			key := fields[0] + " " + fields[1]
+			logger.V(4).Info("Read sshd host public key", "path", path, "keyType", fields[0])
+			return key
+		}
+	}
+	logger.V(4).Info("No sshd host public key found in well-known paths")
+	return ""
+}
 
 const (
 	// HeartbeatInterval is how often the agent sends heartbeats to the hub.
@@ -87,11 +119,18 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 		Connected: r.tunnelConnected,
 	}
 	// The hub may set Hostname/WorkspaceURL; we only patch the fields we own.
+	statusPatch := map[string]interface{}{
+		"phase":     string(status.Phase),
+		"connected": status.Connected,
+	}
+
+	// Report the sshd host public key so the hub can verify the agent's identity.
+	if hostKey := readSSHHostKey(logger); hostKey != "" {
+		statusPatch["sshHostKey"] = hostKey
+	}
+
 	patch := map[string]interface{}{
-		"status": map[string]interface{}{
-			"phase":     string(status.Phase),
-			"connected": status.Connected,
-		},
+		"status": statusPatch,
 	}
 
 	patchBytes, err := json.Marshal(patch)

@@ -53,11 +53,9 @@ type MountReconciler struct {
 	kcpConfig      *rest.Config
 	hubExternalURL string
 
-	// workspaceEnsureFn creates or adopts the kcp mount workspace for an edge and
-	// returns the URL that kcp has assigned to the workspace (Workspace.Spec.URL).
-	// Returns ("", nil) when the workspace exists but kcp has not yet assigned a URL.
+	// workspaceEnsureFn creates or adopts the kcp mount workspace for an edge.
 	// Defaults to r.ensureMountWorkspace; injectable for unit testing.
-	workspaceEnsureFn func(ctx context.Context, logger klog.Logger, clusterName string, edge *kedgev1alpha1.Edge) (string, error)
+	workspaceEnsureFn func(ctx context.Context, logger klog.Logger, clusterName string, edge *kedgev1alpha1.Edge) error
 }
 
 // SetupMountWithManager registers the edge mount controller with the multicluster manager.
@@ -76,7 +74,7 @@ func SetupMountWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExt
 }
 
 // Reconcile creates a mount workspace for a ready kubernetes edge and maintains
-// the URL status field using the URL assigned by kcp (Workspace.Spec.URL).
+// the URL status field.
 func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := klog.FromContext(ctx).WithValues("edge", req.Name, "cluster", req.ClusterName)
 
@@ -121,27 +119,21 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 
 	// At this point edge.Spec.Type == EdgeTypeKubernetes.
 
-	// Create or adopt the mount workspace in kcp via admin dynamic client.
-	// The URL is read from the kcp Workspace.Spec.URL field once kcp has assigned it.
-	workspaceURL, err := r.workspaceEnsureFn(ctx, logger, req.ClusterName, &edge)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring mount workspace: %w", err)
-	}
-
-	// kcp may not have assigned a URL yet (workspace still initialising).
-	// The Owns(Workspace) watch will trigger a re-reconcile once kcp updates the workspace.
-	if workspaceURL == "" {
-		logger.V(4).Info("Mount workspace URL not yet assigned by kcp, waiting")
-		return ctrl.Result{}, nil
-	}
-
-	// Set the workspace URL on the edge status if it differs from what kcp assigned.
-	if edge.Status.URL != workspaceURL {
-		logger.Info("Setting edge workspace URL from kcp Workspace spec", "url", workspaceURL)
-		edge.Status.URL = workspaceURL
+	// Set the workspace URL on the edge status if not already set.
+	// The URL is served by the hub's edge-proxy virtual workspace handler.
+	expectedURL := r.hubExternalURL + "/services/edges-proxy/clusters/" + req.ClusterName +
+		"/apis/kedge.faros.sh/v1alpha1/edges/" + edge.Name + "/k8s"
+	if edge.Status.URL != expectedURL {
+		logger.Info("Setting edge workspace URL", "url", expectedURL)
+		edge.Status.URL = expectedURL
 		if err := c.Status().Update(ctx, &edge); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating edge workspaceURL: %w", err)
 		}
+	}
+
+	// Create mount workspace in kcp via admin dynamic client.
+	if err := r.workspaceEnsureFn(ctx, logger, req.ClusterName, &edge); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring mount workspace: %w", err)
 	}
 
 	return ctrl.Result{}, nil
@@ -149,15 +141,13 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 
 // ensureMountWorkspace creates a Workspace with mount.ref pointing to the Edge,
 // owned by the Edge so that the workspace is garbage-collected when the Edge is deleted.
-// It returns the URL from Workspace.Spec.URL that kcp assigns once the mount is initialised.
-// Returns ("", nil) when the workspace exists but kcp has not yet populated spec.URL.
-func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.Logger, clusterName string, edge *kedgev1alpha1.Edge) (string, error) {
+func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.Logger, clusterName string, edge *kedgev1alpha1.Edge) error {
 	cfg := rest.CopyConfig(r.kcpConfig)
 	cfg.Host = kcp.AppendClusterPath(cfg.Host, clusterName)
 
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return "", fmt.Errorf("creating dynamic client: %w", err)
+		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
 	ws := &kcptenancyv1alpha1.Workspace{
@@ -182,29 +172,20 @@ func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.
 
 	u, err := toUnstructured(ws)
 	if err != nil {
-		return "", fmt.Errorf("converting workspace to unstructured: %w", err)
+		return fmt.Errorf("converting workspace to unstructured: %w", err)
 	}
 
-	_, createErr := client.Resource(workspaceGVR).Create(ctx, u, metav1.CreateOptions{})
-	if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-		return "", fmt.Errorf("creating mount workspace %s: %w", edge.Name, createErr)
-	}
-	if createErr == nil {
-		logger.Info("Mount workspace created", "edge", edge.Name, "cluster", clusterName)
-	} else {
+	_, err = client.Resource(workspaceGVR).Create(ctx, u, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
 		logger.V(4).Info("Mount workspace already exists", "edge", edge.Name)
+		return nil
 	}
-
-	// Read the workspace back to obtain the URL that kcp has assigned in spec.URL.
-	// kcp sets this field once the mount workspace has been fully initialised.
-	existing, err := client.Resource(workspaceGVR).Get(ctx, edge.Name, metav1.GetOptions{})
 	if err != nil {
-		return "", fmt.Errorf("getting mount workspace %s: %w", edge.Name, err)
+		return fmt.Errorf("creating mount workspace %s: %w", edge.Name, err)
 	}
 
-	// spec.URL is the canonical URL for this workspace as assigned by kcp.
-	workspaceURL, _, _ := unstructured.NestedString(existing.Object, "spec", "URL")
-	return workspaceURL, nil
+	logger.Info("Mount workspace created", "edge", edge.Name, "cluster", clusterName)
+	return nil
 }
 
 // deleteMountWorkspace deletes the mount workspace for an edge if it exists.

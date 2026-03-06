@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -128,9 +129,24 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 
-		// Override the kcp server URL if configured (e.g. to use a Kubernetes service).
+		// For embedded kcp, override the host to 127.0.0.1 so the hub always connects
+		// via loopback (guaranteed to be in the TLS cert SANs). This is safe because
+		// hub and embedded kcp are co-located (same pod/process).
+		// Preserve any path prefix (e.g. /clusters/root) from the original URL.
+		// Allow explicit override via KCPServerURL for advanced use cases.
 		if s.opts.KCPServerURL != "" {
 			kcpConfig.Host = s.opts.KCPServerURL
+		} else if parsed, err := url.Parse(kcpConfig.Host); err == nil {
+			port := parsed.Port()
+			if port == "" {
+				port = fmt.Sprintf("%d", s.opts.KCPSecurePort)
+			}
+			newBase := "https://127.0.0.1:" + port
+			if parsed.Path != "" && parsed.Path != "/" {
+				kcpConfig.Host = newBase + parsed.Path
+			} else {
+				kcpConfig.Host = newBase
+			}
 		}
 	} else if s.opts.ExternalKCPKubeconfig != "" {
 		// Use external kcp.

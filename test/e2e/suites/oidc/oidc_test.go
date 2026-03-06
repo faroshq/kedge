@@ -187,6 +187,18 @@ func TestOIDCCrossUserEdgeIsolation(t *testing.T) {
 	testenv.Test(t, cases.OIDCCrossUserEdgeIsolation())
 }
 
+// TestK8sProxyWriteIsolation verifies that a ConfigMap written via the edge k8s
+// proxy lands on the edge cluster and NOT on the hub (issue #80).
+func TestK8sProxyWriteIsolation(t *testing.T) {
+	testenv.Test(t, cases.K8sProxyWriteIsolation())
+}
+
+// TestCrossWorkspaceEdgeIsolation verifies that workspace A's user cannot access
+// workspace B's edges and vice versa (issue #81).
+func TestCrossWorkspaceEdgeIsolation(t *testing.T) {
+	testenv.Test(t, cases.CrossWorkspaceEdgeIsolation())
+}
+
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL
 // matches what Dex advertises in its discovery document.
 func TestOIDCTokenIssuerMatchesDiscovery(t *testing.T) {

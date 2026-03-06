@@ -48,3 +48,6 @@ func TestEdgeListAccuracyUnderChurn(t *testing.T) {
 }
 
 func TestProxyInvalidToken(t *testing.T) { testenv.Test(t, cases.ProxyInvalidToken()) }
+
+// Isolation tests — issue #80 (proxy write isolation).
+func TestK8sProxyWriteIsolation(t *testing.T) { testenv.Test(t, cases.K8sProxyWriteIsolation()) }

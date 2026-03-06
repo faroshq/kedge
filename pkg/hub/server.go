@@ -93,6 +93,7 @@ func (s *Server) Run(ctx context.Context) error {
 			RootDir:          kcpRootDir,
 			SecurePort:       s.opts.KCPSecurePort,
 			BindAddress:      s.opts.KCPBindAddress,
+			ExternalHostname: s.opts.KCPExternalHostname,
 			BatteriesInclude: batteries,
 		})
 
@@ -125,6 +126,11 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("loading embedded kcp admin kubeconfig: %w", err)
 			}
+		}
+
+		// Override the kcp server URL if configured (e.g. to use a Kubernetes service).
+		if s.opts.KCPServerURL != "" {
+			kcpConfig.Host = s.opts.KCPServerURL
 		}
 	} else if s.opts.ExternalKCPKubeconfig != "" {
 		// Use external kcp.

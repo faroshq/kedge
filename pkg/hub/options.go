@@ -35,6 +35,8 @@ type Options struct {
 	KCPRootDir          string // Root directory for kcp data (default: <DataDir>/kcp)
 	KCPSecurePort       int    // Secure port for kcp API server (default: 6443)
 	KCPBindAddress      string // Bind address for kcp API server (default: "127.0.0.1")
+	KCPExternalHostname string // External hostname for kcp API server TLS cert SANs
+	KCPServerURL        string // Override kcp server URL in admin.kubeconfig (e.g. https://svc-name:6443)
 	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")
 }
 

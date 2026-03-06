@@ -41,6 +41,8 @@ spec:
             - --kcp-root-dir=/data/kcp
             - --kcp-secure-port={{ .Values.kcp.embedded.securePort }}
             - --kcp-bind-address={{ .Values.kcp.embedded.bindAddress }}
+            - --kcp-external-hostname={{ default (printf "%s-kcp.%s.svc" (include "kedge-hub.fullname" .) .Release.Namespace) .Values.kcp.embedded.externalHostname }}
+            - --kcp-server-url=https://{{ include "kedge-hub.fullname" . }}-kcp.{{ .Release.Namespace }}.svc:{{ .Values.kcp.embedded.securePort }}
             - --kcp-batteries-include={{ .Values.kcp.embedded.batteriesInclude }}
             {{- end }}
             {{- if include "kedge-hub.tlsEnabled" . }}
@@ -65,6 +67,11 @@ spec:
             - name: https
               containerPort: 8443
               protocol: TCP
+            {{- if not .Values.kcp.external.enabled }}
+            - name: kcp
+              containerPort: {{ .Values.kcp.embedded.securePort }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

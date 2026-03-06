@@ -40,6 +40,7 @@ type EmbeddedKCPOptions struct {
 	RootDir          string
 	SecurePort       int
 	BindAddress      string
+	ExternalHostname string
 	BatteriesInclude []string
 }
 
@@ -89,6 +90,10 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	kcpOpts.GenericControlPlane.SecureServing.BindPort = e.opts.SecurePort
 	if e.opts.BindAddress != "" {
 		kcpOpts.GenericControlPlane.SecureServing.BindAddress = net.ParseIP(e.opts.BindAddress)
+	}
+	if e.opts.ExternalHostname != "" {
+		// Set as ExternalHost (string) so the hostname is included in TLS cert SANs as a DNS name.
+		kcpOpts.GenericControlPlane.GenericServerRunOptions.ExternalHost = e.opts.ExternalHostname
 	}
 
 	// Configure batteries.

@@ -66,6 +66,8 @@ func main() {
 	cmd.Flags().StringVar(&opts.KCPRootDir, "kcp-root-dir", "", "Root directory for embedded kcp data (default: <data-dir>/kcp)")
 	cmd.Flags().IntVar(&opts.KCPSecurePort, "kcp-secure-port", opts.KCPSecurePort, "Secure port for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPBindAddress, "kcp-bind-address", opts.KCPBindAddress, "Bind address for embedded kcp API server (default: 127.0.0.1, use 0.0.0.0 for all interfaces)")
+	cmd.Flags().StringVar(&opts.KCPExternalHostname, "kcp-external-hostname", opts.KCPExternalHostname, "External hostname/IP for embedded kcp TLS cert SANs")
+	cmd.Flags().StringVar(&opts.KCPServerURL, "kcp-server-url", opts.KCPServerURL, "Override kcp server URL used by hub (e.g. https://svc-name:6443 for in-cluster service)")
 	cmd.Flags().StringVar(&opts.KCPBatteriesInclude, "kcp-batteries-include", opts.KCPBatteriesInclude, "Comma-separated list of kcp batteries to include")
 
 	if err := cmd.Execute(); err != nil {

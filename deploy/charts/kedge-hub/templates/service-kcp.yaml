@@ -1,0 +1,17 @@
+{{- if not .Values.kcp.external.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kedge-hub.fullname" . }}-kcp
+  labels:
+    {{- include "kedge-hub.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: kcp
+      port: {{ .Values.kcp.embedded.securePort }}
+      targetPort: kcp
+      protocol: TCP
+  selector:
+    {{- include "kedge-hub.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -101,6 +101,40 @@ func ResolveCallerIdentity(ctx context.Context, kubeconfigPath string) (string, 
 	return result.Status.User.Username, nil
 }
 
+// ResolveTokenIdentity performs a kcp TokenReview with an explicit token against
+// the API server reachable via kubeconfigPath.  It returns the username that kcp
+// assigns to that token — which for OIDC tokens is typically the email claim.
+//
+// Returns an empty string (without error) when the token is unauthenticated or
+// the server does not support TokenReview (non-kcp cluster). This mirrors the
+// resolveCallerIdentity logic in pkg/virtual/builder/edges_proxy_builder.go.
+func ResolveTokenIdentity(ctx context.Context, kubeconfigPath, token string) (string, error) {
+	if token == "" {
+		return "", nil
+	}
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return "", fmt.Errorf("loading kubeconfig: %w", err)
+	}
+
+	k8s, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return "", fmt.Errorf("creating kubernetes client: %w", err)
+	}
+
+	tr := &authv1.TokenReview{
+		Spec: authv1.TokenReviewSpec{Token: token},
+	}
+	result, err := k8s.AuthenticationV1().TokenReviews().Create(ctx, tr, metav1.CreateOptions{})
+	if err != nil {
+		return "", nil //nolint:nilerr
+	}
+	if !result.Status.Authenticated {
+		return "", nil
+	}
+	return result.Status.User.Username, nil
+}
+
 // --- Context helpers ---------------------------------------------------------
 
 type sshPrivateKeyPEMKey struct{}

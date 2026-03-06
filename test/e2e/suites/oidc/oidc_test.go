@@ -187,6 +187,13 @@ func TestOIDCCrossUserEdgeIsolation(t *testing.T) {
 	testenv.Test(t, cases.OIDCCrossUserEdgeIsolation())
 }
 
+// TestSSHOIDCUsernameMapping verifies that the hub correctly maps an OIDC
+// identity (email from Dex) to the SSH username when sshUserMapping=identity
+// is set on a server-mode edge. Regression test for issue #82.
+func TestSSHOIDCUsernameMapping(t *testing.T) {
+	testenv.Test(t, cases.SSHOIDCUsernameMapping())
+}
+
 // TestCrossWorkspaceEdgeIsolation verifies bidirectional multi-tenant isolation:
 // User A cannot access User B's edges and User B cannot access User A's edges
 // via the hub proxy. Regression for issue #81.

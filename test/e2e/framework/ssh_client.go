@@ -178,6 +178,77 @@ func (c *SSHWebSocketClient) Close() error {
 	return c.conn.Close()
 }
 
+// DialSSHWithToken connects to the hub SSH WebSocket endpoint for the given edge
+// name using an explicit bearerToken for authorization instead of deriving the
+// token from the kubeconfig.
+//
+// adminKubeconfig is used only to look up the edge's status.URL (the hub admin
+// token is sufficient for the GET).  The actual SSH WebSocket connection uses
+// bearerToken — which can be an OIDC ID token from a different user — so the
+// hub sees that user's identity when performing the kcp TokenReview.
+//
+// This is the OIDC variant of DialSSH and is used in tests that verify the
+// OIDC identity → SSH username mapping (issue #82).
+func DialSSHWithToken(ctx context.Context, adminKubeconfig, name, bearerToken string) (*SSHWebSocketClient, error) {
+	cfg, err := clientcmd.BuildConfigFromFlags("", adminKubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("loading admin kubeconfig: %w", err)
+	}
+
+	// Use admin credentials to look up the edge URL.
+	kedgeClient, err := kedgeclient.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating kedge client: %w", err)
+	}
+	edge, err := kedgeClient.Edges().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("fetching edge %q: %w", name, err)
+	}
+	if edge.Status.URL == "" {
+		return nil, fmt.Errorf("edge %q has no status.URL; is the agent running?", name)
+	}
+
+	// Convert the HTTPS edge URL to a WebSocket URL.
+	u, err := url.Parse(edge.Status.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing edge status URL %q: %w", edge.Status.URL, err)
+	}
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	default:
+		u.Scheme = "wss"
+	}
+	wsURL := u.String()
+
+	// Use the caller-provided bearer token (e.g. an OIDC ID token) for the
+	// SSH WebSocket Authorization header.  The hub will perform a kcp
+	// TokenReview with this token to derive the caller identity.
+	headers := http.Header{}
+	if bearerToken != "" {
+		headers.Set("Authorization", "Bearer "+bearerToken)
+	}
+
+	dialer := &websocket.Dialer{
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		HandshakeTimeout: 10 * time.Second,
+	}
+
+	conn, _, err := dialer.DialContext(ctx, wsURL, headers)
+	if err != nil {
+		return nil, fmt.Errorf("dialling SSH WebSocket %s: %w", wsURL, err)
+	}
+
+	c := &SSHWebSocketClient{
+		conn: conn,
+		msgs: make(chan []byte, 1024),
+	}
+	go c.reader()
+	return c, nil
+}
+
 func (c *SSHWebSocketClient) sendMsg(msg sshWsMsg) error {
 	b, err := json.Marshal(msg)
 	if err != nil {

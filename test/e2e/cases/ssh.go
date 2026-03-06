@@ -19,6 +19,8 @@ package cases
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
+	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
 	"github.com/faroshq/faros-kedge/test/e2e/framework"
 )
 
@@ -368,6 +371,7 @@ const (
 	sshMappingInheritedPort = framework.DefaultTestSSHPort + 10
 	sshMappingProvidedPort  = framework.DefaultTestSSHPort + 11
 	sshMappingIdentityPort  = framework.DefaultTestSSHPort + 12
+	sshOIDCMappingPort      = framework.DefaultTestSSHPort + 13
 )
 
 // SSHUserMappingInherited verifies that when sshUserMapping=inherited (or unset /
@@ -717,6 +721,303 @@ stringData:
 						expectedUser, proc.SSHServer.ConnectedUsers())
 				}
 				t.Logf("identity SSH username verified: %q", expectedUser)
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if proc, ok := framework.ServerProcessFromContext(ctx); ok {
+				proc.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "secret", secretName, "-n", secretNS, "--ignore-not-found")
+			_, _ = framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"delete", "edges", edgeName, "--ignore-not-found")
+			return ctx
+		}).
+		Feature()
+}
+
+// ---------- OIDC SSH Username Mapping test -----------------------------------
+
+// oidcSSHMappingKey is the context key for oidcSSHMappingData.
+type oidcSSHMappingKey struct{}
+
+// oidcSSHMappingData carries state between Setup → Assess → Teardown for
+// SSHOIDCUsernameMapping.
+type oidcSSHMappingData struct {
+	// userAIDToken is the raw OIDC ID token for User A.
+	userAIDToken string
+	// userBIDToken is the raw OIDC ID token for User B (empty if not configured).
+	userBIDToken string
+	// userAIdentity is the SSH username the hub will use for User A (from TokenReview).
+	userAIdentity string
+	// userBIdentity is the SSH username the hub will use for User B (from TokenReview).
+	userBIdentity string
+	// privateKeyPEM is the PEM-encoded RSA private key for the SSH secret.
+	privateKeyPEM []byte
+}
+
+// SSHOIDCUsernameMapping verifies that the hub correctly maps an OIDC identity
+// (email / subject) to the SSH username when sshUserMapping=identity.
+//
+// Flow (issue #82):
+//  1. Authenticate as OIDC User A via Dex → obtain IDToken.
+//  2. Optionally authenticate as OIDC User B → obtain IDToken.
+//  3. Start a server-mode agent with a TestSSHServer that accepts any username
+//     for the generated keypair (AddAnyUserKey).
+//  4. Patch the Edge to use sshUserMapping=identity with a sshCredentialsRef
+//     Secret containing only the SSH private key.
+//  5. Connect via SSH WebSocket using User A's IDToken → hub performs kcp
+//     TokenReview → caller identity = User A's email → SSH username = email.
+//  6. Assert TestSSHServer.ConnectedUsers() includes the expected identity.
+//  7. Optionally repeat for User B and assert a different username.
+//
+// This test is skipped when the Dex environment is not present in the context
+// (i.e. when run outside the OIDC test suite).
+func SSHOIDCUsernameMapping() features.Feature {
+	const (
+		edgeName   = "e2e-ssh-oidc-mapping"
+		secretName = "e2e-ssh-oidc-mapping-creds"
+		secretNS   = "kedge-system"
+	)
+
+	return features.New("SSH/OIDCUsernameMapping").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			dexEnv := framework.DexEnvFrom(ctx)
+			if clusterEnv == nil || dexEnv == nil {
+				t.Skip("requires OIDC suite (Dex env not found in context)")
+			}
+
+			// ── User A: full OIDC login ──────────────────────────────────────
+			loginCtxA, cancelA := context.WithTimeout(ctx, 90*time.Second)
+			defer cancelA()
+
+			resultA, err := framework.HeadlessOIDCLogin(loginCtxA, clusterEnv.HubURL, dexEnv.UserEmail, dexEnv.UserPassword)
+			if err != nil {
+				t.Fatalf("User A OIDC login failed: %v", err)
+			}
+			if resultA.IDToken == "" {
+				t.Fatal("User A OIDC login returned empty IDToken")
+			}
+
+			// Cache User A's token so the exec-credential plugin can refresh it.
+			if err := cliauth.SaveTokenCache(&cliauth.TokenCache{
+				IDToken:      resultA.IDToken,
+				RefreshToken: resultA.RefreshToken,
+				ExpiresAt:    resultA.ExpiresAt,
+				IssuerURL:    resultA.IssuerURL,
+				ClientID:     resultA.ClientID,
+			}); err != nil {
+				t.Fatalf("caching User A OIDC token: %v", err)
+			}
+
+			// Write User A's kubeconfig to a temp file (used by KedgeClient cleanup).
+			if len(resultA.Kubeconfig) > 0 {
+				kcFileA := filepath.Join(t.TempDir(), "user-a.kubeconfig")
+				if err := os.WriteFile(kcFileA, resultA.Kubeconfig, 0600); err != nil {
+					t.Logf("warning: could not write User A kubeconfig: %v", err)
+				}
+			}
+
+			// Resolve the SSH username kcp will assign to User A's token via
+			// TokenReview.  This mirrors what the hub does in identity mode.
+			userAIdentity, err := framework.ResolveTokenIdentity(ctx, clusterEnv.HubKubeconfig, resultA.IDToken)
+			if err != nil || userAIdentity == "" {
+				t.Skipf("kcp TokenReview for User A returned empty identity (err=%v); skipping OIDC SSH mapping test", err)
+			}
+			t.Logf("User A identity (from TokenReview): %q", userAIdentity)
+
+			// ── User B: optional second OIDC login ──────────────────────────
+			var userBIDToken, userBIdentity string
+			if dexEnv.User2Email != "" {
+				loginCtxB, cancelB := context.WithTimeout(ctx, 90*time.Second)
+				defer cancelB()
+
+				resultB, err := framework.HeadlessOIDCLogin(loginCtxB, clusterEnv.HubURL, dexEnv.User2Email, dexEnv.User2Password)
+				if err != nil {
+					t.Logf("User B OIDC login failed (non-fatal, skipping User B assertions): %v", err)
+				} else if resultB.IDToken != "" {
+					userBIDToken = resultB.IDToken
+					userBIdentity, _ = framework.ResolveTokenIdentity(ctx, clusterEnv.HubKubeconfig, resultB.IDToken)
+					t.Logf("User B identity (from TokenReview): %q", userBIdentity)
+				}
+			}
+
+			// ── SSH keypair & TestSSHServer ──────────────────────────────────
+			_, pubKey, privKeyPEM, err := framework.GenerateTestSSHKeypair()
+			if err != nil {
+				t.Fatalf("generating SSH keypair: %v", err)
+			}
+
+			// Accept any username presenting the generated public key.
+			// This lets the hub inject the OIDC identity as the SSH username.
+			sshSrv := framework.NewTestSSHServer(sshOIDCMappingPort)
+			sshSrv.AddAnyUserKey(pubKey)
+
+			// ── Start server-mode agent ──────────────────────────────────────
+			proc := &framework.ServerProcess{
+				ServerName:    edgeName,
+				HubURL:        clusterEnv.HubURL,
+				HubKubeconfig: clusterEnv.HubKubeconfig,
+				Token:         framework.DevToken,
+				AgentBin:      framework.AgentBinPath(),
+				SSHPort:       sshOIDCMappingPort,
+				SSHServer:     sshSrv,
+			}
+			if err := proc.Start(ctx); err != nil {
+				t.Fatalf("starting server process: %v", err)
+			}
+			if err := proc.WaitForAgentReady(ctx, 60*time.Second); err != nil {
+				t.Fatalf("agent not ready: %v\nlogs:\n%s", err, proc.Logs())
+			}
+
+			// Stash all data needed by later Assess steps.
+			ctx = context.WithValue(ctx, oidcSSHMappingKey{}, &oidcSSHMappingData{
+				userAIDToken:  resultA.IDToken,
+				userBIDToken:  userBIDToken,
+				userAIdentity: userAIdentity,
+				userBIdentity: userBIdentity,
+				privateKeyPEM: privKeyPEM,
+			})
+			return framework.WithServerProcess(ctx, proc)
+		}).
+		Assess("edge_resource_becomes_Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+				out, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+					"get", "edges", edgeName, "-o", "jsonpath={.status.phase},{.status.connected}")
+				if err != nil {
+					return false, nil
+				}
+				return strings.TrimSpace(out) == "Ready,true", nil
+			}); err != nil {
+				proc, _ := framework.ServerProcessFromContext(ctx)
+				if proc != nil {
+					t.Logf("agent logs:\n%s", proc.Logs())
+				}
+				t.Fatalf("Edge %s did not become Ready within 2 minutes", edgeName)
+			}
+			return ctx
+		}).
+		Assess("create_ssh_key_secret_and_patch_edge_to_identity_mode", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			data, ok := ctx.Value(oidcSSHMappingKey{}).(*oidcSSHMappingData)
+			if !ok {
+				t.Skip("oidcSSHMappingData not found (setup may have been skipped)")
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Secret contains only the private key — the username comes from the
+			// caller's OIDC identity at runtime (identity mode).
+			secretYAML := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  privateKey: |
+%s`, secretName, secretNS, framework.IndentLines(string(data.privateKeyPEM), "    "))
+			if err := client.ApplyManifest(ctx, secretYAML); err != nil {
+				t.Fatalf("creating SSH key secret: %v", err)
+			}
+
+			// Patch the Edge to use identity mode.
+			patchJSON := fmt.Sprintf(
+				`{"spec":{"server":{"sshUserMapping":"identity","sshCredentialsRef":{"name":%q,"namespace":%q}}}}`,
+				secretName, secretNS,
+			)
+			_, err := framework.KubectlWithConfig(ctx, clusterEnv.HubKubeconfig,
+				"patch", "edges", edgeName, "--type=merge", "-p", patchJSON)
+			if err != nil {
+				t.Fatalf("patching edge %s to identity mode: %v", edgeName, err)
+			}
+			t.Logf("Edge %s patched with sshUserMapping=identity", edgeName)
+			return ctx
+		}).
+		Assess("user_a_oidc_identity_is_used_as_ssh_username", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			data, ok := ctx.Value(oidcSSHMappingKey{}).(*oidcSSHMappingData)
+			if !ok {
+				t.Skip("oidcSSHMappingData not found (setup may have been skipped)")
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			proc, _ := framework.ServerProcessFromContext(ctx)
+
+			// Connect to the SSH WebSocket using User A's OIDC ID token.
+			// The hub will perform a kcp TokenReview and use the returned
+			// username (User A's email) as the SSH username in identity mode.
+			wsClient, err := framework.DialSSHWithToken(ctx, clusterEnv.HubKubeconfig, edgeName, data.userAIDToken)
+			if err != nil {
+				t.Fatalf("DialSSHWithToken (User A): %v", err)
+			}
+			defer wsClient.Close() //nolint:errcheck
+
+			// Give the SSH handshake time to complete and record the username.
+			_ = wsClient.CollectOutput(ctx, 3*time.Second)
+
+			if proc != nil && proc.SSHServer != nil {
+				found := false
+				for _, u := range proc.SSHServer.ConnectedUsers() {
+					if u == data.userAIdentity {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("TestSSHServer did not record connection as User A identity %q; connected users: %v",
+						data.userAIdentity, proc.SSHServer.ConnectedUsers())
+				}
+				t.Logf("OIDC → SSH username mapping verified for User A: %q ✓", data.userAIdentity)
+			}
+			return ctx
+		}).
+		Assess("user_b_oidc_identity_differs_from_user_a", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			data, ok := ctx.Value(oidcSSHMappingKey{}).(*oidcSSHMappingData)
+			if !ok {
+				t.Skip("oidcSSHMappingData not found (setup may have been skipped)")
+			}
+			if data.userBIDToken == "" || data.userBIdentity == "" {
+				t.Skip("User B IDToken or identity not available; skipping cross-user username check")
+			}
+			if data.userAIdentity == data.userBIdentity {
+				t.Fatalf("User A and User B have the same SSH identity %q — they must be different OIDC users",
+					data.userAIdentity)
+			}
+
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			proc, _ := framework.ServerProcessFromContext(ctx)
+
+			// Connect as User B.
+			wsClientB, err := framework.DialSSHWithToken(ctx, clusterEnv.HubKubeconfig, edgeName, data.userBIDToken)
+			if err != nil {
+				t.Fatalf("DialSSHWithToken (User B): %v", err)
+			}
+			defer wsClientB.Close() //nolint:errcheck
+
+			_ = wsClientB.CollectOutput(ctx, 3*time.Second)
+
+			if proc != nil && proc.SSHServer != nil {
+				foundA, foundB := false, false
+				for _, u := range proc.SSHServer.ConnectedUsers() {
+					if u == data.userAIdentity {
+						foundA = true
+					}
+					if u == data.userBIdentity {
+						foundB = true
+					}
+				}
+				if !foundA {
+					t.Fatalf("TestSSHServer missing User A %q in connected users: %v",
+						data.userAIdentity, proc.SSHServer.ConnectedUsers())
+				}
+				if !foundB {
+					t.Fatalf("TestSSHServer did not record User B identity %q; connected users: %v",
+						data.userBIdentity, proc.SSHServer.ConnectedUsers())
+				}
+				t.Logf("Two distinct OIDC identities mapped to distinct SSH usernames: A=%q B=%q ✓",
+					data.userAIdentity, data.userBIdentity)
 			}
 			return ctx
 		}).

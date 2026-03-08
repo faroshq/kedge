@@ -124,12 +124,13 @@ func startTunneler(ctx context.Context, hubURL string, token string, edgeName st
 		return fmt.Errorf("failed to initiate connection: %w", err)
 	}
 
-	// Token-exchange flow: if the hub returned a durable agent token in the
+	// Token-exchange flow: if the hub returned an agent kubeconfig in the
 	// WebSocket upgrade response, call the onAgentToken callback so the caller
-	// can persist the token for reconnects without the bootstrap join token.
+	// can persist it for reconnects without the bootstrap join token.
+	// The header value is base64-encoded kubeconfig YAML.
 	if resp != nil && onAgentToken != nil {
-		if agentToken := resp.Header.Get("X-Kedge-Agent-Token"); agentToken != "" {
-			onAgentToken(agentToken)
+		if kubeconfigB64 := resp.Header.Get("X-Kedge-Agent-Kubeconfig"); kubeconfigB64 != "" {
+			onAgentToken(kubeconfigB64)
 		}
 	}
 

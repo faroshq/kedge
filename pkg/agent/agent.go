@@ -20,6 +20,7 @@ package agent
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,6 +61,51 @@ func AgentConfigPath(edgeName string) (string, error) {
 		return "", fmt.Errorf("getting home directory: %w", err)
 	}
 	return filepath.Join(home, ".kedge", "agent-"+edgeName+".json"), nil
+}
+
+// AgentKubeconfigPath returns the path for the per-edge agent kubeconfig file.
+// Default location: ~/.kedge/agent-<edgeName>.kubeconfig
+func AgentKubeconfigPath(edgeName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return filepath.Join(home, ".kedge", "agent-"+edgeName+".kubeconfig"), nil
+}
+
+// SaveAgentKubeconfig decodes the base64-encoded kubeconfig returned by the hub
+// (via X-Kedge-Agent-Kubeconfig header) and persists it to disk so the agent
+// can reconnect without the bootstrap join token after the first successful auth.
+func SaveAgentKubeconfig(edgeName, kubeconfigB64 string) error {
+	kubeconfigBytes, err := base64.StdEncoding.DecodeString(kubeconfigB64)
+	if err != nil {
+		return fmt.Errorf("decoding kubeconfig from hub: %w", err)
+	}
+	path, err := AgentKubeconfigPath(edgeName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+	//nolint:gosec // kubeconfig with credentials; world-read would be a security issue
+	if err := os.WriteFile(path, kubeconfigBytes, 0600); err != nil {
+		return fmt.Errorf("writing agent kubeconfig to %s: %w", path, err)
+	}
+	return nil
+}
+
+// LoadAgentKubeconfig reads a previously saved agent kubeconfig from disk.
+// Returns an empty string without error if the file does not exist yet.
+func LoadAgentKubeconfig(edgeName string) (string, error) {
+	path, err := AgentKubeconfigPath(edgeName)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		return "", nil
+	}
+	return path, nil
 }
 
 // SaveAgentConfig persists the durable agent token to disk so the agent can
@@ -321,10 +367,10 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	onAgentToken := func(agentToken string) {
-		logger.Info("Hub returned durable agent token via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
-		if err := SaveAgentConfig(a.opts.EdgeName, tunnelURL, agentToken); err != nil {
-			logger.Error(err, "failed to save durable agent token")
+	onAgentToken := func(kubeconfigB64 string) {
+		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
+		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
+			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}
 	}
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken)
@@ -384,10 +430,10 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	serverOnAgentToken := func(agentToken string) {
-		logger.Info("Hub returned durable agent token via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
-		if err := SaveAgentConfig(a.opts.EdgeName, tunnelURL, agentToken); err != nil {
-			logger.Error(err, "failed to save durable agent token")
+	serverOnAgentToken := func(kubeconfigB64 string) {
+		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
+		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
+			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}
 	}
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.

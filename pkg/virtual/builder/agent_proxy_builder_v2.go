@@ -19,6 +19,7 @@ package builder
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -30,6 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
@@ -125,13 +128,15 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		}
 
 		// 4. Upgrade to WebSocket.
-		// When the agent authenticated via a bootstrap join token, include the token
-		// in the upgrade response so the agent can persist it as its durable
-		// credential and reconnect without the join token on restart.
+		// When the agent authenticated via a bootstrap join token, build a minimal
+		// kubeconfig and include it in the upgrade response so the agent can save it
+		// as its durable credential and reconnect without the join token on restart.
 		var upgradeHeaders http.Header
 		if authenticatedByJoinToken {
-			upgradeHeaders = http.Header{
-				"X-Kedge-Agent-Token": []string{token},
+			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, name, token)
+			upgradeHeaders = http.Header{}
+			if kubeconfigHeader != "" {
+				upgradeHeaders.Set("X-Kedge-Agent-Kubeconfig", kubeconfigHeader)
 			}
 		}
 		wsConn, err := upgrader.Upgrade(w, r, upgradeHeaders)
@@ -200,6 +205,50 @@ func parseEdgeAgentPath(path string) (cluster, name string, ok bool) {
 // Format: "edges/{cluster}/{name}"
 func edgeConnKey(cluster, name string) string {
 	return "edges/" + cluster + "/" + name
+}
+
+// buildAgentKubeconfigHeader builds a minimal kubeconfig for the agent (using
+// the join token as the bearer credential) and returns it base64-encoded,
+// ready to be placed in the X-Kedge-Agent-Kubeconfig response header.
+// Returns an empty string if the kubeconfig cannot be serialised.
+func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, token string) string {
+	hubURL := p.hubExternalURL
+	if hubURL == "" {
+		hubURL = "https://localhost:8443"
+	}
+	cfg := buildAgentKubeconfig(hubURL, cluster, edgeName, token)
+	data, err := clientcmd.Write(*cfg)
+	if err != nil {
+		p.logger.Error(err, "failed to serialise agent kubeconfig; falling back to empty header")
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// buildAgentKubeconfig constructs a minimal kubeconfig that the agent can use
+// to authenticate against the hub. The join token is used as the bearer token.
+func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi.Config {
+	// Include the cluster path in the server URL so the agent reconnects to the
+	// correct kcp logical cluster on restart (mirrors how existing agents work).
+	serverURL := hubURL
+	if cluster != "" && cluster != "default" {
+		serverURL = strings.TrimRight(hubURL, "/") + "/clusters/" + cluster
+	}
+	contextName := "kedge-" + edgeName
+	return &clientcmdapi.Config{
+		APIVersion: "v1",
+		Kind:       "Config",
+		Clusters: map[string]*clientcmdapi.Cluster{
+			"kedge-hub": {Server: serverURL},
+		},
+		AuthInfos: map[string]*clientcmdapi.AuthInfo{
+			contextName: {Token: token},
+		},
+		Contexts: map[string]*clientcmdapi.Context{
+			"default": {Cluster: "kedge-hub", AuthInfo: contextName},
+		},
+		CurrentContext: "default",
+	}
 }
 
 // authorizeByJoinToken looks up the Edge by cluster+name and performs a

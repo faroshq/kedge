@@ -52,7 +52,12 @@ import (
 //
 // cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
 // If empty, it's extracted from the token (for SA tokens) or defaults to "default".
-func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) {
+//
+// onAgentToken, if non-nil, is called on the first successful connection when
+// the hub returns an X-Kedge-Agent-Token header (token-exchange flow). The
+// callback receives the durable token string. Callers can use this to persist
+// the token locally so the agent can reconnect without the bootstrap join token.
+func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string, onAgentToken func(string)) {
 	logger := klog.FromContext(ctx)
 	logger.Info("Starting proxy tunnel", "hubURL", hubURL, "edgeName", edgeName, "resourceType", resourceType)
 
@@ -71,7 +76,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName
 		default:
 		}
 
-		err := startTunneler(ctx, hubURL, token, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster)
+		err := startTunneler(ctx, hubURL, token, edgeName, resourceType, downstream, tlsConfig, stateChannel, sshPort, cluster, onAgentToken)
 		if err != nil {
 			logger.Error(err, "tunnel connection failed, reconnecting")
 		}
@@ -88,7 +93,7 @@ func StartProxyTunnel(ctx context.Context, hubURL string, token string, edgeName
 	}
 }
 
-func startTunneler(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string) error {
+func startTunneler(ctx context.Context, hubURL string, token string, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan<- bool, sshPort int, cluster string, onAgentToken func(string)) error {
 	logger := klog.FromContext(ctx)
 
 	// Connect to hub's tunnel endpoint.
@@ -114,9 +119,18 @@ func startTunneler(ctx context.Context, hubURL string, token string, edgeName st
 	edgeProxyURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/proxy",
 		baseHubURL, clusterName, edgeName)
 
-	conn, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig)
+	conn, resp, err := initiateConnection(ctx, edgeProxyURL, token, tlsConfig)
 	if err != nil {
 		return fmt.Errorf("failed to initiate connection: %w", err)
+	}
+
+	// Token-exchange flow: if the hub returned a durable agent token in the
+	// WebSocket upgrade response, call the onAgentToken callback so the caller
+	// can persist the token for reconnects without the bootstrap join token.
+	if resp != nil && onAgentToken != nil {
+		if agentToken := resp.Header.Get("X-Kedge-Agent-Token"); agentToken != "" {
+			onAgentToken(agentToken)
+		}
 	}
 
 	logger.Info("Tunnel connection established")
@@ -149,11 +163,13 @@ func startTunneler(ctx context.Context, hubURL string, token string, edgeName st
 	}
 }
 
-// initiateConnection dials the hub via WebSocket and returns the underlying net.Conn.
-func initiateConnection(ctx context.Context, wsURL string, token string, tlsConfig *tls.Config) (net.Conn, error) {
+// initiateConnection dials the hub via WebSocket and returns the underlying
+// net.Conn together with the HTTP upgrade response. The response headers may
+// contain hub-provided metadata such as X-Kedge-Agent-Token (token-exchange).
+func initiateConnection(ctx context.Context, wsURL string, token string, tlsConfig *tls.Config) (net.Conn, *http.Response, error) {
 	u, err := url.Parse(wsURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Convert http(s) to ws(s)
@@ -174,12 +190,12 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 		header.Set("Authorization", "Bearer "+token)
 	}
 
-	wsConn, _, err := dialer.DialContext(ctx, u.String(), header)
+	wsConn, resp, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
-		return nil, fmt.Errorf("WebSocket dial failed: %w", err)
+		return nil, nil, fmt.Errorf("WebSocket dial failed: %w", err)
 	}
 
-	return wsconnadapter.New(wsConn), nil
+	return wsconnadapter.New(wsConn), resp, nil
 }
 
 // SplitBaseAndCluster splits a hub URL into the base URL (scheme+host only) and

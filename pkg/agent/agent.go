@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,6 +43,67 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 )
+
+// AgentConfig holds the locally persisted agent configuration. It is written
+// to disk after the first successful join-token authentication so that the
+// agent can reconnect on restart without needing the bootstrap join token again.
+type AgentConfig struct {
+	HubURL string `json:"hubURL"`
+	Token  string `json:"token"`
+}
+
+// AgentConfigPath returns the path for the per-edge agent config file.
+// Default location: ~/.kedge/agent-<edgeName>.json
+func AgentConfigPath(edgeName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home directory: %w", err)
+	}
+	return filepath.Join(home, ".kedge", "agent-"+edgeName+".json"), nil
+}
+
+// SaveAgentConfig persists the durable agent token to disk so the agent can
+// reconnect without the bootstrap join token after the first successful auth.
+func SaveAgentConfig(edgeName, hubURL, token string) error {
+	path, err := AgentConfigPath(edgeName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+	cfg := AgentConfig{HubURL: hubURL, Token: token}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling agent config: %w", err)
+	}
+	//nolint:gosec // config file with token, world-read would be a security issue
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing agent config to %s: %w", path, err)
+	}
+	return nil
+}
+
+// LoadAgentConfig reads a previously saved agent config from disk.
+// Returns nil without error if the config file does not exist yet.
+func LoadAgentConfig(edgeName string) (*AgentConfig, error) {
+	path, err := AgentConfigPath(edgeName)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path) //nolint:gosec
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading agent config from %s: %w", path, err)
+	}
+	var cfg AgentConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing agent config from %s: %w", path, err)
+	}
+	return &cfg, nil
+}
 
 // clusterFromConfig returns the kcp cluster name embedded in the hub config's
 // Host URL (e.g. "https://hub:8443/clusters/abc123" → "abc123").
@@ -259,7 +321,13 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName)
+	onAgentToken := func(agentToken string) {
+		logger.Info("Hub returned durable agent token via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
+		if err := SaveAgentConfig(a.opts.EdgeName, tunnelURL, agentToken); err != nil {
+			logger.Error(err, "failed to save durable agent token")
+		}
+	}
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.EdgeName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -316,8 +384,14 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		tunnelURL = baseURL
 	}
 	tunnelState := make(chan bool, 1)
+	serverOnAgentToken := func(agentToken string) {
+		logger.Info("Hub returned durable agent token via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
+		if err := SaveAgentConfig(a.opts.EdgeName, tunnelURL, agentToken); err != nil {
+			logger.Error(err, "failed to save durable agent token")
+		}
+	}
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken)
 
 	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
 	go func() {

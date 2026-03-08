@@ -89,6 +89,11 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		//    SA tokens go through kcp delegated authorization.
 		//    Bootstrap join tokens are accepted if they match edge.Status.JoinToken.
 		_, isStaticToken := p.staticTokens[token]
+		// authenticatedByJoinToken tracks whether the agent was authenticated via a
+		// bootstrap join token. When true, the hub echoes the token back in the
+		// X-Kedge-Agent-Token upgrade response header so the agent can persist it
+		// as its durable credential (token-exchange flow).
+		authenticatedByJoinToken := false
 		if !isStaticToken {
 			if _, ok := parseServiceAccountToken(token); !ok {
 				// Not a SA token — check if it's a valid bootstrap join token for this edge.
@@ -104,6 +109,7 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 					http.Error(w, "Unauthorized", http.StatusUnauthorized)
 					return
 				}
+				authenticatedByJoinToken = true
 			} else if p.kcpConfig != nil {
 				// Always use cluster from URL path — do NOT use JWT's clusterName claim
 				// (it's unverified and not yet validated by kcp). The TokenReview performed
@@ -119,7 +125,16 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		}
 
 		// 4. Upgrade to WebSocket.
-		wsConn, err := upgrader.Upgrade(w, r, nil)
+		// When the agent authenticated via a bootstrap join token, include the token
+		// in the upgrade response so the agent can persist it as its durable
+		// credential and reconnect without the join token on restart.
+		var upgradeHeaders http.Header
+		if authenticatedByJoinToken {
+			upgradeHeaders = http.Header{
+				"X-Kedge-Agent-Token": []string{token},
+			}
+		}
+		wsConn, err := upgrader.Upgrade(w, r, upgradeHeaders)
 		if err != nil {
 			p.logger.Error(err, "failed to upgrade WebSocket connection",
 				"cluster", cluster, "name", name)

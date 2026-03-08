@@ -301,6 +301,9 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := edge.SetupMountWithManager(mgr, kcpConfig, mountURL); err != nil {
 			return fmt.Errorf("setting up edge mount controller: %w", err)
 		}
+		if err := edge.SetupTokenWithManager(mgr); err != nil {
+			return fmt.Errorf("setting up edge token controller: %w", err)
+		}
 		go func() {
 			logger.Info("Starting multicluster manager")
 			if err := mgr.Start(ctx); err != nil {

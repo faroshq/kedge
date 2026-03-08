@@ -18,13 +18,21 @@ package builder
 
 import (
 	"context"
+	"crypto/subtle"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 
+	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
+	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
@@ -79,15 +87,24 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 
 		// 3. Authentication: static tokens bypass JWT SA requirement.
 		//    SA tokens go through kcp delegated authorization.
+		//    Bootstrap join tokens are accepted if they match edge.Status.JoinToken.
 		_, isStaticToken := p.staticTokens[token]
 		if !isStaticToken {
 			if _, ok := parseServiceAccountToken(token); !ok {
-				p.logger.Info("Rejected edge agent tunnel: invalid or missing SA token",
-					"cluster", cluster, "name", name)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-			if p.kcpConfig != nil {
+				// Not a SA token — check if it's a valid bootstrap join token for this edge.
+				if p.kcpConfig == nil {
+					p.logger.Info("Rejected edge agent tunnel: invalid or missing SA token (no kcp configured)",
+						"cluster", cluster, "name", name)
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+				if err := p.authorizeByJoinToken(r.Context(), token, cluster, name); err != nil {
+					p.logger.Info("Rejected edge agent tunnel: invalid join token",
+						"cluster", cluster, "name", name, "err", err)
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			} else if p.kcpConfig != nil {
 				// Always use cluster from URL path — do NOT use JWT's clusterName claim
 				// (it's unverified and not yet validated by kcp). The TokenReview performed
 				// inside authorizeFn will reject tokens not issued for this cluster.
@@ -168,4 +185,45 @@ func parseEdgeAgentPath(path string) (cluster, name string, ok bool) {
 // Format: "edges/{cluster}/{name}"
 func edgeConnKey(cluster, name string) string {
 	return "edges/" + cluster + "/" + name
+}
+
+// authorizeByJoinToken looks up the Edge by cluster+name and performs a
+// constant-time comparison of the provided token against edge.Status.JoinToken.
+// Returns nil if the token is valid, or an error otherwise.
+func (p *virtualWorkspaces) authorizeByJoinToken(ctx context.Context, token, cluster, name string) error {
+	if p.kcpConfig == nil {
+		return fmt.Errorf("kcp config not available")
+	}
+	if token == "" {
+		return fmt.Errorf("empty token")
+	}
+
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("creating dynamic client: %w", err)
+	}
+
+	u, err := dynClient.Resource(edgeGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting edge %s/%s: %w", cluster, name, err)
+	}
+
+	var edge kedgev1alpha1.Edge
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &edge); err != nil {
+		return fmt.Errorf("converting edge from unstructured: %w", err)
+	}
+
+	if edge.Status.JoinToken == "" {
+		return fmt.Errorf("edge %s/%s has no join token set", cluster, name)
+	}
+
+	// Constant-time comparison to prevent timing attacks.
+	if subtle.ConstantTimeCompare([]byte(token), []byte(edge.Status.JoinToken)) != 1 {
+		return fmt.Errorf("join token mismatch for edge %s/%s", cluster, name)
+	}
+
+	return nil
 }

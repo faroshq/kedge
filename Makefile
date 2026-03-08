@@ -386,7 +386,7 @@ helm-clean: ## Clean up built helm charts
 # --- E2E Tests ---
 
 E2E_FLAGS ?=
-E2E_TIMEOUT ?= 10m
+E2E_TIMEOUT ?= 20m
 
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 

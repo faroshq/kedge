@@ -123,8 +123,15 @@ func AgentConnectsWithJoinToken() features.Feature {
 			}
 			t.Logf("join token obtained for %q: len=%d", edgeName, len(token))
 
+			// Extract the kcp logical cluster name from the hub kubeconfig so
+			// the agent can build the correct WebSocket path.  The join token
+			// alone does not carry cluster information.
+			clusterName := framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig)
+			t.Logf("cluster name extracted from hub kubeconfig: %q", clusterName)
+
 			// Start a server-type agent that authenticates with the join token.
-			agent := framework.NewAgentWithToken(framework.RepoRoot(), clusterEnv.HubURL, edgeName, token)
+			agent := framework.NewAgentWithToken(framework.RepoRoot(), clusterEnv.HubURL, edgeName, token).
+				WithCluster(clusterName)
 			if err := agent.Start(ctx); err != nil {
 				t.Fatalf("failed to start token agent: %v", err)
 			}

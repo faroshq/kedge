@@ -108,6 +108,7 @@ type TokenAgent struct {
 	hubURL          string
 	edgeName        string
 	token           string
+	clusterName     string
 	agentKubeconfig string
 	agentType       string
 	cmd             *exec.Cmd
@@ -141,6 +142,14 @@ func (a *TokenAgent) WithType(t string) *TokenAgent {
 	return a
 }
 
+// WithCluster sets the kcp logical cluster name so the agent connects to the
+// correct workspace on the hub.  Required when using a join token because the
+// token alone does not carry cluster information.
+func (a *TokenAgent) WithCluster(clusterName string) *TokenAgent {
+	a.clusterName = clusterName
+	return a
+}
+
 // Start launches the kedge agent join process with the configured join token.
 // It runs until Stop is called or the parent context is cancelled.
 func (a *TokenAgent) Start(ctx context.Context) error {
@@ -157,6 +166,9 @@ func (a *TokenAgent) Start(ctx context.Context) error {
 	}
 	if a.agentKubeconfig != "" {
 		args = append(args, "--kubeconfig", a.agentKubeconfig)
+	}
+	if a.clusterName != "" {
+		args = append(args, "--cluster", a.clusterName)
 	}
 
 	cmd := exec.CommandContext(agentCtx, a.bin, args...)

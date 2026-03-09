@@ -348,10 +348,17 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		return fmt.Errorf("creating downstream client: %w", err)
 	}
 
-	if err := a.registerEdge(ctx, hubClient); err != nil {
-		return fmt.Errorf("registering edge: %w", err)
+	// In join-token mode the Edge is pre-provisioned by the admin; skip
+	// registration (the kcp API would reject the join token with Unauthorized).
+	if a.opts.Token == "" {
+		if err := a.registerEdge(ctx, hubClient); err != nil {
+			return fmt.Errorf("registering edge: %w", err)
+		}
+		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
+	} else {
+		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+			"edgeName", a.opts.EdgeName)
 	}
-	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
 	clusterName := a.opts.Cluster
@@ -407,10 +414,19 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 
 // runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
 func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
-	if err := a.registerEdge(ctx, hubClient); err != nil {
-		return fmt.Errorf("registering edge: %w", err)
+	// In join-token mode the Edge is pre-provisioned by the admin; the token is
+	// a hub-side bootstrap credential only (not a kcp SA token), so the kcp API
+	// would reject any Get/Create call with Unauthorized.  Skip registration and
+	// go straight to the WebSocket tunnel.
+	if a.opts.Token == "" {
+		if err := a.registerEdge(ctx, hubClient); err != nil {
+			return fmt.Errorf("registering edge: %w", err)
+		}
+		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
+	} else {
+		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+			"edgeName", a.opts.EdgeName)
 	}
-	logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
 
 	// Set up SSH credentials if provided.
 	if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {

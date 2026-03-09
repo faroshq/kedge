@@ -51,7 +51,7 @@ func main() {
 				} else if kubeconfigPath != "" {
 					logger.Info("Using saved agent kubeconfig from previous registration", "edgeName", opts.EdgeName, "path", kubeconfigPath)
 					opts.HubKubeconfig = kubeconfigPath
-					opts.Token = ""              // Clear join token; SA kubeconfig takes precedence.
+					opts.Token = "" // Clear join token; SA kubeconfig takes precedence.
 					opts.UsingSavedKubeconfig = true
 				}
 			}

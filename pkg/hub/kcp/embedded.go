@@ -115,6 +115,9 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	// This allows kcp to authenticate static token users natively, which is
 	// required for workspace mount access (e.g. `ws use <edge>`).
 	if len(e.opts.StaticAuthTokens) > 0 {
+		if err := os.MkdirAll(e.opts.RootDir, 0700); err != nil {
+			return fmt.Errorf("creating kcp root directory: %w", err)
+		}
 		tokenFilePath := filepath.Join(e.opts.RootDir, "token-auth-file.csv")
 		var lines []string
 		for _, token := range e.opts.StaticAuthTokens {

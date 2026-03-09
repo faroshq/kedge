@@ -421,3 +421,57 @@ func (k *KedgeClient) ExtractEdgeKubeconfig(ctx context.Context, edgeName, destP
 		return true, nil
 	})
 }
+
+// WaitForEdgeJoinTokenCleared polls until edge.status.joinToken is empty
+// (cleared after successful registration). Returns an error if the field is
+// still non-empty after timeout.
+func (k *KedgeClient) WaitForEdgeJoinTokenCleared(ctx context.Context, edgeName string, timeout time.Duration) error {
+	return Poll(ctx, 3*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		token, err := k.GetEdgeJoinToken(ctx, edgeName)
+		if err != nil {
+			return false, nil // transient
+		}
+		return token == "", nil
+	})
+}
+
+// GetEdgeCondition returns the status (True/False/Unknown) of the named
+// condition on the edge, or "" if the condition is not present.
+func (k *KedgeClient) GetEdgeCondition(ctx context.Context, edgeName, conditionType string) (string, error) {
+	// jsonpath doesn't support filtering by field value directly, so use
+	// a simple approach: get all conditions as JSON and scan in Go.
+	out, err := k.Kubectl(ctx,
+		"get", "edge", edgeName,
+		"-o", "jsonpath={.status.conditions}",
+		"--insecure-skip-tls-verify",
+	)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return "", err
+	}
+	// Parse minimal condition array.
+	var conditions []struct {
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &conditions); err != nil {
+		return "", fmt.Errorf("parsing conditions: %w", err)
+	}
+	for _, c := range conditions {
+		if c.Type == conditionType {
+			return c.Status, nil
+		}
+	}
+	return "", nil
+}
+
+// WaitForEdgeCondition polls until edge condition conditionType reaches the
+// expected status (e.g. "True"), or returns an error after timeout.
+func (k *KedgeClient) WaitForEdgeCondition(ctx context.Context, edgeName, conditionType, expectedStatus string, timeout time.Duration) error {
+	return Poll(ctx, 3*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		status, err := k.GetEdgeCondition(ctx, edgeName, conditionType)
+		if err != nil {
+			return false, nil // transient
+		}
+		return status == expectedStatus, nil
+	})
+}

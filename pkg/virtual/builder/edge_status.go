@@ -34,6 +34,39 @@ var edgeGVR = schema.GroupVersionResource{
 	Resource: "edges",
 }
 
+// markEdgeConnected patches an Edge's status to Connected=true, Phase=Ready.
+// It is called by the agent-proxy handler when a join-token-authenticated
+// tunnel is established, because in that flow the agent's edge_reporter cannot
+// call the kcp API directly (the join token is not a valid kcp credential).
+// Best-effort: errors are logged but not propagated.
+func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string) {
+	if p.kcpConfig == nil {
+		return
+	}
+
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		p.logger.Error(err, "markEdgeConnected: failed to create dynamic client",
+			"cluster", cluster, "edge", name)
+		return
+	}
+
+	patch := []byte(`{"status":{"connected":true,"phase":"Ready"}}`)
+	_, err = dynClient.Resource(edgeGVR).Patch(ctx, name,
+		types.MergePatchType, patch, metav1.PatchOptions{}, "status")
+	if err != nil {
+		p.logger.Error(err, "markEdgeConnected: failed to patch edge status",
+			"cluster", cluster, "edge", name)
+		return
+	}
+
+	p.logger.Info("Edge marked Ready on join-token tunnel open",
+		"cluster", cluster, "edge", name)
+}
+
 // markEdgeDisconnected patches an Edge's status to Connected=false,
 // Phase=Disconnected on the hub.  It is called by the agent-proxy-v2 handler
 // when the agent's revdial tunnel closes so that the hub's view of edge

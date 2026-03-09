@@ -399,12 +399,21 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		}
 	}()
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
-	go func() {
-		if err := reporter.Run(ctx); err != nil {
-			logger.Error(err, "Edge status reporter failed")
-		}
-	}()
+	// In join-token mode the hub manages edge status server-side.
+	if a.opts.Token == "" {
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
+		go func() {
+			if err := reporter.Run(ctx); err != nil {
+				logger.Error(err, "Edge status reporter failed")
+			}
+		}()
+	} else {
+		logger.Info("Join-token mode: hub manages edge status; skipping agent-side edge_reporter")
+		go func() {
+			for range tunnelState {
+			}
+		}()
+	}
 
 	logger.Info("Agent started successfully (kubernetes mode)")
 	<-ctx.Done()
@@ -455,12 +464,25 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken)
 
-	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
-	go func() {
-		if err := reporter.Run(ctx); err != nil {
-			logger.Error(err, "Edge status reporter failed")
-		}
-	}()
+	// In join-token mode the hub marks the edge Ready/Disconnected server-side
+	// (via markEdgeConnected/markEdgeDisconnected) because the join token is not
+	// a valid kcp credential and the edge_reporter would get Unauthorized on every
+	// status-update call.
+	if a.opts.Token == "" {
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, hubClient, tunnelState, a.opts.SSHProxyPort)
+		go func() {
+			if err := reporter.Run(ctx); err != nil {
+				logger.Error(err, "Edge status reporter failed")
+			}
+		}()
+	} else {
+		logger.Info("Join-token mode: hub manages edge status; skipping agent-side edge_reporter")
+		// Drain the tunnel state channel to prevent goroutine leak.
+		go func() {
+			for range tunnelState {
+			}
+		}()
+	}
 
 	logger.Info("Agent started successfully (server mode)")
 	<-ctx.Done()

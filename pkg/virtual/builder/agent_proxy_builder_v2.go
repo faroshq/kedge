@@ -157,6 +157,13 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)
 
+		// In the join-token flow the agent's edge_reporter cannot call the kcp
+		// API directly (the join token is not a valid kcp credential), so the
+		// hub marks the edge Ready here as soon as the tunnel is up.
+		if authenticatedByJoinToken {
+			go p.markEdgeConnected(context.Background(), cluster, name)
+		}
+
 		// Block until the tunnel closes, then clean up the entry so stale
 		// look-ups don't succeed.
 		<-dialer.Done()

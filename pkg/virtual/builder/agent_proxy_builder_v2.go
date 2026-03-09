@@ -28,7 +28,9 @@ import (
 	"github.com/function61/holepunch-server/pkg/wsconnadapter"
 	"github.com/gorilla/websocket"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -39,6 +41,8 @@ import (
 	utilhttp "github.com/faroshq/faros-kedge/pkg/util/http"
 	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
+
+var secretGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 
 // buildEdgeAgentProxyHandler creates the HTTP handler for Edge agent tunnel
 // registration (the agent-facing side of the new Edge workflow).
@@ -214,26 +218,61 @@ func edgeConnKey(cluster, name string) string {
 	return "edges/" + cluster + "/" + name
 }
 
-// buildAgentKubeconfigHeader builds a minimal kubeconfig for the agent (using
-// the join token as the bearer credential) and returns it base64-encoded,
-// ready to be placed in the X-Kedge-Agent-Kubeconfig response header.
-// Returns an empty string if the kubeconfig cannot be serialised.
-func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, token string) string {
+// buildAgentKubeconfigHeader reads the ServiceAccount token from the kubeconfig
+// secret created by the RBAC controller, builds a minimal kubeconfig with it,
+// and returns the result base64-encoded for the X-Kedge-Agent-Kubeconfig header.
+// Returns an empty string if the SA token is not yet available.
+func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string {
+	if p.kcpConfig == nil {
+		p.logger.Info("Cannot build agent kubeconfig: no kcp config")
+		return ""
+	}
+
+	// Read the SA token from the kubeconfig secret created by the RBAC controller.
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		p.logger.Error(err, "failed to create dynamic client for SA token lookup")
+		return ""
+	}
+
+	secretName := "edge-" + edgeName + "-kubeconfig"
+	secret, err := dynClient.Resource(secretGVR).Namespace("kedge-system").Get(
+		context.Background(), secretName, metav1.GetOptions{})
+	if err != nil {
+		p.logger.Error(err, "failed to get kubeconfig secret for token-exchange",
+			"secret", "kedge-system/"+secretName)
+		return ""
+	}
+
+	tokenB64, found, _ := unstructured.NestedString(secret.Object, "data", "token")
+	if !found || tokenB64 == "" {
+		p.logger.Info("SA token not yet populated in kubeconfig secret", "secret", secretName)
+		return ""
+	}
+	tokenBytes, err := base64.StdEncoding.DecodeString(tokenB64)
+	if err != nil {
+		p.logger.Error(err, "failed to decode SA token from secret", "secret", secretName)
+		return ""
+	}
+	saToken := string(tokenBytes)
+
 	hubURL := p.hubExternalURL
 	if hubURL == "" {
 		hubURL = "https://localhost:8443"
 	}
-	cfg := buildAgentKubeconfig(hubURL, cluster, edgeName, token)
-	data, err := clientcmd.Write(*cfg)
+	kubecfg := buildAgentKubeconfig(hubURL, cluster, edgeName, saToken)
+	data, err := clientcmd.Write(*kubecfg)
 	if err != nil {
-		p.logger.Error(err, "failed to serialise agent kubeconfig; falling back to empty header")
+		p.logger.Error(err, "failed to serialise agent kubeconfig")
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(data)
 }
 
 // buildAgentKubeconfig constructs a minimal kubeconfig that the agent can use
-// to authenticate against the hub. The join token is used as the bearer token.
+// to authenticate against the hub with a ServiceAccount token.
 func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi.Config {
 	// Include the cluster path in the server URL so the agent reconnects to the
 	// correct kcp logical cluster on restart (mirrors how existing agents work).
@@ -246,7 +285,7 @@ func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi
 		APIVersion: "v1",
 		Kind:       "Config",
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"kedge-hub": {Server: serverURL},
+			"kedge-hub": {Server: serverURL, InsecureSkipTLSVerify: true},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			contextName: {Token: token},

@@ -21,8 +21,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -66,7 +69,11 @@ func (r *TokenReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 		return ctrl.Result{}, err
 	}
 
-	// Nothing to do if the token already exists.
+	// Nothing to do if the token already exists or the edge is already registered.
+	registered := meta.FindStatusCondition(edge.Status.Conditions, kedgev1alpha1.EdgeConditionRegistered)
+	if registered != nil && registered.Status == metav1.ConditionTrue {
+		return ctrl.Result{}, nil
+	}
 	if edge.Status.JoinToken != "" {
 		return ctrl.Result{}, nil
 	}
@@ -77,6 +84,13 @@ func (r *TokenReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 	}
 
 	edge.Status.JoinToken = token
+	meta.SetStatusCondition(&edge.Status.Conditions, metav1.Condition{
+		Type:               kedgev1alpha1.EdgeConditionRegistered,
+		Status:             metav1.ConditionFalse,
+		Reason:             "AwaitingAgent",
+		Message:            "Waiting for agent to register using the bootstrap join token.",
+		LastTransitionTime: metav1.NewTime(time.Now()),
+	})
 	if err := c.Status().Update(ctx, &edge); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating edge status with join token: %w", err)
 	}

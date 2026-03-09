@@ -277,6 +277,9 @@ func New(opts *Options) (*Agent, error) {
 		if opts.HubURL != "" {
 			hubConfig.Host = opts.HubURL
 		}
+		if opts.InsecureSkipTLSVerify {
+			hubConfig.Insecure = true
+		}
 	} else if opts.HubURL != "" {
 		hubConfig = &rest.Config{
 			Host:        opts.HubURL,
@@ -348,16 +351,20 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		return fmt.Errorf("creating downstream client: %w", err)
 	}
 
-	// In join-token mode the Edge is pre-provisioned by the admin; skip
-	// registration (the kcp API would reject the join token with Unauthorized).
-	if a.opts.Token == "" {
+	// Skip edge registration when:
+	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
+	// - saved kubeconfig mode: edge was already registered in a previous run
+	if a.opts.Token != "" {
+		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+			"edgeName", a.opts.EdgeName)
+	} else if a.opts.HubKubeconfig != "" {
+		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
+			"edgeName", a.opts.EdgeName)
+	} else {
 		if err := a.registerEdge(ctx, hubClient); err != nil {
 			return fmt.Errorf("registering edge: %w", err)
 		}
 		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeKubernetes))
-	} else {
-		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
-			"edgeName", a.opts.EdgeName)
 	}
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
@@ -375,7 +382,8 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	}
 	tunnelState := make(chan bool, 1)
 	onAgentToken := func(kubeconfigB64 string) {
-		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
+		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
+		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
 		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
 			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}
@@ -423,18 +431,20 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 
 // runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
 func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
-	// In join-token mode the Edge is pre-provisioned by the admin; the token is
-	// a hub-side bootstrap credential only (not a kcp SA token), so the kcp API
-	// would reject any Get/Create call with Unauthorized.  Skip registration and
-	// go straight to the WebSocket tunnel.
-	if a.opts.Token == "" {
+	// Skip edge registration when:
+	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
+	// - saved kubeconfig mode: edge was already registered in a previous run
+	if a.opts.Token != "" {
+		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+			"edgeName", a.opts.EdgeName)
+	} else if a.opts.HubKubeconfig != "" {
+		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
+			"edgeName", a.opts.EdgeName)
+	} else {
 		if err := a.registerEdge(ctx, hubClient); err != nil {
 			return fmt.Errorf("registering edge: %w", err)
 		}
 		logger.Info("Edge registered", "type", string(kedgev1alpha1.EdgeTypeServer))
-	} else {
-		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
-			"edgeName", a.opts.EdgeName)
 	}
 
 	// Set up SSH credentials if provided.
@@ -456,7 +466,8 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 	tunnelState := make(chan bool, 1)
 	serverOnAgentToken := func(kubeconfigB64 string) {
-		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName)
+		path, _ := AgentKubeconfigPath(a.opts.EdgeName)
+		logger.Info("Hub returned kubeconfig via token-exchange; saving for future reconnects", "edgeName", a.opts.EdgeName, "path", path)
 		if err := SaveAgentKubeconfig(a.opts.EdgeName, kubeconfigB64); err != nil {
 			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}

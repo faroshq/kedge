@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -388,7 +389,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}
 	}
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, clusterName, onAgentToken, nil)
 
 	wkr := reconciler.NewWorkloadReconciler(a.opts.EdgeName, hubClient, hubClient.Dynamic(), downstreamClient)
 	go func() {
@@ -448,8 +449,14 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	}
 
 	// Set up SSH credentials if provided.
-	if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
-		return fmt.Errorf("setting up SSH credentials: %w", err)
+	// In join-token mode the token is not a valid kcp credential, so skip
+	// credential setup — the hub manages SSH credentials server-side.
+	if a.opts.Token == "" {
+		if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
+			return fmt.Errorf("setting up SSH credentials: %w", err)
+		}
+	} else {
+		logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
 	}
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
@@ -472,8 +479,17 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 			logger.Error(err, "failed to save agent kubeconfig from hub")
 		}
 	}
+
+	// In join-token mode, pass SSH credentials as WebSocket headers so the hub
+	// can store them server-side (the agent's join token is not a valid kcp
+	// credential for creating secrets).
+	var sshHeaders http.Header
+	if a.opts.Token != "" {
+		sshHeaders = a.buildSSHHeaders()
+	}
+
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
-	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken)
+	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.hubConfig.BearerToken, a.opts.EdgeName, "edges", nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, serverClusterName, serverOnAgentToken, sshHeaders)
 
 	// In join-token mode the hub marks the edge Ready/Disconnected server-side
 	// (via markEdgeConnected/markEdgeDisconnected) because the join token is not
@@ -505,6 +521,31 @@ const (
 	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
 	sshCredentialsNamespace = "kedge-system"
 )
+
+// buildSSHHeaders returns HTTP headers carrying SSH credentials for the hub
+// to store server-side during join-token registration.
+func (a *Agent) buildSSHHeaders() http.Header {
+	h := http.Header{}
+	sshUser := a.opts.SSHUser
+	if sshUser == "" {
+		if u, err := user.Current(); err == nil {
+			sshUser = u.Username
+		} else {
+			sshUser = "root"
+		}
+	}
+	h.Set("X-Kedge-SSH-User", sshUser)
+	if a.opts.SSHPassword != "" {
+		h.Set("X-Kedge-SSH-Password", base64.StdEncoding.EncodeToString([]byte(a.opts.SSHPassword)))
+	}
+	if a.opts.SSHPrivateKeyPath != "" {
+		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
+		if err == nil {
+			h.Set("X-Kedge-SSH-PrivateKey", base64.StdEncoding.EncodeToString(keyData))
+		}
+	}
+	return h
+}
 
 // setupSSHCredentials creates a Secret with SSH credentials and updates the Edge status.
 func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {

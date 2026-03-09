@@ -164,8 +164,10 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		// In the join-token flow the agent's edge_reporter cannot call the kcp
 		// API directly (the join token is not a valid kcp credential), so the
 		// hub marks the edge Ready here as soon as the tunnel is up.
+		// SSH credentials are passed via headers for server-type edges.
 		if authenticatedByJoinToken {
-			go p.markEdgeConnected(context.Background(), cluster, name)
+			sshCreds := extractSSHCredsFromHeaders(r)
+			go p.markEdgeConnected(context.Background(), cluster, name, sshCreds)
 		}
 
 		// Block until the tunnel closes, then clean up the entry so stale
@@ -336,4 +338,34 @@ func (p *virtualWorkspaces) authorizeByJoinToken(ctx context.Context, token, clu
 	}
 
 	return nil
+}
+
+// sshCredsFromAgent holds SSH credentials passed by the agent via WebSocket
+// upgrade headers during join-token registration.
+type sshCredsFromAgent struct {
+	User       string
+	Password   string
+	PrivateKey []byte
+}
+
+// extractSSHCredsFromHeaders reads SSH credential headers set by the agent.
+func extractSSHCredsFromHeaders(r *http.Request) *sshCredsFromAgent {
+	user := r.Header.Get("X-Kedge-SSH-User")
+	if user == "" {
+		return nil
+	}
+	creds := &sshCredsFromAgent{User: user}
+	if pw := r.Header.Get("X-Kedge-SSH-Password"); pw != "" {
+		decoded, err := base64.StdEncoding.DecodeString(pw)
+		if err == nil {
+			creds.Password = string(decoded)
+		}
+	}
+	if pk := r.Header.Get("X-Kedge-SSH-PrivateKey"); pk != "" {
+		decoded, err := base64.StdEncoding.DecodeString(pk)
+		if err == nil {
+			creds.PrivateKey = decoded
+		}
+	}
+	return creds
 }

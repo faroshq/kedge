@@ -72,6 +72,7 @@ func newAgentJoinCommand() *cobra.Command {
 				} else if kubeconfigPath != "" {
 					logger.Info("Loaded saved agent kubeconfig; no --token needed", "edgeName", opts.EdgeName, "path", kubeconfigPath)
 					opts.HubKubeconfig = kubeconfigPath
+					opts.UsingSavedKubeconfig = true
 				} else {
 					// Fallback: legacy token config.
 					saved, err := agent.LoadAgentConfig(opts.EdgeName)

@@ -227,6 +227,10 @@ type Options struct {
 	// If not set, it's extracted from the SA token (for kubeconfig-based auth)
 	// or defaults to "default" (for static token auth).
 	Cluster string
+	// UsingSavedKubeconfig is set to true when the agent loaded a saved
+	// kubeconfig from a previous join-token registration. When true, edge
+	// registration is skipped (the edge was already registered).
+	UsingSavedKubeconfig bool
 }
 
 // NewOptions returns default agent options.
@@ -358,7 +362,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	if a.opts.Token != "" {
 		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
 			"edgeName", a.opts.EdgeName)
-	} else if a.opts.HubKubeconfig != "" {
+	} else if a.opts.UsingSavedKubeconfig {
 		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
 			"edgeName", a.opts.EdgeName)
 	} else {
@@ -438,7 +442,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	if a.opts.Token != "" {
 		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
 			"edgeName", a.opts.EdgeName)
-	} else if a.opts.HubKubeconfig != "" {
+	} else if a.opts.UsingSavedKubeconfig {
 		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
 			"edgeName", a.opts.EdgeName)
 	} else {

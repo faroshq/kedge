@@ -19,6 +19,7 @@ package cases
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -247,4 +248,277 @@ func isBase64URLChar(r rune) bool {
 		(r >= 'a' && r <= 'z') ||
 		(r >= '0' && r <= '9') ||
 		r == '-' || r == '_' || r == '='
+}
+
+// joinTokenClearedKey is the context key for the TokenAgent in JoinTokenClearedAfterRegistration.
+type joinTokenClearedKey struct{}
+
+// JoinTokenClearedAfterRegistration verifies that after a join-token agent
+// successfully connects to the hub:
+//  1. status.joinToken is cleared (so the one-time token can't be reused)
+//  2. The Registered condition is set to True
+func JoinTokenClearedAfterRegistration() features.Feature {
+	const edgeName = "e2e-join-token-cleared"
+
+	return features.New("JoinToken/ClearedAfterRegistration").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "server"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated: %v", err)
+			}
+
+			clusterName := framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig)
+			agent := framework.NewAgentWithToken(framework.RepoRoot(), clusterEnv.HubURL, edgeName, token).
+				WithCluster(clusterName)
+			if err := agent.Start(ctx); err != nil {
+				t.Fatalf("failed to start token agent: %v", err)
+			}
+
+			return context.WithValue(ctx, joinTokenClearedKey{}, agent)
+		}).
+		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
+			}
+			return ctx
+		}).
+		Assess("join_token_is_cleared", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Hub should clear status.joinToken after the tunnel comes up to
+			// prevent token reuse (one-shot bootstrap credential).
+			if err := client.WaitForEdgeJoinTokenCleared(ctx, edgeName, 2*time.Minute); err != nil {
+				t.Fatalf("join token for edge %q was not cleared after registration: %v", edgeName, err)
+			}
+			t.Logf("join token cleared for edge %q after successful registration", edgeName)
+			return ctx
+		}).
+		Assess("registered_condition_is_true", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// The hub sets Registered=True once the tunnel is established with a
+			// valid join token. This prevents the TokenReconciler from issuing a
+			// new token on subsequent reconcile loops.
+			if err := client.WaitForEdgeCondition(ctx, edgeName, "Registered", "True", 2*time.Minute); err != nil {
+				status, _ := client.GetEdgeCondition(ctx, edgeName, "Registered")
+				t.Fatalf("edge %q Registered condition not True (got %q): %v", edgeName, status, err)
+			}
+			t.Logf("edge %q Registered condition is True", edgeName)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if a, ok := ctx.Value(joinTokenClearedKey{}).(*framework.TokenAgent); ok {
+				a.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// reconnectAgentKey is the context key pair for JoinTokenReconnectWithSavedKubeconfig.
+type reconnectFirstAgentKey struct{}
+type reconnectSecondAgentKey struct{}
+
+// JoinTokenReconnectWithSavedKubeconfig verifies the full reconnect-after-restart
+// flow:
+//  1. Agent authenticates with a bootstrap join token.
+//  2. Hub exchanges the token for a kubeconfig and returns it in
+//     X-Kedge-Agent-Kubeconfig; the agent saves it to disk.
+//  3. Agent process is stopped.
+//  4. A fresh agent process for the same edge starts WITHOUT a token.
+//  5. It auto-detects the saved kubeconfig and reconnects; edge reaches Ready.
+func JoinTokenReconnectWithSavedKubeconfig() features.Feature {
+	const edgeName = "e2e-join-token-reconnect"
+
+	return features.New("JoinToken/ReconnectWithSavedKubeconfig").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "server"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated: %v", err)
+			}
+
+			clusterName := framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig)
+			firstAgent := framework.NewAgentWithToken(framework.RepoRoot(), clusterEnv.HubURL, edgeName, token).
+				WithCluster(clusterName)
+			if err := firstAgent.Start(ctx); err != nil {
+				t.Fatalf("failed to start first token agent: %v", err)
+			}
+
+			return context.WithValue(ctx, reconnectFirstAgentKey{}, firstAgent)
+		}).
+		Assess("first_connection_edge_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready on first connection: %v", edgeName, err)
+			}
+			t.Logf("edge %q Ready on first (join-token) connection", edgeName)
+			return ctx
+		}).
+		Assess("kubeconfig_saved_to_disk", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// After the tunnel is established the agent saves the kubeconfig
+			// returned by the hub.  Poll until the file appears.
+			kubeconfigPath, err := framework.WaitForAgentSavedKubeconfig(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("agent did not save kubeconfig for edge %q: %v", edgeName, err)
+			}
+			t.Logf("saved kubeconfig found at %s", kubeconfigPath)
+			return ctx
+		}).
+		Assess("reconnects_without_token", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Stop the first agent to simulate a restart.
+			if a, ok := ctx.Value(reconnectFirstAgentKey{}).(*framework.TokenAgent); ok {
+				a.Stop()
+				t.Log("first agent stopped")
+			}
+
+			// Give the hub a moment to detect the disconnect (marking edge not-connected).
+			time.Sleep(5 * time.Second)
+
+			// Start a new agent WITHOUT a token — it must auto-detect the saved kubeconfig.
+			secondAgent := framework.NewReconnectAgent(framework.RepoRoot(), clusterEnv.HubURL, edgeName)
+			if err := secondAgent.Start(ctx); err != nil {
+				t.Fatalf("failed to start reconnect agent: %v", err)
+			}
+			ctx = context.WithValue(ctx, reconnectSecondAgentKey{}, secondAgent)
+
+			// Edge should reach Ready again via the saved kubeconfig (no token needed).
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready after reconnect (no token): %v", edgeName, err)
+			}
+			t.Logf("edge %q Ready after reconnect via saved kubeconfig (no token)", edgeName)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if a, ok := ctx.Value(reconnectFirstAgentKey{}).(*framework.TokenAgent); ok {
+				a.Stop()
+			}
+			if a, ok := ctx.Value(reconnectSecondAgentKey{}).(*framework.TokenAgent); ok {
+				a.Stop()
+			}
+			// Clean up the saved kubeconfig so the test is idempotent.
+			if path, err := framework.AgentSavedKubeconfigPath(edgeName); err == nil {
+				_ = os.Remove(path)
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// TokenReconcilerNoReissueAfterRegistration verifies that the TokenReconciler
+// does NOT generate a new join token once an edge is marked Registered=True.
+// This ensures the one-shot bootstrap token cannot be recycled after the first
+// successful agent registration.
+func TokenReconcilerNoReissueAfterRegistration() features.Feature {
+	const edgeName = "e2e-join-token-no-reissue"
+
+	type agentKey struct{}
+
+	return features.New("JoinToken/NoReissueAfterRegistration").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "server"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated: %v", err)
+			}
+
+			clusterName := framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig)
+			agent := framework.NewAgentWithToken(framework.RepoRoot(), clusterEnv.HubURL, edgeName, token).
+				WithCluster(clusterName)
+			if err := agent.Start(ctx); err != nil {
+				t.Fatalf("failed to start token agent: %v", err)
+			}
+			return context.WithValue(ctx, agentKey{}, agent)
+		}).
+		Assess("edge_becomes_ready_and_token_cleared", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
+			}
+			if err := client.WaitForEdgeJoinTokenCleared(ctx, edgeName, 2*time.Minute); err != nil {
+				t.Fatalf("join token not cleared for edge %q: %v", edgeName, err)
+			}
+			if err := client.WaitForEdgeCondition(ctx, edgeName, "Registered", "True", 1*time.Minute); err != nil {
+				t.Fatalf("Registered condition not True for edge %q: %v", edgeName, err)
+			}
+			t.Logf("edge %q is Ready, join token cleared, Registered=True", edgeName)
+			return ctx
+		}).
+		Assess("no_new_token_issued_after_registration", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Wait 30s and confirm no join token has been re-issued.
+			// The TokenReconciler must skip edges that have Registered=True.
+			time.Sleep(30 * time.Second)
+
+			token, err := client.GetEdgeJoinToken(ctx, edgeName)
+			if err != nil {
+				t.Fatalf("checking join token for edge %q: %v", edgeName, err)
+			}
+			if token != "" {
+				t.Fatalf("TokenReconciler re-issued join token for edge %q after registration (got %q)", edgeName, token)
+			}
+			t.Logf("confirmed: no new join token issued for edge %q after Registered=True", edgeName)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if a, ok := ctx.Value(agentKey{}).(*framework.TokenAgent); ok {
+				a.Stop()
+			}
+			if path, err := framework.AgentSavedKubeconfigPath(edgeName); err == nil {
+				_ = os.Remove(path)
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
 }

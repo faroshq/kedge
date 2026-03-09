@@ -66,3 +66,12 @@ func TestAgentConnectsWithJoinToken(t *testing.T) {
 func TestInvalidJoinTokenReturns401(t *testing.T) {
 	testenv.Test(t, cases.InvalidJoinTokenReturns401())
 }
+func TestJoinTokenClearedAfterRegistration(t *testing.T) {
+	testenv.Test(t, cases.JoinTokenClearedAfterRegistration())
+}
+func TestJoinTokenReconnectWithSavedKubeconfig(t *testing.T) {
+	testenv.Test(t, cases.JoinTokenReconnectWithSavedKubeconfig())
+}
+func TestTokenReconcilerNoReissueAfterRegistration(t *testing.T) {
+	testenv.Test(t, cases.TokenReconcilerNoReissueAfterRegistration())
+}

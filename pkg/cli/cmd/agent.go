@@ -213,6 +213,8 @@ func agentJoinServer(opts *agent.Options) error {
 	data := systemdUnitData{
 		BinaryPath:      binaryPath,
 		HubKubeconfig:   absKubeconfig,
+		HubURL:          opts.HubURL,
+		Token:           opts.Token,
 		EdgeName:        opts.EdgeName,
 		Type:            string(opts.Type),
 		SSHProxyPort:    opts.SSHProxyPort,
@@ -511,7 +513,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={{.BinaryPath}} agent run \
+{{- if .Token}}
+  --hub-url {{.HubURL}} \
+  --token {{.Token}} \
+{{- else}}
   --hub-kubeconfig {{.HubKubeconfig}} \
+{{- end}}
   --edge-name {{.EdgeName}} \
   --type {{.Type}}{{if .SSHProxyPort}} \
   --ssh-proxy-port {{.SSHProxyPort}}{{end}}{{if .SSHUser}} \
@@ -530,6 +537,8 @@ WantedBy=multi-user.target
 type systemdUnitData struct {
 	BinaryPath      string
 	HubKubeconfig   string
+	HubURL          string
+	Token           string
 	EdgeName        string
 	Type            string
 	SSHProxyPort    int

@@ -313,10 +313,10 @@ metadata:
 		if hubURL == "" {
 			return fmt.Errorf("--hub-url is required when using --token for kubernetes-type join")
 		}
-		deployArgs := fmt.Sprintf("agent run --hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
+		deployArgs := fmt.Sprintf("--hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
 			hubURL, opts.EdgeName, opts.Token)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --hub-insecure-skip-tls-verify"
+			deployArgs += " --insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
@@ -345,7 +345,6 @@ spec:
       containers:
       - name: agent
         image: %s
-        command: ["/kedge"]
         args: [%s]
 `,
 			opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
@@ -375,9 +374,9 @@ stringData:
 			return fmt.Errorf("creating hub kubeconfig secret: %w", err)
 		}
 
-		deployArgs := fmt.Sprintf("agent run --hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
+		deployArgs := fmt.Sprintf("--hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --hub-insecure-skip-tls-verify"
+			deployArgs += " --insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
@@ -406,7 +405,6 @@ spec:
       containers:
       - name: agent
         image: %s
-        command: ["/kedge"]
         args: [%s]
         volumeMounts:
         - name: hub-kubeconfig

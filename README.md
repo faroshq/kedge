@@ -35,7 +35,14 @@ The hub is the only component that needs to be publicly reachable. Agents connec
 
 ## Installation
 
-### Install the Hub (Helm)
+### Hub setup (one-time)
+
+The hub needs to be reachable by agents from anywhere — it's the only component that requires a public endpoint. A typical setup:
+
+1. **Get a server** — a VPS, cloud VM, or any machine with a public IP works fine
+2. **Install Kubernetes** — [k3s](https://k3s.io) or [k0s](https://k0sproject.io) are easy single-node choices
+3. **Set up ingress** — configure TLS passthrough ingress (see [Ingress Setup](https://faroshq.github.io/kedge/ingress/)) so the hub's port 8443 is reachable from the internet
+4. **Install the hub via Helm:**
 
 ```bash
 helm install kedge-hub oci://ghcr.io/faroshq/charts/kedge-hub \
@@ -43,7 +50,7 @@ helm install kedge-hub oci://ghcr.io/faroshq/charts/kedge-hub \
   --set hub.hubExternalURL=https://kedge.example.com
 ```
 
-For TLS via cert-manager, OIDC configuration, and ingress setup see the [Helm chart README](deploy/charts/kedge-hub/README.md) and [docs/helm.md](https://faroshq.github.io/kedge/helm.html).
+For TLS via cert-manager, OIDC configuration, and ingress details see the [Helm chart README](deploy/charts/kedge-hub/README.md) and [docs/helm.md](https://faroshq.github.io/kedge/helm.html).
 
 ### Install the CLI
 

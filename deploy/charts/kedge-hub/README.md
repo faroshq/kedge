@@ -14,9 +14,10 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 
 ## Prerequisites
 
-- Kubernetes 1.27+
+- Kubernetes 1.27+ (k3s / k0s / GKE / EKS / etc.)
 - Helm 3.x
 - A `StorageClass` that supports `ReadWriteOnce` (for the kcp data PVC)
+- **A publicly reachable endpoint** — agents connect to the hub from anywhere; the hub must be accessible on the internet. Set up a TLS-passthrough ingress or LoadBalancer service exposing port 8443. See [Ingress Setup](https://faroshq.github.io/kedge/ingress/) for nginx/gateway-api examples.
 - An OIDC provider **or** static bearer tokens for auth
 
 ## Values Reference

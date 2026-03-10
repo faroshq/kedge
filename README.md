@@ -1,167 +1,126 @@
-# Kedge
+# kedge
 
-The ultimate home lab tool for managing distributed Kubernetes clusters.
+kedge connects your distributed Kubernetes clusters and servers through a single control plane — no VPNs, no open firewall ports, no kubeconfig juggling. Agents running on each edge establish outbound reverse tunnels to the hub, so clusters behind NAT, home-lab Raspberry Pis, and bare-metal machines in remote sites all become reachable through one authenticated endpoint.
 
-## Why Kedge?
+## Features
 
-Managing multiple Kubernetes clusters across your home lab, remote locations, or edge sites is painful. You end up juggling kubeconfigs, SSH tunnels, VPNs, and port forwards. Kedge solves this by providing a single control plane that connects all your clusters through secure reverse tunnels.
+- **Reverse tunnel connectivity** — agents dial out; no inbound firewall rules needed
+- **Kubernetes edge support** — proxy `kubectl` to any registered cluster via the hub
+- **SSH server mode** — manage non-Kubernetes hosts (VMs, bare metal) through the same hub
+- **OIDC authentication** — plug in any OIDC provider (Dex, Auth0, Okta, …)
+- **Static token auth** — quick setup for home labs and dev environments
+- **Multi-tenant workspaces** — per-user/team kcp workspace isolation
+- **CLI-first** — register edges, get kubeconfigs, and SSH into servers with one command
 
-**Perfect for:**
+## Architecture
 
-- **Home labs** — Manage k3s/k0s clusters on Raspberry Pis, NUCs, or old laptops from anywhere
-- **Remote sites** — Connect clusters behind NAT, firewalls, or without public IPs
-- **Edge deployments** — Deploy workloads to distributed locations with simple placement rules
-- **Small teams** — Multi-tenant workspaces with OIDC authentication
+```
+   [ your laptop ]
+        │  kedge CLI
+        ▼
+   ┌─────────────┐
+   │  kedge hub  │  ◄── central control plane (Kubernetes + kcp + OIDC)
+   └──────┬──────┘
+          │  reverse tunnels (outbound from agents)
+    ┌─────┴──────────────────┐
+    │                        │
+┌───▼────┐             ┌─────▼──────┐
+│ agent  │             │   agent    │
+│ (k8s)  │             │  (server)  │
+│cluster │             │  bare metal│
+└────────┘             └────────────┘
+```
 
-## How It Works
+The hub is the only component that needs to be publicly reachable. Agents connect outward — NAT and firewalls are not a problem.
 
-![Kedge Architecture](docs/assets/diagrams/architecture.svg)
+## Installation
 
-Built on [kcp](https://github.com/kcp-dev/kcp) for multi-tenant workspace isolation and [Dex](https://github.com/dexidp/dex) for OIDC authentication.
+### Install the Hub (Helm)
 
-## Components
+```bash
+helm install kedge-hub oci://ghcr.io/faroshq/charts/kedge-hub \
+  --namespace kedge --create-namespace \
+  --set hub.hubExternalURL=https://kedge.example.com
+```
 
-| Component | Description |
-|---|---|
-| **Hub** (`kedge-hub`) | Central control plane — hosts the API, authentication, tunnel endpoints, and scheduling |
-| **Agent** (`kedge-agent`) | Runs on each site — establishes tunnels, reports status, reconciles workloads |
-| **CLI** (`kedge`) | User tool — login, register sites, deploy workloads |
-
-## Key Resources
-
-| Resource | Scope | Description |
-|---|---|---|
-| `Edge` (`type: kubernetes`) | Cluster | A connected Kubernetes cluster |
-| `Edge` (`type: server`) | Cluster | A non-Kubernetes host (bare metal, VM) reachable via SSH through the hub |
-| `VirtualWorkload` | Namespace | Workload definition with placement rules |
-| `Placement` | Namespace | Binding of a workload to a specific site |
-
-## Quick Start
+For TLS via cert-manager, OIDC configuration, and ingress setup see the [Helm chart README](deploy/charts/kedge-hub/README.md) and [docs/helm.md](https://faroshq.github.io/kedge/helm.html).
 
 ### Install the CLI
 
-```bash
-kubectl krew index add faros https://github.com/faroshq/krew-index.git
-kubectl krew install faros/kedge
-```
-
-### Set up a local dev environment
+Download a pre-built binary from the [releases page](https://github.com/faroshq/kedge/releases), or install from source:
 
 ```bash
-kedge dev create
+go install github.com/faroshq/kedge/cmd/kedge@latest
 ```
 
-This creates a full local environment with Kind clusters, a hub, and an agent. Follow the printed next steps to log in, create an edge, and connect the agent.
+## Quickstart
+
+### 1. Log in
 
 ```bash
-# Clean up when done
-kedge dev delete
+kedge login --hub-url https://kedge.example.com
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for building from source and other development modes.
-
-## SSH Server Mode
-
-Kedge can manage **non-Kubernetes hosts** — bare metal machines, VMs, or any systemd-managed host — alongside your clusters. The agent runs in server mode, establishes a reverse tunnel to the hub, and proxies SSH connections through it. No open firewall ports or VPN required.
-
-**Use cases:** home-lab machines, Raspberry Pis, cloud VMs, or any host where running a full k8s agent would be overkill.
-
-### Prerequisites
-
-- A running kedge hub (static token or OIDC)
-- `sshd` running on the target host (port 22 by default)
-- A bootstrap token or OIDC login for the agent
-
-### Setup
-
-**1. Register the edge** (the agent does this automatically on first start, or create the CRD manually):
-
-```yaml
-apiVersion: kedge.faros.sh/v1alpha1
-kind: Edge
-metadata:
-  name: my-server
-spec:
-  type: server
-  displayName: my-server
-  hostname: my-server.example.com
-  provider: bare-metal   # aws | gcp | onprem | bare-metal
-  region: home-lab
-```
-
-**2. Run the agent in server mode** on the target host:
+### 2. Connect a Kubernetes cluster
 
 ```bash
-kedge agent join \
-  --hub-url https://hub.example.com \
-  --token <bootstrap-token> \
-  --edge-name my-server \
-  --type=server
+# Register the edge on the hub
+kedge edge create my-cluster --type kubernetes
+
+# Print the agent install command (includes the one-time join token)
+kedge edge join-command my-cluster
 ```
 
-The `--type=server` flag skips the downstream Kubernetes config — only the SSH tunnel is started.
-
-### Developer Quick-Start
-
-Use the convenience `make` targets to try SSH server mode against a local dev hub (requires `make dev-login-static` first):
+Copy the printed command and run it on the target cluster. Once the agent connects:
 
 ```bash
-# Terminal 1 — register a dev Edge (server type) resource and write .env.edge
-make dev-edge-create TYPE=server DEV_EDGE_NAME=my-server
-
-# run dev ssh server locally with a reverse tunnel to the hub (proxies to localhost:2222)
-make dev-run-ssh-server
-
-# Terminal 2 — start the agent in server mode (SSH reverse tunnel to localhost:22)
-make dev-run-edge TYPE=server DEV_EDGE_NAME=my-server
+kedge edge list                                # should show my-cluster as Ready
+kedge kubeconfig edge my-cluster > kc.yaml    # get a kubeconfig for the edge
+kubectl --kubeconfig kc.yaml get nodes
 ```
 
-The edge name defaults to `dev-edge-1`; override with `DEV_EDGE_NAME=my-server make dev-edge-create TYPE=server`.
-
-### Usage
+### 3. Connect a server (SSH mode)
 
 ```bash
-# Interactive shell
-kedge ssh my-server
-
-# Run a single command (non-interactive)
-kedge ssh my-server -- df -h
-
-# Pass multiple arguments
-kedge ssh my-server -- journalctl -u kubelet --no-pager -n 50
+kedge edge create my-server --type server
+kedge edge join-command my-server
 ```
 
-With OIDC authentication the SSH username is derived from the token automatically (email local-part, e.g. `alice@example.com` → `alice`). With static token auth the username defaults to `root`.
+Run the printed command on the target host, then:
 
-### How It Works
-
-```
-kedge ssh  ──WebSocket──▶  Hub (agent-proxy virtual workspace)
-                                │
-                          revdial tunnel  ◀── kedge agent (server mode)
-                                │
-                          localhost:22 (sshd on target host)
+```bash
+kedge ssh my-server              # interactive shell
+kedge ssh my-server -- df -h     # single command
 ```
 
-1. `kedge ssh` upgrades to a WebSocket connection against the hub's agent-proxy endpoint.
-2. The hub dials the agent over the established revdial reverse tunnel.
-3. The agent forwards the raw TCP stream to `localhost:22` on the host.
-4. The hub acts as the SSH client — authentication, PTY setup, and I/O multiplexing happen transparently.
+## CLI Reference
 
-The agent never needs an inbound firewall rule; all connectivity is outbound from the agent to the hub.
-
-## Requirements
-
-- Go 1.25+
-- Docker
-- kind (for local agent cluster)
+| Command | Description |
+|---|---|
+| `kedge login` | Authenticate with the hub (OIDC or static token) |
+| `kedge edge create <name>` | Register a new edge |
+| `kedge edge join-command <name>` | Print the agent run command with join token |
+| `kedge edge list` | List all edges and their connection status |
+| `kedge edge get <name>` | Show details for a specific edge |
+| `kedge edge delete <name>` | Remove an edge |
+| `kedge kubeconfig edge <name>` | Generate a kubeconfig for a Kubernetes-type edge |
+| `kedge ssh <name>` | Open an SSH session to a server-mode edge |
+| `kedge ssh <name> -- <cmd>` | Run a single command on a server-mode edge |
+| `kedge agent run` | Start the agent as a foreground process |
+| `kedge agent join` | Install the agent as a persistent service (systemd / Deployment) |
 
 ## Documentation
 
-Full documentation is available at the [docs site](https://faroshq.github.io/kedge/).
-
 - [Getting Started](https://faroshq.github.io/kedge/getting-started.html)
-- [Developer Guide](https://faroshq.github.io/kedge/developers.html)
-- [Security (tokens & OIDC)](https://faroshq.github.io/kedge/security.html)
-- [Ingress Setup](https://faroshq.github.io/kedge/ingress/)
 - [Helm Deployment](https://faroshq.github.io/kedge/helm.html)
+- [Security & Auth](https://faroshq.github.io/kedge/security.html)
+- [Ingress Setup](https://faroshq.github.io/kedge/ingress/)
+- [Developer Guide](https://faroshq.github.io/kedge/developers.html)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build setup, running tests, and PR guidelines.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE)

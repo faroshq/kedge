@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,6 +233,180 @@ func InvalidJoinTokenReturns401() features.Feature {
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			if a, ok := ctx.Value(joinTokenInvalidKey{}).(*framework.TokenAgent); ok {
 				a.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// joinTokenSSHCredsKey is the context key for JoinTokenSSHCredentialsStoredAfterConnect.
+type joinTokenSSHCredsKey struct{}
+
+// JoinTokenSSHCredentialsStoredAfterConnect verifies that when a server-type
+// agent connects with a join token AND provides SSH credentials via command
+// flags, the hub stores those credentials in edge.status.sshCredentials.
+//
+// In join-token mode the agent cannot call the kcp API directly (the token is
+// not a valid kcp credential), so SSH credentials are sent as X-Kedge-SSH-*
+// WebSocket headers during the initial tunnel establishment. The hub's
+// agent-proxy builder reads those headers and persists the credentials as a
+// k8s Secret, then links the Secret in edge.status.sshCredentials.
+func JoinTokenSSHCredentialsStoredAfterConnect() features.Feature {
+	const (
+		edgeName    = "e2e-join-token-ssh-creds"
+		testSSHUser = "e2e-testuser"
+		testSSHPass = "e2e-testpass"
+	)
+
+	return features.New("JoinToken/SSHCredentialsStoredAfterConnect").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "server"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated: %v", err)
+			}
+
+			clusterName := framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig)
+			agent := framework.NewAgentWithToken(framework.RepoRoot(), clusterEnv.HubURL, edgeName, token).
+				WithCluster(clusterName).
+				WithSSHUser(testSSHUser).
+				WithSSHPassword(testSSHPass)
+			if err := agent.Start(ctx); err != nil {
+				t.Fatalf("failed to start token agent: %v", err)
+			}
+
+			return context.WithValue(ctx, joinTokenSSHCredsKey{}, agent)
+		}).
+		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
+			}
+			return ctx
+		}).
+		Assess("ssh_credentials_stored_in_status", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			// Hub must store the credentials passed via X-Kedge-SSH-* headers.
+			creds, err := client.WaitForEdgeSSHCredentials(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("SSH credentials not stored for edge %q: %v", edgeName, err)
+			}
+			if creds.Username != testSSHUser {
+				t.Fatalf("expected SSH username %q, got %q", testSSHUser, creds.Username)
+			}
+			if creds.PasswordSecretRef == "" {
+				t.Fatalf("expected passwordSecretRef to be set for edge %q, got empty", edgeName)
+			}
+			t.Logf("edge %q SSH credentials stored: username=%q passwordSecretRef=%q",
+				edgeName, creds.Username, creds.PasswordSecretRef)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if a, ok := ctx.Value(joinTokenSSHCredsKey{}).(*framework.TokenAgent); ok {
+				a.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// joinTokenK8sModeKey is the context key for JoinTokenKubernetesMode.
+type joinTokenK8sModeKey struct{}
+
+// JoinTokenKubernetesMode verifies that a kubernetes-type edge can bootstrap
+// its connection to the hub using only a join token (no pre-provisioned hub
+// kubeconfig / ServiceAccount credential). After the token exchange the edge
+// must reach the Ready phase and the k8s proxy must be reachable.
+func JoinTokenKubernetesMode() features.Feature {
+	const edgeName = "e2e-join-token-k8s"
+
+	return features.New("JoinToken/KubernetesMode").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv.AgentKubeconfig == "" {
+				t.Skip("no agent kubeconfig available — skipping kubernetes-mode join-token test")
+			}
+
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "kubernetes"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated for kubernetes edge %q: %v", edgeName, err)
+			}
+			t.Logf("join token obtained for kubernetes edge %q (len=%d)", edgeName, len(token))
+
+			clusterName := framework.ClusterNameFromKubeconfig(clusterEnv.HubKubeconfig)
+			agent := framework.NewAgentWithToken(framework.RepoRoot(), clusterEnv.HubURL, edgeName, token).
+				WithType("kubernetes").
+				WithAgentKubeconfig(clusterEnv.AgentKubeconfig).
+				WithCluster(clusterName)
+			if err := agent.Start(ctx); err != nil {
+				t.Fatalf("failed to start kubernetes-mode token agent: %v", err)
+			}
+
+			return context.WithValue(ctx, joinTokenK8sModeKey{}, agent)
+		}).
+		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("kubernetes edge %q did not become Ready with join token: %v", edgeName, err)
+			}
+			t.Logf("kubernetes edge %q reached Ready via join-token auth", edgeName)
+			return ctx
+		}).
+		Assess("k8s_proxy_reachable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
+			if err != nil {
+				t.Fatalf("getting edge proxy URL: %v", err)
+			}
+
+			out, err := client.KubectlWithURL(ctx, edgeURL, "get", "namespaces")
+			if err != nil {
+				t.Fatalf("k8s proxy kubectl failed for edge %q: %v\noutput: %s", edgeName, err, out)
+			}
+			if !strings.Contains(out, "default") {
+				t.Fatalf("expected 'default' namespace in proxy output, got:\n%s", out)
+			}
+			t.Logf("k8s proxy reachable for kubernetes join-token edge %q", edgeName)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if a, ok := ctx.Value(joinTokenK8sModeKey{}).(*framework.TokenAgent); ok {
+				a.Stop()
+			}
+			if path, err := framework.AgentSavedKubeconfigPath(edgeName); err == nil {
+				_ = os.Remove(path)
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)

@@ -475,3 +475,74 @@ func (k *KedgeClient) WaitForEdgeCondition(ctx context.Context, edgeName, condit
 		return status == expectedStatus, nil
 	})
 }
+
+// EdgeSSHCredentials holds the SSH credentials observed on an edge status.
+type EdgeSSHCredentials struct {
+	Username            string
+	PasswordSecretRef   string // "<namespace>/<name>" or "" if not set
+	PrivateKeySecretRef string // "<namespace>/<name>" or "" if not set
+}
+
+// GetEdgeSSHCredentials returns the current status.sshCredentials for an edge.
+// Returns nil (no error) when the field is not yet set.
+func (k *KedgeClient) GetEdgeSSHCredentials(ctx context.Context, edgeName string) (*EdgeSSHCredentials, error) {
+	usernameOut, err := k.Kubectl(ctx,
+		"get", "edge", edgeName,
+		"-o", "jsonpath={.status.sshCredentials.username}",
+		"--insecure-skip-tls-verify",
+	)
+	if err != nil {
+		return nil, err
+	}
+	username := strings.TrimSpace(usernameOut)
+	if username == "" {
+		return nil, nil // not yet set
+	}
+
+	creds := &EdgeSSHCredentials{Username: username}
+
+	// PasswordSecretRef
+	pwNs, _ := k.Kubectl(ctx, "get", "edge", edgeName,
+		"-o", "jsonpath={.status.sshCredentials.passwordSecretRef.namespace}",
+		"--insecure-skip-tls-verify")
+	pwName, _ := k.Kubectl(ctx, "get", "edge", edgeName,
+		"-o", "jsonpath={.status.sshCredentials.passwordSecretRef.name}",
+		"--insecure-skip-tls-verify")
+	if pn := strings.TrimSpace(pwName); pn != "" {
+		creds.PasswordSecretRef = strings.TrimSpace(pwNs) + "/" + pn
+	}
+
+	// PrivateKeySecretRef
+	pkNs, _ := k.Kubectl(ctx, "get", "edge", edgeName,
+		"-o", "jsonpath={.status.sshCredentials.privateKeySecretRef.namespace}",
+		"--insecure-skip-tls-verify")
+	pkName, _ := k.Kubectl(ctx, "get", "edge", edgeName,
+		"-o", "jsonpath={.status.sshCredentials.privateKeySecretRef.name}",
+		"--insecure-skip-tls-verify")
+	if pkn := strings.TrimSpace(pkName); pkn != "" {
+		creds.PrivateKeySecretRef = strings.TrimSpace(pkNs) + "/" + pkn
+	}
+
+	return creds, nil
+}
+
+// WaitForEdgeSSHCredentials polls until edge.status.sshCredentials.username is
+// non-empty and returns the credentials. Returns an error after timeout.
+func (k *KedgeClient) WaitForEdgeSSHCredentials(ctx context.Context, edgeName string, timeout time.Duration) (*EdgeSSHCredentials, error) {
+	var result *EdgeSSHCredentials
+	err := Poll(ctx, 3*time.Second, timeout, func(ctx context.Context) (bool, error) {
+		creds, err := k.GetEdgeSSHCredentials(ctx, edgeName)
+		if err != nil {
+			return false, nil // transient
+		}
+		if creds == nil {
+			return false, nil // not set yet
+		}
+		result = creds
+		return true, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("edge %q sshCredentials not populated within %s: %w", edgeName, timeout, err)
+	}
+	return result, nil
+}

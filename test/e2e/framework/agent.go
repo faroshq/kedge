@@ -112,6 +112,8 @@ type TokenAgent struct {
 	clusterName     string
 	agentKubeconfig string
 	agentType       string
+	sshUser         string
+	sshPassword     string
 	cmd             *exec.Cmd
 	cancel          context.CancelFunc
 }
@@ -151,6 +153,20 @@ func (a *TokenAgent) WithCluster(clusterName string) *TokenAgent {
 	return a
 }
 
+// WithSSHUser sets the SSH username the agent reports to the hub via
+// X-Kedge-SSH-User WebSocket header (join-token mode) or the --ssh-user flag.
+func (a *TokenAgent) WithSSHUser(user string) *TokenAgent {
+	a.sshUser = user
+	return a
+}
+
+// WithSSHPassword sets the SSH password the agent reports to the hub via
+// X-Kedge-SSH-Password WebSocket header (join-token mode) or the --ssh-password flag.
+func (a *TokenAgent) WithSSHPassword(pass string) *TokenAgent {
+	a.sshPassword = pass
+	return a
+}
+
 // Start launches the kedge agent join process with the configured join token.
 // It runs until Stop is called or the parent context is cancelled.
 // When token is empty (e.g. NewReconnectAgent), no --token flag is passed and
@@ -176,6 +192,12 @@ func (a *TokenAgent) Start(ctx context.Context) error {
 	}
 	if a.clusterName != "" {
 		args = append(args, "--cluster", a.clusterName)
+	}
+	if a.sshUser != "" {
+		args = append(args, "--ssh-user", a.sshUser)
+	}
+	if a.sshPassword != "" {
+		args = append(args, "--ssh-password", a.sshPassword)
 	}
 
 	cmd := exec.CommandContext(agentCtx, a.bin, args...)

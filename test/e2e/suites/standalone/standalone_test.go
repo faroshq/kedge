@@ -75,3 +75,6 @@ func TestJoinTokenReconnectWithSavedKubeconfig(t *testing.T) {
 func TestTokenReconcilerNoReissueAfterRegistration(t *testing.T) {
 	testenv.Test(t, cases.TokenReconcilerNoReissueAfterRegistration())
 }
+func TestJoinTokenKubernetesMode(t *testing.T) {
+	testenv.Test(t, cases.JoinTokenKubernetesMode())
+}

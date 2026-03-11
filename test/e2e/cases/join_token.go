@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -691,6 +693,204 @@ func TokenReconcilerNoReissueAfterRegistration() features.Feature {
 				_ = os.Remove(path)
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// AgentJoinKubernetes verifies that a kubernetes-type edge agent can be
+// deployed into an agent cluster via `kedge agent join --type kubernetes`.
+// The command installs the agent as a Kubernetes Deployment in kedge-system and
+// exits; the test then waits for the Deployment to become available and the
+// hub edge to reach Ready.
+func AgentJoinKubernetes() features.Feature {
+	const edgeName = "e2e-agent-join-k8s"
+
+	return features.New("Agent/JoinKubernetes").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv == nil {
+				t.Fatal("cluster environment not found in context")
+			}
+			if len(clusterEnv.AgentClusters) == 0 || clusterEnv.AgentClusters[0].Kubeconfig == "" {
+				t.Skip("no agent kubeconfig available — skipping kubernetes agent join test")
+			}
+
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "kubernetes"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated for kubernetes edge %q: %v", edgeName, err)
+			}
+			t.Logf("join token obtained for kubernetes edge %q (len=%d)", edgeName, len(token))
+
+			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
+			kedgeBin := filepath.Join(framework.RepoRoot(), framework.KedgeBin)
+
+			// Run `kedge agent join --type kubernetes` as a one-shot install
+			// command: it deploys the agent Deployment into the agent cluster
+			// and exits once the install is complete.
+			joinCtx, joinCancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer joinCancel()
+
+			cmd := exec.CommandContext(joinCtx, kedgeBin,
+				"agent", "join",
+				"--type", "kubernetes",
+				"--hub-url", clusterEnv.HubURL,
+				"--edge-name", edgeName,
+				"--token", token,
+				"--kubeconfig", agentKubeconfig,
+				"--hub-insecure-skip-tls-verify",
+			)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("kedge agent join --type kubernetes failed: %v", err)
+			}
+			t.Logf("kedge agent join completed for edge %q", edgeName)
+
+			return ctx
+		}).
+		Assess("deployment_available", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
+			deploymentName := "kedge-agent-" + edgeName
+
+			if err := framework.WaitForDeploymentAvailable(ctx, agentKubeconfig, "kedge-system", deploymentName, 2*time.Minute); err != nil {
+				t.Fatalf("deployment %q in namespace kedge-system did not become available: %v", deploymentName, err)
+			}
+			t.Logf("deployment %q in kedge-system is available", deploymentName)
+			return ctx
+		}).
+		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("kubernetes edge %q did not become Ready after agent join: %v", edgeName, err)
+			}
+			t.Logf("kubernetes edge %q reached Ready after agent join install", edgeName)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if len(clusterEnv.AgentClusters) > 0 && clusterEnv.AgentClusters[0].Kubeconfig != "" {
+				agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
+				deploymentName := "kedge-agent-" + edgeName
+				// Best-effort cleanup of installed resources.
+				_, _ = framework.KubectlWithConfig(ctx, agentKubeconfig,
+					"delete", "deployment", deploymentName,
+					"-n", "kedge-system", "--ignore-not-found",
+				)
+				_, _ = framework.KubectlWithConfig(ctx, agentKubeconfig,
+					"delete", "serviceaccount", deploymentName,
+					"-n", "kedge-system", "--ignore-not-found",
+				)
+			}
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// AgentHelmInstall verifies that a kubernetes-type edge agent can be deployed
+// into an agent cluster via the local kedge-agent Helm chart. The helm install
+// uses --wait so it completes only when the Deployment is ready; the test then
+// waits for the hub edge to reach Ready.
+func AgentHelmInstall() features.Feature {
+	const edgeName = "e2e-agent-helm-install"
+
+	return features.New("Agent/HelmInstall").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv == nil {
+				t.Fatal("cluster environment not found in context")
+			}
+			if len(clusterEnv.AgentClusters) == 0 || clusterEnv.AgentClusters[0].Kubeconfig == "" {
+				t.Skip("no agent kubeconfig available — skipping helm agent install test")
+			}
+
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "kubernetes"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
+			if err != nil {
+				t.Fatalf("join token not generated for helm install edge %q: %v", edgeName, err)
+			}
+			t.Logf("join token obtained for helm install edge %q (len=%d)", edgeName, len(token))
+
+			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
+			chartPath := filepath.Join(framework.RepoRoot(), "deploy/charts/kedge-agent")
+			releaseName := "kedge-agent-" + edgeName
+
+			// helm install with --wait blocks until the Deployment is ready or
+			// the timeout expires, so the command itself validates availability.
+			helmCtx, helmCancel := context.WithTimeout(ctx, 3*time.Minute)
+			defer helmCancel()
+
+			cmd := exec.CommandContext(helmCtx, "helm",
+				"install", releaseName, chartPath,
+				"--namespace", "kedge-system",
+				"--create-namespace",
+				"--set", "agent.edgeName="+edgeName,
+				"--set", "agent.hub.url="+clusterEnv.HubURL,
+				"--set", "agent.hub.token="+token,
+				"--kubeconfig", agentKubeconfig,
+				"--wait",
+				"--timeout", "2m",
+			)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("helm install of kedge-agent for edge %q failed: %v", edgeName, err)
+			}
+			t.Logf("helm install of release %q completed", releaseName)
+
+			return ctx
+		}).
+		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready after helm install: %v", edgeName, err)
+			}
+			t.Logf("edge %q reached Ready after helm install", edgeName)
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if len(clusterEnv.AgentClusters) > 0 && clusterEnv.AgentClusters[0].Kubeconfig != "" {
+				agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
+				releaseName := "kedge-agent-" + edgeName
+
+				uninstallCtx, uninstallCancel := context.WithTimeout(ctx, 2*time.Minute)
+				defer uninstallCancel()
+
+				// Best-effort helm uninstall.
+				cmd := exec.CommandContext(uninstallCtx, "helm",
+					"uninstall", releaseName,
+					"-n", "kedge-system",
+					"--kubeconfig", agentKubeconfig,
+				)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				_ = cmd.Run()
+			}
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx

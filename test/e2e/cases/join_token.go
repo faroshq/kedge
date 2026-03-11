@@ -738,6 +738,7 @@ func AgentJoinKubernetes() features.Feature {
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster agent test")
 			}
+			t.Logf("using pod hub URL: %s", podHubURL)
 
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
 			kedgeBin := filepath.Join(framework.RepoRoot(), framework.KedgeBin)
@@ -782,6 +783,18 @@ func AgentJoinKubernetes() features.Feature {
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				// Collect pod logs to diagnose connectivity issues.
+				if logOut, logErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
+					"logs", "-n", "kedge-system", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
+					t.Logf("agent pod logs:\n%s", logOut)
+				} else {
+					t.Logf("could not get pod logs: %v", logErr)
+				}
+				// Also describe the pods to see Events and container state.
+				if descOut, descErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
+					"describe", "pods", "-n", "kedge-system", "-l", "kedge.faros.sh/edge-name="+edgeName); descErr == nil {
+					t.Logf("pod describe:\n%s", descOut)
+				}
 				t.Fatalf("kubernetes edge %q did not become Ready after agent join: %v", edgeName, err)
 			}
 			t.Logf("kubernetes edge %q reached Ready after agent join install", edgeName)
@@ -846,6 +859,7 @@ func AgentHelmInstall() features.Feature {
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster helm test")
 			}
+			t.Logf("using pod hub URL: %s", podHubURL)
 
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
 			chartPath := filepath.Join(framework.RepoRoot(), "deploy/charts/kedge-agent")
@@ -882,6 +896,19 @@ func AgentHelmInstall() features.Feature {
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				// Collect pod logs to diagnose connectivity issues.
+				if logOut, logErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
+					"logs", "-n", "kedge-system", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
+					t.Logf("agent pod logs:\n%s", logOut)
+				} else {
+					t.Logf("could not get pod logs: %v", logErr)
+				}
+				// Also describe the pods to see Events and container state.
+				if descOut, descErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
+					"describe", "pods", "-n", "kedge-system",
+					"-l", "app.kubernetes.io/instance=kedge-agent-"+edgeName); descErr == nil {
+					t.Logf("pod describe:\n%s", descOut)
+				}
 				t.Fatalf("edge %q did not become Ready after helm install: %v", edgeName, err)
 			}
 			t.Logf("edge %q reached Ready after helm install", edgeName)

@@ -112,7 +112,10 @@ func (c *mcpClient) do(ctx context.Context, method string, id int, params any) (
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
+	// Use application/json only — omitting text/event-stream forces the MCP
+	// server to return plain JSON instead of SSE-wrapped responses, which is
+	// what our mcpClient parser expects.
+	req.Header.Set("Accept", "application/json")
 	if c.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
 	}

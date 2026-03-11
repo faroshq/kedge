@@ -101,19 +101,25 @@ func runMCPURL(_ *cobra.Command) error {
 		return fmt.Errorf("cluster %q has no server URL in kubeconfig", ctx.Cluster)
 	}
 
-	// Parse the server URL to extract base (strip any /clusters/... path) and
-	// the cluster name.
-	//
-	// kcp kubeconfigs have a Server like:
-	//   https://kedge.example.com/clusters/root:kedge:user-default
-	//
-	// We want:
-	//   base   = https://kedge.example.com
-	//   clusterName = root:kedge:user-default
+	mcpURL, err := mcpURLFromServerURL(serverURL)
+	if err != nil {
+		return err
+	}
 
+	fmt.Println(mcpURL)
+	return nil
+}
+
+// mcpURLFromServerURL derives the MCP endpoint URL from a kcp server URL.
+//
+// Input:  https://kedge.example.com/clusters/root:kedge:user-default
+// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/mcp
+//
+// Returns an error if the server URL does not contain a /clusters/ path segment.
+func mcpURLFromServerURL(serverURL string) (string, error) {
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
-		return fmt.Errorf("parsing server URL %q: %w", serverURL, err)
+		return "", fmt.Errorf("parsing server URL %q: %w", serverURL, err)
 	}
 
 	// Extract base URL (scheme + host).
@@ -127,10 +133,8 @@ func runMCPURL(_ *cobra.Command) error {
 	}
 
 	if clusterName == "" {
-		return fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
+		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
 
-	mcpURL := fmt.Sprintf("%s/services/mcp/%s/mcp", base, clusterName)
-	fmt.Println(mcpURL)
-	return nil
+	return fmt.Sprintf("%s/services/mcp/%s/mcp", base, clusterName), nil
 }

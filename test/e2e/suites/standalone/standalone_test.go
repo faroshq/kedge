@@ -84,3 +84,7 @@ func TestAgentJoinKubernetes(t *testing.T) {
 func TestAgentHelmInstall(t *testing.T) {
 	testenv.Test(t, cases.AgentHelmInstall())
 }
+
+// MCP tests (issue #124): verify the per-tenant MCP endpoint.
+func TestMCPEndpoint(t *testing.T) { testenv.Test(t, cases.MCPEndpoint()) }
+func TestMCPURL(t *testing.T)      { testenv.Test(t, cases.MCPURL()) }

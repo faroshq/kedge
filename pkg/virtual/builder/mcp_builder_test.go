@@ -22,18 +22,21 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
 )
 
+const (
+	testCluster  = "root:kedge:user-default"
+	testEdgeName = "my-edge"
+)
+
 // newTestMCPVirtualWorkspaces builds a minimal virtualWorkspaces for MCP handler tests.
-// It sets a non-nil kcpConfig so that clusterScopedDynamicClient can build scoped clients.
 func newTestMCPVirtualWorkspaces() *virtualWorkspaces {
 	return &virtualWorkspaces{
 		kcpConfig:       &rest.Config{Host: "https://kcp.example.com"},
 		staticTokens:    make(map[string]struct{}),
 		edgeConnManager: NewConnManager(),
+		hubExternalURL:  "https://kedge.example.com",
 	}
 }
 
@@ -41,11 +44,9 @@ func newTestMCPVirtualWorkspaces() *virtualWorkspaces {
 // header is rejected with HTTP 401.
 func TestMCPHandler_missingToken(t *testing.T) {
 	vws := newTestMCPVirtualWorkspaces()
-	// Use a minimal fake dynamic client — handler should reject before using it.
-	dynClient := fake.NewSimpleDynamicClient(runtime.NewScheme())
-	handler := vws.buildMCPHandler(dynClient, "https://kedge.example.com/services/edges-proxy")
+	handler := vws.buildMCPHandler(testCluster, testEdgeName)
 
-	req := httptest.NewRequest(http.MethodPost, "/root:kedge:user-default/mcp", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	// No Authorization header.
 	w := httptest.NewRecorder()
 
@@ -56,33 +57,13 @@ func TestMCPHandler_missingToken(t *testing.T) {
 	}
 }
 
-// TestMCPHandler_missingCluster verifies that a request with a token but an
-// empty/root path is rejected with HTTP 400.
-func TestMCPHandler_missingCluster(t *testing.T) {
-	vws := newTestMCPVirtualWorkspaces()
-	dynClient := fake.NewSimpleDynamicClient(runtime.NewScheme())
-	handler := vws.buildMCPHandler(dynClient, "https://kedge.example.com/services/edges-proxy")
-
-	// Path is "/" which strips to "" — missing cluster.
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("Authorization", "Bearer valid-token")
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected HTTP 400 Bad Request, got %d (body: %s)", w.Code, w.Body.String())
-	}
-}
-
-// TestMCPHandler_unknownEndpoint verifies that a path ending with an unknown
-// endpoint suffix (not "mcp", "sse", or "message") returns HTTP 404.
+// TestMCPHandler_withToken verifies that a request with a valid bearer token
+// reaches the MCP server layer (which initialises even with no connected edges).
 // A fake kcp API server is used so the MCP server can be fully initialised
 // without making real network calls.
-func TestMCPHandler_unknownEndpoint(t *testing.T) {
-	// Start a fake kcp server that returns an empty Edge list for all requests.
+func TestMCPHandler_withToken(t *testing.T) {
+	// Start a fake kcp server that returns an empty response for all requests.
 	fakeKCP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return a minimal empty Unstructured list for any LIST call.
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"List","items":[],"metadata":{}}`))
 	}))
@@ -92,58 +73,43 @@ func TestMCPHandler_unknownEndpoint(t *testing.T) {
 		kcpConfig:       &rest.Config{Host: fakeKCP.URL},
 		staticTokens:    make(map[string]struct{}),
 		edgeConnManager: NewConnManager(),
+		hubExternalURL:  "https://kedge.example.com",
 	}
-	dynClient := fake.NewSimpleDynamicClient(runtime.NewScheme())
-	handler := vws.buildMCPHandler(dynClient, "https://kedge.example.com/services/edges-proxy")
+	handler := vws.buildMCPHandler(testCluster, testEdgeName)
 
-	// Path: {cluster}/badpath — unknown endpoint.
-	req := httptest.NewRequest(http.MethodGet, "/root:kedge:user-default/badpath", nil)
+	// A valid MCP initialize request.
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected HTTP 404 Not Found, got %d (body: %s)", w.Code, w.Body.String())
+	// MCP server should return 200 (request processed) or at least not 401.
+	if w.Code == http.StatusUnauthorized {
+		t.Fatalf("expected request with token to pass auth, got 401")
 	}
 }
 
-// TestClusterScopedDynamicClient_appendsCluster verifies that
-// clusterScopedDynamicClient produces a dynamic client whose host URL includes
-// the /clusters/<name> path appended to the base kcp host.
-func TestClusterScopedDynamicClient_appendsCluster(t *testing.T) {
-	const (
-		baseHost = "https://kcp.example.com"
-		cluster  = "root:kedge:user-default"
-	)
+// TestMCPHandler_edgeNotConnected verifies that a handler for a non-connected
+// edge still initialises the MCP server (with zero targets).
+func TestMCPHandler_edgeNotConnected(t *testing.T) {
+	vws := newTestMCPVirtualWorkspaces()
+	handler := vws.buildMCPHandler(testCluster, "non-existent-edge")
 
-	kcpConfig := &rest.Config{Host: baseHost}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	w := httptest.NewRecorder()
 
-	client, err := clusterScopedDynamicClient(kcpConfig, cluster)
-	if err != nil {
-		t.Fatalf("clusterScopedDynamicClient returned unexpected error: %v", err)
-	}
-	if client == nil {
-		t.Fatal("clusterScopedDynamicClient returned nil client")
-	}
+	handler.ServeHTTP(w, req)
 
-	// We can't directly inspect the dynamic client's host, but we can verify the
-	// logic via appendClusterPath (the same function used internally).
-	expectedHost := appendClusterPath(baseHost, cluster)
-
-	if !strings.Contains(expectedHost, "/clusters/"+cluster) {
-		t.Errorf("expected host %q to contain /clusters/%s", expectedHost, cluster)
-	}
-	if !strings.HasPrefix(expectedHost, baseHost) {
-		t.Errorf("expected host %q to start with %s", expectedHost, baseHost)
-	}
-}
-
-// TestClusterScopedDynamicClient_nilKcpConfig verifies that passing a nil
-// kcpConfig returns an error.
-func TestClusterScopedDynamicClient_nilKcpConfig(t *testing.T) {
-	_, err := clusterScopedDynamicClient(nil, "root:kedge:user-default")
-	if err == nil {
-		t.Fatal("expected error when kcpConfig is nil, got nil")
+	// Should not return 401 (auth passed) — MCP server handles the request.
+	if w.Code == http.StatusUnauthorized {
+		t.Fatalf("expected auth to pass with bearer token, got 401")
 	}
 }

@@ -214,11 +214,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	router.PathPrefix("/services/agent-proxy/").Handler(http.StripPrefix("/services/agent-proxy", vws.EdgeAgentProxyHandler()))
 	router.PathPrefix("/services/edges-proxy/").Handler(http.StripPrefix("/services/edges-proxy", vws.EdgesProxyHandler()))
-
-	// MCP endpoint: per-tenant multi-edge MCP server.
-	// Pattern: /services/mcp/{cluster}/mcp  or  /services/mcp/{cluster}/sse
-	edgeProxyBase := s.opts.HubExternalURL + "/services/edges-proxy"
-	router.PathPrefix("/services/mcp/").Handler(http.StripPrefix("/services/mcp", vws.MCPHandler(dynamicClient, edgeProxyBase)))
+	// MCP is now served under the agent-proxy route:
+	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
 	// Health check
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

@@ -52,7 +52,7 @@ type mcpClient struct {
 
 // newMCPClient creates an mcpClient using the NodePort URL of the hub and the
 // kcp cluster name derived from the hub kubeconfig.
-func newMCPClient(hubKubeconfig string) (*mcpClient, error) {
+func newMCPClient(hubKubeconfig, edgeName string) (*mcpClient, error) {
 	// Resolve the NodePort base URL (reachable in CI via Docker network).
 	nodePortBase := framework.HubNodePortURL()
 	if nodePortBase == "" {
@@ -72,7 +72,10 @@ func newMCPClient(hubKubeconfig string) (*mcpClient, error) {
 	}
 	token := restCfg.BearerToken
 
-	mcpURL := fmt.Sprintf("%s/services/mcp/%s/mcp", nodePortBase, clusterName)
+	// New per-edge MCP URL pattern:
+	// /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{edgeName}/mcp
+	mcpURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
+		nodePortBase, clusterName, edgeName)
 
 	return &mcpClient{
 		baseURL: mcpURL,
@@ -294,7 +297,7 @@ func MCPEndpoint() features.Feature {
 		Assess("MCP initialize returns 200 with serverInfo", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 
-			mcp, err := newMCPClient(clusterEnv.HubKubeconfig)
+			mcp, err := newMCPClient(clusterEnv.HubKubeconfig, edgeName)
 			if err != nil {
 				t.Fatalf("creating MCP client: %v", err)
 			}
@@ -382,10 +385,12 @@ func MCPEndpoint() features.Feature {
 		Feature()
 }
 
-// MCPURL verifies that `kedge mcp url` prints a valid MCP endpoint URL.
+// MCPURL verifies that `kedge mcp url` prints a valid per-edge MCP endpoint URL.
 func MCPURL() features.Feature {
+	const edgeName = "e2e-mcp-edge"
+
 	return features.New("MCP/URL").
-		Assess("kedge mcp url prints expected URL", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("kedge mcp url --edge prints expected URL", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			if clusterEnv == nil {
 				t.Fatal("cluster environment not found in context")
@@ -393,22 +398,22 @@ func MCPURL() features.Feature {
 
 			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			out, err := client.Run(ctx, "mcp", "url")
+			out, err := client.Run(ctx, "mcp", "url", "--edge", edgeName)
 			if err != nil {
 				t.Fatalf("kedge mcp url failed: %v (output: %s)", err, out)
 			}
 			out = strings.TrimSpace(out)
 			t.Logf("kedge mcp url output: %s", out)
 
-			// The output must be a URL ending with /mcp.
+			// The output must be a valid per-edge MCP URL.
 			if !strings.HasPrefix(out, "https://") {
 				t.Errorf("expected URL to start with https://, got: %s", out)
 			}
-			if !strings.Contains(out, "/services/mcp/") {
-				t.Errorf("expected URL to contain /services/mcp/, got: %s", out)
+			if !strings.Contains(out, "/services/agent-proxy/") {
+				t.Errorf("expected URL to contain /services/agent-proxy/, got: %s", out)
 			}
-			if !strings.HasSuffix(out, "/mcp") {
-				t.Errorf("expected URL to end with /mcp, got: %s", out)
+			if !strings.Contains(out, "/edges/"+edgeName+"/mcp") {
+				t.Errorf("expected URL to contain /edges/%s/mcp, got: %s", edgeName, out)
 			}
 			return ctx
 		}).

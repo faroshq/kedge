@@ -37,16 +37,18 @@ func newMCPCommand() *cobra.Command {
 }
 
 func newMCPURLCommand() *cobra.Command {
-	return &cobra.Command{
+	var edgeName string
+
+	cmd := &cobra.Command{
 		Use:   "url",
-		Short: "Print the MCP endpoint URL for the current user's hub and cluster",
-		Long: `Prints the MCP endpoint URL derived from the current kubeconfig context.
+		Short: "Print the MCP endpoint URL for a specific edge",
+		Long: `Prints the MCP endpoint URL for a specific edge derived from the current kubeconfig context.
 
 The URL can be used to connect an MCP-compatible AI client (e.g. Claude Desktop,
-Cursor, VS Code with MCP extension) to all edges connected for your tenant.
+Cursor, VS Code with MCP extension) to the specified edge.
 
 Example output:
-  https://kedge.example.com/services/mcp/root:kedge:user-default/mcp
+  https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
 
 Usage with Claude Desktop (claude_desktop_config.json):
   {
@@ -59,12 +61,17 @@ Usage with Claude Desktop (claude_desktop_config.json):
 `,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMCPURL(cmd)
+			return runMCPURL(cmd, edgeName)
 		},
 	}
+
+	cmd.Flags().StringVar(&edgeName, "edge", "", "Name of the edge to connect to (required)")
+	_ = cmd.MarkFlagRequired("edge")
+
+	return cmd
 }
 
-func runMCPURL(_ *cobra.Command) error {
+func runMCPURL(_ *cobra.Command, edgeName string) error {
 	// Load the current kubeconfig.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
@@ -101,7 +108,7 @@ func runMCPURL(_ *cobra.Command) error {
 		return fmt.Errorf("cluster %q has no server URL in kubeconfig", ctx.Cluster)
 	}
 
-	mcpURL, err := mcpURLFromServerURL(serverURL)
+	mcpURL, err := mcpURLFromServerURL(serverURL, edgeName)
 	if err != nil {
 		return err
 	}
@@ -110,13 +117,13 @@ func runMCPURL(_ *cobra.Command) error {
 	return nil
 }
 
-// mcpURLFromServerURL derives the MCP endpoint URL from a kcp server URL.
+// mcpURLFromServerURL derives the per-edge MCP endpoint URL from a kcp server URL and edge name.
 //
-// Input:  https://kedge.example.com/clusters/root:kedge:user-default
-// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/mcp
+// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "my-edge"
+// Output: https://kedge.example.com/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/my-edge/mcp
 //
 // Returns an error if the server URL does not contain a /clusters/ path segment.
-func mcpURLFromServerURL(serverURL string) (string, error) {
+func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
 		return "", fmt.Errorf("parsing server URL %q: %w", serverURL, err)
@@ -136,5 +143,5 @@ func mcpURLFromServerURL(serverURL string) (string, error) {
 		return "", fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
 	}
 
-	return fmt.Sprintf("%s/services/mcp/%s/mcp", base, clusterName), nil
+	return fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp", base, clusterName, edgeName), nil
 }

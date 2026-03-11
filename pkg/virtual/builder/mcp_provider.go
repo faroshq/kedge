@@ -22,32 +22,23 @@ import (
 
 	mcpapi "github.com/containers/kubernetes-mcp-server/pkg/api"
 	mcpkubernetes "github.com/containers/kubernetes-mcp-server/pkg/kubernetes"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// edgeGVRMCP is the GVR used to list Edge objects when building MCP targets.
-// It mirrors edgeGVR from edge_status.go but is defined here to avoid
-// cross-file init-order issues.
-var edgeGVRMCP = schema.GroupVersionResource{
-	Group:    "kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "edges",
-}
-
 // KedgeEdgeProvider implements the kubernetes-mcp-server Provider interface so
-// that the MCP server can enumerate all connected Edge tunnels for a tenant and
-// proxy Kubernetes API calls through them.
+// that the MCP server can route Kubernetes API calls to a specific Edge tunnel.
+//
+// Unlike the previous multi-edge aggregator, this provider is single-edge:
+// cluster and edgeName are fixed at construction time. GetTargets returns the
+// single edgeName if its tunnel is active, or an empty slice if not connected.
 type KedgeEdgeProvider struct {
-	cluster         string            // kcp cluster path, e.g. "root:kedge:user-default"
-	edgeConnManager *ConnManager      // shared dialer registry
-	dynamicClient   dynamic.Interface // cluster-scoped dynamic client for listing Edge objects
-	edgeProxyBase   string            // e.g. "https://kedge.example.com/services/edges-proxy"
-	bearerToken     string            // caller's bearer token to forward to edge proxies
+	cluster         string       // kcp cluster path, e.g. "root:kedge:user-default"
+	edgeName        string       // fixed edge name, e.g. "my-edge"
+	edgeConnManager *ConnManager // shared dialer registry
+	edgeProxyBase   string       // e.g. "https://kedge.example.com/services/edges-proxy"
+	bearerToken     string       // caller's bearer token to forward to edge proxies
 }
 
 // Ensure KedgeEdgeProvider implements mcpkubernetes.Provider.
@@ -58,23 +49,14 @@ func (p *KedgeEdgeProvider) IsOpenShift(_ context.Context) bool {
 	return false
 }
 
-// GetTargets lists all Edge objects in the tenant cluster and filters to those
-// that have an active reverse tunnel registered in ConnManager.
-func (p *KedgeEdgeProvider) GetTargets(ctx context.Context) ([]string, error) {
-	list, err := p.dynamicClient.Resource(edgeGVRMCP).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("listing edges in cluster %s: %w", p.cluster, err)
+// GetTargets returns the single fixed edgeName if its reverse tunnel is
+// registered in ConnManager, or an empty slice if the edge is not connected.
+func (p *KedgeEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
+	key := edgeConnKey(p.cluster, p.edgeName)
+	if _, ok := p.edgeConnManager.Load(key); ok {
+		return []string{p.edgeName}, nil
 	}
-
-	var targets []string
-	for _, item := range list.Items {
-		name := item.GetName()
-		key := edgeConnKey(p.cluster, name)
-		if _, ok := p.edgeConnManager.Load(key); ok {
-			targets = append(targets, name)
-		}
-	}
-	return targets, nil
+	return []string{}, nil
 }
 
 // GetDerivedKubernetes returns a *mcpkubernetes.Kubernetes pointing at the edge

@@ -19,100 +19,57 @@ package builder
 import (
 	"context"
 	"testing"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic/fake"
 )
 
-// makeEdgeUnstructured creates a minimal Unstructured Edge object with the given name.
-func makeEdgeUnstructured(name string) *unstructured.Unstructured {
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(edgeGVRMCP.GroupVersion().WithKind("Edge"))
-	u.SetName(name)
-	u.SetNamespace("")
-	return u
-}
-
-// newFakeDynamicClientWithEdges builds a fake dynamic client pre-populated with
-// the given Edge objects.
-func newFakeDynamicClientWithEdges(edges ...*unstructured.Unstructured) *fake.FakeDynamicClient {
-	scheme := runtime.NewScheme()
-	objects := make([]runtime.Object, 0, len(edges))
-	for _, e := range edges {
-		objects = append(objects, e)
-	}
-	return fake.NewSimpleDynamicClient(scheme, objects...)
-}
-
-// TestGetTargets_returnsOnlyConnectedEdges verifies that GetTargets returns only
-// the edges whose tunnel key is present in ConnManager.
-func TestGetTargets_returnsOnlyConnectedEdges(t *testing.T) {
-	const cluster = "root:kedge:user-default"
-
-	edge1 := makeEdgeUnstructured("edge-one")
-	edge2 := makeEdgeUnstructured("edge-two")
-	edge3 := makeEdgeUnstructured("edge-three")
-
-	dynClient := newFakeDynamicClientWithEdges(edge1, edge2, edge3)
-
-	cm := NewConnManager()
-	// Register only edge-one and edge-two in the ConnManager.
-	cm.Store(edgeConnKey(cluster, "edge-one"), nil)
-	cm.Store(edgeConnKey(cluster, "edge-two"), nil)
-
-	provider := &KedgeEdgeProvider{
+// newSingleEdgeProvider creates a KedgeEdgeProvider for a single edge with the
+// given ConnManager state.
+func newSingleEdgeProvider(cluster, edgeName string, cm *ConnManager) *KedgeEdgeProvider {
+	return &KedgeEdgeProvider{
 		cluster:         cluster,
+		edgeName:        edgeName,
 		edgeConnManager: cm,
-		dynamicClient:   dynClient,
 		edgeProxyBase:   "https://kedge.example.com/services/edges-proxy",
 		bearerToken:     "test-token",
 	}
+}
+
+// TestGetTargets_returnsEdgeWhenConnected verifies that GetTargets returns the
+// single fixed edgeName when its tunnel is registered in ConnManager.
+func TestGetTargets_returnsEdgeWhenConnected(t *testing.T) {
+	const (
+		cluster  = "root:kedge:user-default"
+		edgeName = "my-edge"
+	)
+
+	cm := NewConnManager()
+	cm.Store(edgeConnKey(cluster, edgeName), nil)
+
+	provider := newSingleEdgeProvider(cluster, edgeName, cm)
 
 	targets, err := provider.GetTargets(context.Background())
 	if err != nil {
 		t.Fatalf("GetTargets returned unexpected error: %v", err)
 	}
 
-	if len(targets) != 2 {
-		t.Fatalf("expected 2 targets, got %d: %v", len(targets), targets)
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d: %v", len(targets), targets)
 	}
-
-	targetSet := make(map[string]bool)
-	for _, tgt := range targets {
-		targetSet[tgt] = true
-	}
-
-	if !targetSet["edge-one"] {
-		t.Errorf("expected edge-one in targets, got %v", targets)
-	}
-	if !targetSet["edge-two"] {
-		t.Errorf("expected edge-two in targets, got %v", targets)
-	}
-	if targetSet["edge-three"] {
-		t.Errorf("edge-three should NOT be in targets (no tunnel), got %v", targets)
+	if targets[0] != edgeName {
+		t.Errorf("expected target %q, got %q", edgeName, targets[0])
 	}
 }
 
-// TestGetTargets_emptyWhenNoneConnected verifies that GetTargets returns an
-// empty (nil) slice when no tunnels are registered in ConnManager.
-func TestGetTargets_emptyWhenNoneConnected(t *testing.T) {
-	const cluster = "root:kedge:user-default"
-
-	edge1 := makeEdgeUnstructured("edge-alpha")
-	edge2 := makeEdgeUnstructured("edge-beta")
-
-	dynClient := newFakeDynamicClientWithEdges(edge1, edge2)
+// TestGetTargets_emptyWhenNotConnected verifies that GetTargets returns an empty
+// slice when the edge's tunnel is not registered in ConnManager.
+func TestGetTargets_emptyWhenNotConnected(t *testing.T) {
+	const (
+		cluster  = "root:kedge:user-default"
+		edgeName = "my-edge"
+	)
 
 	cm := NewConnManager() // empty — no tunnels
 
-	provider := &KedgeEdgeProvider{
-		cluster:         cluster,
-		edgeConnManager: cm,
-		dynamicClient:   dynClient,
-		edgeProxyBase:   "https://kedge.example.com/services/edges-proxy",
-		bearerToken:     "test-token",
-	}
+	provider := newSingleEdgeProvider(cluster, edgeName, cm)
 
 	targets, err := provider.GetTargets(context.Background())
 	if err != nil {
@@ -121,6 +78,31 @@ func TestGetTargets_emptyWhenNoneConnected(t *testing.T) {
 
 	if len(targets) != 0 {
 		t.Fatalf("expected 0 targets, got %d: %v", len(targets), targets)
+	}
+}
+
+// TestGetTargets_ignoresOtherEdges verifies that only the provider's own edge
+// is returned even if other edges are connected in ConnManager.
+func TestGetTargets_ignoresOtherEdges(t *testing.T) {
+	const (
+		cluster     = "root:kedge:user-default"
+		edgeName    = "my-edge"
+		anotherEdge = "other-edge"
+	)
+
+	cm := NewConnManager()
+	// Register a different edge but NOT the provider's edge.
+	cm.Store(edgeConnKey(cluster, anotherEdge), nil)
+
+	provider := newSingleEdgeProvider(cluster, edgeName, cm)
+
+	targets, err := provider.GetTargets(context.Background())
+	if err != nil {
+		t.Fatalf("GetTargets returned unexpected error: %v", err)
+	}
+
+	if len(targets) != 0 {
+		t.Fatalf("expected 0 targets (own edge not connected), got %d: %v", len(targets), targets)
 	}
 }
 
@@ -135,12 +117,11 @@ func TestGetDerivedKubernetes_correctURL(t *testing.T) {
 	)
 
 	cm := NewConnManager()
-	dynClient := newFakeDynamicClientWithEdges()
 
 	provider := &KedgeEdgeProvider{
 		cluster:         cluster,
+		edgeName:        edgeName,
 		edgeConnManager: cm,
-		dynamicClient:   dynClient,
 		edgeProxyBase:   edgeProxyBase,
 		bearerToken:     bearerToken,
 	}

@@ -19,6 +19,7 @@ package framework
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -648,6 +649,31 @@ func HubNodePortURL() string {
 	}
 	ip := strings.TrimSpace(string(out))
 	return fmt.Sprintf("https://%s:31443", ip)
+}
+
+// PodHubURL returns the hub URL reachable from inside a pod in the agent kind
+// cluster. It replaces the host:port of the given clusterHubURL (which uses
+// kedge.localhost:8443, resolvable only on the runner) with the hub's Docker
+// network NodePort address, preserving the /clusters/<name> path so that
+// SplitBaseAndCluster can extract the correct cluster name.
+//
+// Returns "" if the NodePort address cannot be determined.
+func PodHubURL(clusterHubURL string) string {
+	base := HubNodePortURL() // "https://172.18.0.2:31443"
+	if base == "" {
+		return ""
+	}
+	parsedBase, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	parsedCluster, err := url.Parse(clusterHubURL)
+	if err != nil {
+		return base
+	}
+	parsedCluster.Scheme = parsedBase.Scheme
+	parsedCluster.Host = parsedBase.Host
+	return parsedCluster.String()
 }
 
 // AgentBinPath returns the path to the kedge binary under bin/.

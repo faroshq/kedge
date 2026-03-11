@@ -69,6 +69,18 @@ const (
 	// on the host (e.g. when kcp or another cluster is running).
 	// Example: KEDGE_HUB_API_SERVER_PORT=6444
 	hubAPIServerPortEnv = "KEDGE_HUB_API_SERVER_PORT"
+
+	// agentImageEnv overrides the agent image repository. Use this in CI when
+	// the agent image is built locally (e.g. "ghcr.io/faroshq/kedge-agent").
+	agentImageEnv = "KEDGE_AGENT_IMAGE"
+
+	// agentImageTagEnv overrides the agent image tag.
+	// Use this in CI to match the locally built image tag.
+	agentImageTagEnv = "KEDGE_AGENT_IMAGE_TAG"
+
+	// agentImagePullPolicyEnv overrides the agent image pull policy.
+	// Set to "Never" in CI when the image is pre-loaded into kind.
+	agentImagePullPolicyEnv = "KEDGE_AGENT_IMAGE_PULL_POLICY"
 )
 
 const (
@@ -761,6 +773,31 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 
 		return WithClusterEnv(ctx, clusterEnv), nil
 	}
+}
+
+// LoadAgentImageIntoCluster loads the agent container image into a kind cluster
+// so that Deployments with imagePullPolicy=Never can use it without a registry
+// pull. This is a no-op unless KEDGE_AGENT_IMAGE_PULL_POLICY=Never (i.e. CI
+// with a locally built image).
+func LoadAgentImageIntoCluster(clusterName string) error {
+	pullPolicy := os.Getenv(agentImagePullPolicyEnv)
+	if pullPolicy != "Never" {
+		return nil // nothing to do — let Kubernetes pull the image normally
+	}
+	image := os.Getenv(agentImageEnv)
+	if image == "" {
+		image = "ghcr.io/faroshq/kedge-agent"
+	}
+	tag := os.Getenv(agentImageTagEnv)
+	if tag == "" {
+		tag = "latest"
+	}
+	imageRef := image + ":" + tag
+	out, err := exec.Command("kind", "load", "docker-image", imageRef, "--name", clusterName).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kind load docker-image %s into %s: %w\n%s", imageRef, clusterName, err, out)
+	}
+	return nil
 }
 
 // TeardownClustersWithAgentCount is TeardownClusters for a custom agent count.

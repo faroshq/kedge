@@ -743,7 +743,13 @@ func AgentJoinKubernetes() features.Feature {
 			t.Logf("using pod hub URL: %s", podHubURL)
 
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
+			agentClusterName := clusterEnv.AgentClusters[0].Name
 			kedgeBin := filepath.Join(framework.RepoRoot(), framework.KedgeBin)
+
+			// Load agent image into agent cluster (no-op unless KEDGE_AGENT_IMAGE_PULL_POLICY=Never).
+			if err := framework.LoadAgentImageIntoCluster(agentClusterName); err != nil {
+				t.Fatalf("failed to load agent image into cluster: %v", err)
+			}
 
 			// Run `kedge agent join --type kubernetes` as a one-shot install
 			// command: it deploys the agent Deployment into the agent cluster
@@ -866,26 +872,47 @@ func AgentHelmInstall() features.Feature {
 			t.Logf("using pod hub URL: %s", podHubURL)
 
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
+			agentClusterName := clusterEnv.AgentClusters[0].Name
 			chartPath := filepath.Join(framework.RepoRoot(), "deploy/charts/kedge-agent")
 			releaseName := "kedge-agent-" + edgeName
+
+			// Load agent image into agent cluster (no-op unless KEDGE_AGENT_IMAGE_PULL_POLICY=Never).
+			if err := framework.LoadAgentImageIntoCluster(agentClusterName); err != nil {
+				t.Fatalf("failed to load agent image into cluster: %v", err)
+			}
+
+			// Build helm set flags for agent image overrides (mirrors env vars used by kedge agent join).
+			helmSetArgs := []string{
+				"--set", "agent.edgeName=" + edgeName,
+				"--set", "agent.hub.url=" + podHubURL,
+				"--set", "agent.hub.token=" + token,
+				"--set", "agent.hub.insecureSkipTLSVerify=true",
+			}
+			if repo := os.Getenv("KEDGE_AGENT_IMAGE"); repo != "" {
+				helmSetArgs = append(helmSetArgs, "--set", "image.repository="+repo)
+			}
+			if tag := os.Getenv("KEDGE_AGENT_IMAGE_TAG"); tag != "" {
+				helmSetArgs = append(helmSetArgs, "--set", "image.tag="+tag)
+			}
+			if pullPolicy := os.Getenv("KEDGE_AGENT_IMAGE_PULL_POLICY"); pullPolicy != "" {
+				helmSetArgs = append(helmSetArgs, "--set", "image.pullPolicy="+pullPolicy)
+			}
 
 			// helm install with --wait blocks until the Deployment is ready or
 			// the timeout expires, so the command itself validates availability.
 			helmCtx, helmCancel := context.WithTimeout(ctx, 3*time.Minute)
 			defer helmCancel()
 
-			cmd := exec.CommandContext(helmCtx, "helm",
+			helmArgs := append([]string{
 				"install", releaseName, chartPath,
 				"--namespace", "kedge-system",
 				"--create-namespace",
-				"--set", "agent.edgeName="+edgeName,
-				"--set", "agent.hub.url="+podHubURL,
-				"--set", "agent.hub.token="+token,
-				"--set", "agent.hub.insecureSkipTLSVerify=true",
 				"--kubeconfig", agentKubeconfig,
 				"--wait",
 				"--timeout", "2m",
-			)
+			}, helmSetArgs...)
+
+			cmd := exec.CommandContext(helmCtx, "helm", helmArgs...)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {

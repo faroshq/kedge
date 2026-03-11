@@ -301,7 +301,19 @@ metadata:
 		return fmt.Errorf("creating ServiceAccount: %w", err)
 	}
 
-	image := "ghcr.io/faroshq/kedge-agent:latest"
+	agentImage := os.Getenv("KEDGE_AGENT_IMAGE")
+	if agentImage == "" {
+		agentImage = "ghcr.io/faroshq/kedge-agent"
+	}
+	agentImageTag := os.Getenv("KEDGE_AGENT_IMAGE_TAG")
+	if agentImageTag == "" {
+		agentImageTag = "latest"
+	}
+	agentImagePullPolicy := os.Getenv("KEDGE_AGENT_IMAGE_PULL_POLICY")
+	if agentImagePullPolicy == "" {
+		agentImagePullPolicy = "IfNotPresent"
+	}
+	image := agentImage + ":" + agentImageTag
 
 	var deployManifest string
 
@@ -346,10 +358,11 @@ spec:
       containers:
       - name: agent
         image: %s
+        imagePullPolicy: %s
         args: [%s]
 `,
 			opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
-			opts.EdgeName, image,
+			opts.EdgeName, image, agentImagePullPolicy,
 			formatDeployArgs(deployArgs))
 	} else {
 		// Kubeconfig-based: mount a Secret containing the hub kubeconfig.
@@ -407,6 +420,7 @@ spec:
       containers:
       - name: agent
         image: %s
+        imagePullPolicy: %s
         args: [%s]
         volumeMounts:
         - name: hub-kubeconfig
@@ -418,7 +432,7 @@ spec:
           secretName: %s
 `,
 			opts.EdgeName, opts.EdgeName, opts.EdgeName, opts.EdgeName,
-			opts.EdgeName, image,
+			opts.EdgeName, image, agentImagePullPolicy,
 			formatDeployArgs(deployArgs),
 			secretName)
 	}

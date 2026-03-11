@@ -663,26 +663,33 @@ func HubNodePortURL() string {
 	return fmt.Sprintf("https://%s:31443", ip)
 }
 
-// PodHubURL returns the hub URL reachable from inside a pod in the agent kind
-// cluster. It replaces the host:port of the given clusterHubURL (which uses
-// kedge.localhost:8443, resolvable only on the runner) with the hub's Docker
-// network NodePort address, preserving the /clusters/<name> path so that
-// SplitBaseAndCluster can extract the correct cluster name.
+// PodHubURLFromKubeconfig returns the hub URL reachable from inside a pod in
+// the agent kind cluster. It reads the server URL from the hub kubeconfig
+// (which contains the full /clusters/<name> path), then replaces the host with
+// the hub node's Docker network NodePort address so that in-cluster agents can
+// connect.
 //
-// Returns "" if the NodePort address cannot be determined.
-func PodHubURL(clusterHubURL string) string {
+// clusterEnv.HubURL is always "https://kedge.localhost:8443" (no cluster path),
+// so this function reads the cluster path directly from the hub kubeconfig
+// instead of relying on the HubURL field.
+//
+// Returns "" if the hub kubeconfig cannot be read or the NodePort address is
+// unavailable.
+func PodHubURLFromKubeconfig(kubeconfigPath string) string {
 	base := HubNodePortURL() // "https://172.18.0.2:31443"
 	if base == "" {
 		return ""
 	}
-	parsedBase, err := url.Parse(base)
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
 		return ""
 	}
-	parsedCluster, err := url.Parse(clusterHubURL)
+	// cfg.Host is like "https://kedge.localhost:8443/clusters/root:kedge:user-default"
+	parsedCluster, err := url.Parse(cfg.Host)
 	if err != nil {
 		return base
 	}
+	parsedBase, _ := url.Parse(base)
 	parsedCluster.Scheme = parsedBase.Scheme
 	parsedCluster.Host = parsedBase.Host
 	return parsedCluster.String()

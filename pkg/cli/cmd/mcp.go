@@ -1,0 +1,136 @@
+/*
+Copyright 2026 The Faros Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package cmd
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"k8s.io/client-go/tools/clientcmd"
+)
+
+func newMCPCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "MCP (Model Context Protocol) related commands",
+		Long:  `Commands for interacting with the kedge MCP endpoint.`,
+	}
+
+	cmd.AddCommand(newMCPURLCommand())
+	return cmd
+}
+
+func newMCPURLCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "url",
+		Short: "Print the MCP endpoint URL for the current user's hub and cluster",
+		Long: `Prints the MCP endpoint URL derived from the current kubeconfig context.
+
+The URL can be used to connect an MCP-compatible AI client (e.g. Claude Desktop,
+Cursor, VS Code with MCP extension) to all edges connected for your tenant.
+
+Example output:
+  https://kedge.example.com/services/mcp/root:kedge:user-default/mcp
+
+Usage with Claude Desktop (claude_desktop_config.json):
+  {
+    "mcpServers": {
+      "kedge": {
+        "url": "<output of this command>"
+      }
+    }
+  }
+`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMCPURL(cmd)
+		},
+	}
+}
+
+func runMCPURL(_ *cobra.Command) error {
+	// Load the current kubeconfig.
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	clientCfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules,
+		&clientcmd.ConfigOverrides{},
+	)
+
+	rawCfg, err := clientCfg.RawConfig()
+	if err != nil {
+		return fmt.Errorf("loading kubeconfig: %w", err)
+	}
+
+	// Resolve the current context.
+	currentCtx := rawCfg.CurrentContext
+	if currentCtx == "" {
+		return fmt.Errorf("no current context in kubeconfig")
+	}
+
+	ctx, ok := rawCfg.Contexts[currentCtx]
+	if !ok {
+		return fmt.Errorf("context %q not found in kubeconfig", currentCtx)
+	}
+
+	cluster, ok := rawCfg.Clusters[ctx.Cluster]
+	if !ok {
+		return fmt.Errorf("cluster %q not found in kubeconfig", ctx.Cluster)
+	}
+
+	serverURL := cluster.Server
+	if serverURL == "" {
+		return fmt.Errorf("cluster %q has no server URL in kubeconfig", ctx.Cluster)
+	}
+
+	// Parse the server URL to extract base (strip any /clusters/... path) and
+	// the cluster name.
+	//
+	// kcp kubeconfigs have a Server like:
+	//   https://kedge.example.com/clusters/root:kedge:user-default
+	//
+	// We want:
+	//   base   = https://kedge.example.com
+	//   clusterName = root:kedge:user-default
+
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		return fmt.Errorf("parsing server URL %q: %w", serverURL, err)
+	}
+
+	// Extract base URL (scheme + host).
+	base := parsed.Scheme + "://" + parsed.Host
+
+	// Extract cluster name from the path.
+	clusterName := ""
+	if idx := strings.Index(parsed.Path, "/clusters/"); idx >= 0 {
+		clusterName = strings.TrimPrefix(parsed.Path[idx:], "/clusters/")
+		clusterName = strings.TrimSuffix(clusterName, "/")
+	}
+
+	if clusterName == "" {
+		return fmt.Errorf("cannot determine cluster name from server URL %q; expected path to contain /clusters/<name>", serverURL)
+	}
+
+	mcpURL := fmt.Sprintf("%s/services/mcp/%s/mcp", base, clusterName)
+	fmt.Println(mcpURL)
+	return nil
+}

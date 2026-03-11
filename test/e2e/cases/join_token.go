@@ -732,6 +732,13 @@ func AgentJoinKubernetes() features.Feature {
 			}
 			t.Logf("join token obtained for kubernetes edge %q (len=%d)", edgeName, len(token))
 
+			// Determine the hub URL reachable from inside a pod in the agent cluster.
+			// kedge.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
+			podHubURL := framework.HubNodePortURL()
+			if podHubURL == "" {
+				t.Skip("cannot determine hub Docker network IP; skipping in-cluster agent test")
+			}
+
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
 			kedgeBin := filepath.Join(framework.RepoRoot(), framework.KedgeBin)
 
@@ -744,7 +751,7 @@ func AgentJoinKubernetes() features.Feature {
 			cmd := exec.CommandContext(joinCtx, kedgeBin,
 				"agent", "join",
 				"--type", "kubernetes",
-				"--hub-url", clusterEnv.HubURL,
+				"--hub-url", podHubURL,
 				"--edge-name", edgeName,
 				"--token", token,
 				"--kubeconfig", agentKubeconfig,
@@ -833,6 +840,13 @@ func AgentHelmInstall() features.Feature {
 			}
 			t.Logf("join token obtained for helm install edge %q (len=%d)", edgeName, len(token))
 
+			// Determine the hub URL reachable from inside a pod in the agent cluster.
+			// kedge.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
+			podHubURL := framework.HubNodePortURL()
+			if podHubURL == "" {
+				t.Skip("cannot determine hub Docker network IP; skipping in-cluster helm test")
+			}
+
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
 			chartPath := filepath.Join(framework.RepoRoot(), "deploy/charts/kedge-agent")
 			releaseName := "kedge-agent-" + edgeName
@@ -847,8 +861,9 @@ func AgentHelmInstall() features.Feature {
 				"--namespace", "kedge-system",
 				"--create-namespace",
 				"--set", "agent.edgeName="+edgeName,
-				"--set", "agent.hub.url="+clusterEnv.HubURL,
+				"--set", "agent.hub.url="+podHubURL,
 				"--set", "agent.hub.token="+token,
+				"--set", "agent.hub.insecureSkipTLSVerify=true",
 				"--kubeconfig", agentKubeconfig,
 				"--wait",
 				"--timeout", "2m",

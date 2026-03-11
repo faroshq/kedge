@@ -632,6 +632,23 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 	}
 }
 
+// HubNodePortURL returns the hub URL reachable from inside a pod in another
+// kind cluster — i.e. via the hub node's Docker IP and NodePort 31443.
+// This is needed because kedge.localhost resolves only on the CI runner host,
+// not inside pods.
+// Returns "" if the Docker IP cannot be determined (caller should skip or fall back).
+func HubNodePortURL() string {
+	out, err := exec.Command("docker", "inspect",
+		DefaultHubClusterName+"-control-plane",
+		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+	).Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return ""
+	}
+	ip := strings.TrimSpace(string(out))
+	return fmt.Sprintf("https://%s:31443", ip)
+}
+
 // AgentBinPath returns the path to the kedge binary under bin/.
 func AgentBinPath() string {
 	return filepath.Join(RepoRoot(), "bin", "kedge")

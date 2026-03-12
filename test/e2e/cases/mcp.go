@@ -17,18 +17,16 @@ limitations under the License.
 package cases
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -42,18 +40,17 @@ type mcpAgentKey struct{}
 // mcpClientKey is the context key for passing the mcpClient between Assess steps.
 type mcpClientKey struct{}
 
-// mcpClient encapsulates the HTTP boilerplate for the MCP streamable-HTTP protocol.
+// mcpClient wraps a connected go-sdk MCP client session.
+// Using the proper go-sdk StreamableClientTransport avoids all raw HTTP/SSE
+// parsing issues and correctly satisfies the MCP streamable-HTTP spec.
 type mcpClient struct {
-	baseURL    string // e.g. https://172.18.0.2:31443/services/mcp/<cluster>/mcp
-	token      string // Bearer token
-	sessionID  string // set after initialize
-	httpClient *http.Client
+	baseURL string // for logging only
+	session *gosdk.ClientSession
+	client  *gosdk.Client
 }
 
 // newMCPClient creates an mcpClient using the NodePort URL of the hub and the
 // kcp cluster name derived from the hub kubeconfig.
-// edgeName is used for the per-edge URL; kmcpName (if non-empty) selects the
-// KubernetesMCP multi-edge endpoint instead.
 func newMCPClient(hubKubeconfig, edgeName string) (*mcpClient, error) {
 	return newMCPClientWithKMCP(hubKubeconfig, edgeName, "")
 }
@@ -65,19 +62,16 @@ func newMCPClientKubernetesMCP(hubKubeconfig, kmcpName string) (*mcpClient, erro
 }
 
 func newMCPClientWithKMCP(hubKubeconfig, edgeName, kmcpName string) (*mcpClient, error) {
-	// Resolve the NodePort base URL (reachable in CI via Docker network).
 	nodePortBase := framework.HubNodePortURL()
 	if nodePortBase == "" {
 		return nil, fmt.Errorf("could not determine hub NodePort URL (docker inspect failed)")
 	}
 
-	// Extract the kcp cluster name from the hub kubeconfig server URL.
 	clusterName, err := clusterNameFromKubeconfig(hubKubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("resolving cluster name from kubeconfig: %w", err)
 	}
 
-	// Extract the bearer token from the hub kubeconfig.
 	restCfg, err := clientcmd.BuildConfigFromFlags("", hubKubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("building rest config from kubeconfig: %w", err)
@@ -86,205 +80,88 @@ func newMCPClientWithKMCP(hubKubeconfig, edgeName, kmcpName string) (*mcpClient,
 
 	var mcpURL string
 	if kmcpName != "" {
-		// KubernetesMCP multi-edge URL:
-		// /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
 		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
 			nodePortBase, clusterName, kmcpName)
 	} else {
-		// Per-edge MCP URL:
-		// /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{edgeName}/mcp
 		mcpURL = fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
 			nodePortBase, clusterName, edgeName)
 	}
 
-	return &mcpClient{
-		baseURL: mcpURL,
-		token:   token,
-		httpClient: &http.Client{
-			Transport: &http.Transport{
+	httpClient := &http.Client{
+		Transport: &authRoundTripper{
+			token: token,
+			base: &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // e2e dev certs
 			},
-			Timeout: 30 * time.Second,
 		},
+		Timeout: 30 * time.Second,
+	}
+
+	sdkClient := gosdk.NewClient(&gosdk.Implementation{Name: "e2e-test", Version: "1.0"}, nil)
+	transport := &gosdk.StreamableClientTransport{
+		Endpoint:   mcpURL,
+		HTTPClient: httpClient,
+	}
+
+	session, err := sdkClient.Connect(context.Background(), transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("MCP connect to %s: %w", mcpURL, err)
+	}
+
+	return &mcpClient{
+		baseURL: mcpURL,
+		session: session,
+		client:  sdkClient,
 	}, nil
 }
 
-// do sends a single JSON-RPC request to the MCP endpoint and returns the
-// decoded response map.  If sessionID is set it is attached as Mcp-Session-Id.
-// Pass id <= 0 for notifications (no id field).
-func (c *mcpClient) do(ctx context.Context, method string, id int, params any) (map[string]any, error) {
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  method,
-	}
-	if id > 0 {
-		payload["id"] = id
-	}
-	if params != nil {
-		payload["params"] = params
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling payload: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating HTTP request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
-	// MCP streamable HTTP spec requires both content types in Accept.
-	// The server may respond with plain JSON or SSE-wrapped JSON depending on
-	// the request; we handle both below.
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if c.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", c.sessionID)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-
-	// Notifications (id==0) may return 200 or 202 with no body.
-	if id <= 0 {
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-			return nil, fmt.Errorf("notification %q returned HTTP %d (body: %s)", method, resp.StatusCode, respBody)
-		}
-		return nil, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("method %q returned HTTP %d (body: %s)", method, resp.StatusCode, respBody)
-	}
-
-	// Determine response format from Content-Type.
-	// The MCP server may return plain JSON or SSE-wrapped JSON.
-	ct := resp.Header.Get("Content-Type")
-	var jsonData []byte
-	switch {
-	case strings.Contains(ct, "text/event-stream"):
-		// SSE format: parse lines, find "data: {...}" line and extract JSON.
-		jsonData, err = extractSSEData(respBody)
-		if err != nil {
-			return nil, fmt.Errorf("parsing SSE response for %q: %w (body: %s)", method, err, respBody)
-		}
-	default:
-		// Plain JSON response.
-		jsonData = respBody
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(jsonData, &result); err != nil {
-		return nil, fmt.Errorf("decoding JSON response for %q: %w (body: %s)", method, err, jsonData)
-	}
-
-	// Capture the session ID from the initialize response.
-	if method == "initialize" {
-		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-			c.sessionID = sid
-		}
-	}
-
-	return result, nil
+// authRoundTripper injects a Bearer token into every request.
+type authRoundTripper struct {
+	token string
+	base  http.RoundTripper
 }
 
-// initialize performs the MCP initialize handshake and sets c.sessionID.
-func (c *mcpClient) initialize(ctx context.Context) error {
-	resp, err := c.do(ctx, "initialize", 1, map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]any{},
-		"clientInfo": map[string]any{
-			"name":    "e2e-test",
-			"version": "1.0",
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("initialize: %w", err)
-	}
+func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", "Bearer "+a.token)
+	return a.base.RoundTrip(req)
+}
 
-	// Validate server responded with serverInfo.
-	respJSON, _ := json.Marshal(resp)
-	if !strings.Contains(string(respJSON), "serverInfo") {
-		return fmt.Errorf("initialize response missing 'serverInfo': %s", respJSON)
-	}
-
-	// Send required notifications/initialized notification.
-	if _, err := c.do(ctx, "notifications/initialized", 0, nil); err != nil {
-		return fmt.Errorf("notifications/initialized: %w", err)
+// initialize is a no-op — the go-sdk Connect() already performs initialize.
+func (c *mcpClient) initialize(_ context.Context) error {
+	result := c.session.InitializeResult()
+	if result == nil || result.ServerInfo.Name == "" {
+		return fmt.Errorf("initialize: serverInfo missing in InitializeResult")
 	}
 	return nil
 }
 
 // toolsList calls tools/list and returns the list of tool names.
 func (c *mcpClient) toolsList(ctx context.Context) ([]string, error) {
-	resp, err := c.do(ctx, "tools/list", 2, map[string]any{})
+	result, err := c.session.ListTools(ctx, &gosdk.ListToolsParams{})
 	if err != nil {
 		return nil, fmt.Errorf("tools/list: %w", err)
 	}
-
-	respJSON, _ := json.Marshal(resp)
-	if !strings.Contains(string(respJSON), "tools") {
-		return nil, fmt.Errorf("tools/list response missing 'tools': %s", respJSON)
-	}
-
-	// Navigate result.tools[].name
-	result, ok := resp["result"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected tools/list response shape (no result map): %s", respJSON)
-	}
-	toolsRaw, ok := result["tools"].([]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected tools/list response shape (tools not array): %s", respJSON)
-	}
-
-	names := make([]string, 0, len(toolsRaw))
-	for _, t := range toolsRaw {
-		if toolMap, ok := t.(map[string]any); ok {
-			if name, ok := toolMap["name"].(string); ok {
-				names = append(names, name)
-			}
-		}
+	names := make([]string, 0, len(result.Tools))
+	for _, t := range result.Tools {
+		names = append(names, t.Name)
 	}
 	return names, nil
 }
 
 // toolsCall calls tools/call and returns the text content from the result.
 func (c *mcpClient) toolsCall(ctx context.Context, toolName string, args map[string]any) (string, error) {
-	resp, err := c.do(ctx, "tools/call", 3, map[string]any{
-		"name":      toolName,
-		"arguments": args,
+	result, err := c.session.CallTool(ctx, &gosdk.CallToolParams{
+		Name:      toolName,
+		Arguments: args,
 	})
 	if err != nil {
 		return "", fmt.Errorf("tools/call %q: %w", toolName, err)
 	}
-
-	respJSON, _ := json.Marshal(resp)
-
-	// Navigate result.content[].text
-	result, ok := resp["result"].(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("tools/call %q: unexpected response shape (no result map): %s", toolName, respJSON)
-	}
-	contentRaw, ok := result["content"].([]any)
-	if !ok {
-		return "", fmt.Errorf("tools/call %q: unexpected response shape (content not array): %s", toolName, respJSON)
-	}
-
 	var sb strings.Builder
-	for _, c := range contentRaw {
-		if item, ok := c.(map[string]any); ok {
-			if text, ok := item["text"].(string); ok {
-				sb.WriteString(text)
-			}
+	for _, content := range result.Content {
+		if tc, ok := content.(*gosdk.TextContent); ok && tc.Text != "" {
+			sb.WriteString(tc.Text)
 		}
 	}
 	return sb.String(), nil
@@ -339,12 +216,12 @@ func MCPEndpoint() features.Feature {
 			}
 			t.Logf("MCP URL: %s", mcp.baseURL)
 
+			// initialize() verifies serverInfo on the already-connected session.
 			if err := mcp.initialize(ctx); err != nil {
 				t.Fatalf("MCP initialize failed: %v", err)
 			}
-			t.Logf("MCP session ID: %s", mcp.sessionID)
 
-			// Store the initialised client for subsequent Assess steps.
+			// Store the connected client for subsequent Assess steps.
 			return context.WithValue(ctx, mcpClientKey{}, mcp)
 		}).
 		Assess("MCP tools/list returns namespaces_list and pods_list_in_namespace", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -534,7 +411,6 @@ func MCPKubernetesMCP() features.Feature {
 			if err := mcp.initialize(ctx); err != nil {
 				t.Fatalf("KubernetesMCP MCP initialize failed: %v", err)
 			}
-			t.Logf("KubernetesMCP MCP session ID: %s", mcp.sessionID)
 
 			return context.WithValue(ctx, mcpClientKey{}, mcp)
 		}).
@@ -569,22 +445,6 @@ func MCPKubernetesMCP() features.Feature {
 			return ctx
 		}).
 		Feature()
-}
-
-// extractSSEData extracts the JSON payload from an SSE response body.
-// SSE format: "event: message\ndata: {...}\n\n"
-// Returns the raw JSON bytes from the first "data:" line found.
-func extractSSEData(body []byte) ([]byte, error) {
-	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "data:") {
-			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if data != "" {
-				return []byte(data), nil
-			}
-		}
-	}
-	return nil, fmt.Errorf("no data line found in SSE response: %s", body)
 }
 
 // clusterNameFromKubeconfig extracts the kcp cluster name from the server URL

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/client-go/rest"
 )
 
@@ -113,5 +114,66 @@ func TestMCPHandler_edgeNotConnected(t *testing.T) {
 	// Should not return 401 (auth passed) — MCP server handles the request.
 	if w.Code == http.StatusUnauthorized {
 		t.Fatalf("expected auth to pass with bearer token, got 401")
+	}
+}
+
+// TestMCPHandler_toolsListNotEmpty verifies that after connect+initialize via the
+// go-sdk StreamableClientTransport, tools/list returns a non-empty list that
+// includes "namespaces_list". This exercises the toolset side-effect imports.
+func TestMCPHandler_toolsListNotEmpty(t *testing.T) {
+	fakeKCP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"apiVersion":"v1","kind":"List","items":[],"metadata":{}}`))
+	}))
+	defer fakeKCP.Close()
+
+	vws := &virtualWorkspaces{
+		kcpConfig:       &rest.Config{Host: fakeKCP.URL},
+		staticTokens:    make(map[string]struct{}),
+		edgeConnManager: NewConnManager(),
+		hubExternalURL:  "https://kedge.example.com",
+	}
+
+	// Wrap the MCP handler so requests carry a valid Authorization header.
+	inner := vws.buildMCPHandler(testCluster, testEdgeName)
+	authedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer valid-token")
+		inner.ServeHTTP(w, r)
+	})
+
+	// Serve on a real (local) httptest server so the go-sdk transport works.
+	srv := httptest.NewServer(authedHandler)
+	defer srv.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1.0"}, nil)
+	transport := &mcp.StreamableClientTransport{Endpoint: srv.URL + "/"}
+	session, err := client.Connect(t.Context(), transport, nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	result, err := session.ListTools(t.Context(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	if len(result.Tools) == 0 {
+		t.Fatal("tools/list: expected non-empty tools list — toolset side-effect imports may be missing")
+	}
+	t.Logf("tools/list returned %d tools", len(result.Tools))
+
+	found := false
+	for _, tool := range result.Tools {
+		if tool.Name == "namespaces_list" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		names := make([]string, 0, len(result.Tools))
+		for _, tool := range result.Tools {
+			names = append(names, tool.Name)
+		}
+		t.Errorf("tools/list: expected 'namespaces_list' in tools, got: %v", names)
 	}
 }

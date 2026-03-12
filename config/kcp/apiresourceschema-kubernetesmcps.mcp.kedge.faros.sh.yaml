@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260312-9a5f53e.kubernetesmcps.mcp.kedge.faros.sh
+  name: v260312-35cac3a.kubernetesmcps.mcp.kedge.faros.sh
 spec:
   group: mcp.kedge.faros.sh
   names:
@@ -14,8 +14,8 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.endpoint
-      name: Endpoint
+    - jsonPath: .status.URL
+      name: URL
       type: string
     - jsonPath: .status.connectedEdges
       name: ConnectedEdges
@@ -28,7 +28,7 @@ spec:
       description: |-
         KubernetesMCP represents a multi-edge MCP (Model Context Protocol) server for
         a set of Kubernetes edges matched by a label selector.  Users point MCP-compatible
-        AI clients at the Endpoint URL to interact with all matching connected edges.
+        AI clients at the URL to interact with all matching connected edges.
       properties:
         apiVersion:
           description: |-
@@ -112,6 +112,9 @@ spec:
         status:
           description: KubernetesMCPStatus defines the observed state of KubernetesMCP.
           properties:
+            URL:
+              description: URL is the MCP endpoint URL at which this server is reachable.
+              type: string
             conditions:
               description: Conditions describe the current state of the KubernetesMCP.
               items:
@@ -173,9 +176,6 @@ spec:
               description: ConnectedEdges is the number of currently connected edges
                 matching the selector.
               type: integer
-            endpoint:
-              description: Endpoint is the URL at which this MCP server is reachable.
-              type: string
           type: object
       type: object
     served: true

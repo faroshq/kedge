@@ -28,6 +28,10 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -38,6 +42,7 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
+	mcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcp"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
@@ -164,6 +169,13 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
+	// Create the default KubernetesMCP object (all-edges MCP server).
+	if err := ensureDefaultKubernetesMCP(ctx, dynamicClient); err != nil {
+		// Non-fatal: the controller will keep retrying, and in kcp-mode the CRD
+		// may not be globally accessible from the base config.
+		logger.Error(err, "Failed to create default KubernetesMCP (non-fatal)")
+	}
+
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 
 	// 4. kcp bootstrap (if kcp is configured - either embedded or external)
@@ -214,7 +226,10 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	router.PathPrefix("/services/agent-proxy/").Handler(http.StripPrefix("/services/agent-proxy", vws.EdgeAgentProxyHandler()))
 	router.PathPrefix("/services/edges-proxy/").Handler(http.StripPrefix("/services/edges-proxy", vws.EdgesProxyHandler()))
-	// MCP is now served under the agent-proxy route:
+	// KubernetesMCP multi-edge handler:
+	//   /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
+	router.PathPrefix("/services/mcp/").Handler(http.StripPrefix("/services/mcp", vws.KubernetesMCPHandler()))
+	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
 	// Health check
@@ -305,6 +320,10 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if err := edge.SetupTokenWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up edge token controller: %w", err)
+		}
+		// KubernetesMCP controller.
+		if err := mcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up kubernetesmcp controller: %w", err)
 		}
 		go func() {
 			logger.Info("Starting multicluster manager")
@@ -402,4 +421,40 @@ func (s *Server) buildRestConfig() (*rest.Config, error) {
 		return kubeConfig.ClientConfig()
 	}
 	return config, nil
+}
+
+// kubernetesmcpGVR is the GroupVersionResource for KubernetesMCP.
+var kubernetesmcpGVR = schema.GroupVersionResource{
+	Group:    "mcp.kedge.faros.sh",
+	Version:  "v1alpha1",
+	Resource: "kubernetesmcps",
+}
+
+// ensureDefaultKubernetesMCP creates a default KubernetesMCP named "default"
+// (with an empty edge selector — matches all edges) if it doesn't exist.
+func ensureDefaultKubernetesMCP(ctx context.Context, dynClient dynamic.Interface) error {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "mcp.kedge.faros.sh/v1alpha1",
+			"kind":       "KubernetesMCP",
+			"metadata": map[string]interface{}{
+				"name": "default",
+			},
+			"spec": map[string]interface{}{},
+		},
+	}
+
+	_, err := dynClient.Resource(kubernetesmcpGVR).Get(ctx, "default", metav1.GetOptions{})
+	if err == nil {
+		return nil // already exists
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("checking for default KubernetesMCP: %w", err)
+	}
+
+	_, err = dynClient.Resource(kubernetesmcpGVR).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating default KubernetesMCP: %w", err)
+	}
+	return nil
 }

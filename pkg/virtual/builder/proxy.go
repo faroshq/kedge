@@ -108,3 +108,9 @@ func (h *VirtualWorkspaceHandlers) EdgeAgentProxyHandler() http.Handler {
 func (h *VirtualWorkspaceHandlers) EdgesProxyHandler() http.Handler {
 	return h.vws.buildEdgesProxyHandler()
 }
+
+// EdgeConnManager returns the shared edge connection manager.
+// Exposed so that hub controllers can check whether a given edge tunnel is active.
+func (h *VirtualWorkspaceHandlers) EdgeConnManager() *ConnManager {
+	return h.vws.edgeConnManager
+}

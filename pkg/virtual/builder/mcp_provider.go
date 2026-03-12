@@ -112,6 +112,63 @@ func (p *KedgeEdgeProvider) WatchTargets(_ mcpkubernetes.McpReload) {}
 // Close is a no-op.
 func (p *KedgeEdgeProvider) Close() {}
 
+// ─── MultiEdgeKedgeEdgeProvider ─────────────────────────────────────────────
+
+// MultiEdgeKedgeEdgeProvider implements the kubernetes-mcp-server Provider
+// interface for a set of explicitly listed edge names.  It is used by the
+// KubernetesMCP handler which resolves edges via a label selector before
+// constructing the provider.
+type MultiEdgeKedgeEdgeProvider struct {
+	cluster         string       // kcp cluster path, e.g. "root:kedge:user-default"
+	edgeNames       []string     // explicit list of candidate edge names
+	edgeConnManager *ConnManager // shared dialer registry
+	edgeProxyBase   string       // e.g. "https://kedge.example.com/services/edges-proxy"
+	bearerToken     string       // caller's bearer token to forward to edge proxies
+}
+
+// Ensure MultiEdgeKedgeEdgeProvider implements mcpkubernetes.Provider.
+var _ mcpkubernetes.Provider = (*MultiEdgeKedgeEdgeProvider)(nil)
+
+// IsOpenShift always returns false.
+func (p *MultiEdgeKedgeEdgeProvider) IsOpenShift(_ context.Context) bool { return false }
+
+// GetTargets returns only those edges in edgeNames that have an active tunnel.
+func (p *MultiEdgeKedgeEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
+	var targets []string
+	for _, name := range p.edgeNames {
+		key := edgeConnKey(p.cluster, name)
+		if _, ok := p.edgeConnManager.Load(key); ok {
+			targets = append(targets, name)
+		}
+	}
+	return targets, nil
+}
+
+// GetDerivedKubernetes returns a Kubernetes client for the given edge via the edges-proxy.
+func (p *MultiEdgeKedgeEdgeProvider) GetDerivedKubernetes(ctx context.Context, edgeName string) (*mcpkubernetes.Kubernetes, error) {
+	// Delegate to a throwaway single-edge provider.
+	single := &KedgeEdgeProvider{
+		cluster:         p.cluster,
+		edgeName:        edgeName,
+		edgeConnManager: p.edgeConnManager,
+		edgeProxyBase:   p.edgeProxyBase,
+		bearerToken:     p.bearerToken,
+	}
+	return single.GetDerivedKubernetes(ctx, edgeName)
+}
+
+// GetDefaultTarget returns an empty string (no single default edge).
+func (p *MultiEdgeKedgeEdgeProvider) GetDefaultTarget() string { return "" }
+
+// GetTargetParameterName returns "edge".
+func (p *MultiEdgeKedgeEdgeProvider) GetTargetParameterName() string { return "edge" }
+
+// WatchTargets is a no-op.
+func (p *MultiEdgeKedgeEdgeProvider) WatchTargets(_ mcpkubernetes.McpReload) {}
+
+// Close is a no-op.
+func (p *MultiEdgeKedgeEdgeProvider) Close() {}
+
 // ─── minimalBaseConfig ───────────────────────────────────────────────────────
 //
 // minimalBaseConfig is the smallest possible implementation of mcpapi.BaseConfig

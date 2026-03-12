@@ -52,7 +52,19 @@ type mcpClient struct {
 
 // newMCPClient creates an mcpClient using the NodePort URL of the hub and the
 // kcp cluster name derived from the hub kubeconfig.
+// edgeName is used for the per-edge URL; kmcpName (if non-empty) selects the
+// KubernetesMCP multi-edge endpoint instead.
 func newMCPClient(hubKubeconfig, edgeName string) (*mcpClient, error) {
+	return newMCPClientWithKMCP(hubKubeconfig, edgeName, "")
+}
+
+// newMCPClientKubernetesMCP creates an mcpClient that targets the KubernetesMCP
+// multi-edge endpoint.
+func newMCPClientKubernetesMCP(hubKubeconfig, kmcpName string) (*mcpClient, error) {
+	return newMCPClientWithKMCP(hubKubeconfig, "", kmcpName)
+}
+
+func newMCPClientWithKMCP(hubKubeconfig, edgeName, kmcpName string) (*mcpClient, error) {
 	// Resolve the NodePort base URL (reachable in CI via Docker network).
 	nodePortBase := framework.HubNodePortURL()
 	if nodePortBase == "" {
@@ -72,10 +84,18 @@ func newMCPClient(hubKubeconfig, edgeName string) (*mcpClient, error) {
 	}
 	token := restCfg.BearerToken
 
-	// New per-edge MCP URL pattern:
-	// /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{edgeName}/mcp
-	mcpURL := fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
-		nodePortBase, clusterName, edgeName)
+	var mcpURL string
+	if kmcpName != "" {
+		// KubernetesMCP multi-edge URL:
+		// /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
+		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/%s/mcp",
+			nodePortBase, clusterName, kmcpName)
+	} else {
+		// Per-edge MCP URL:
+		// /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{edgeName}/mcp
+		mcpURL = fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
+			nodePortBase, clusterName, edgeName)
+	}
 
 	return &mcpClient{
 		baseURL: mcpURL,
@@ -115,10 +135,10 @@ func (c *mcpClient) do(ctx context.Context, method string, id int, params any) (
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	// Use application/json only — omitting text/event-stream forces the MCP
-	// server to return plain JSON instead of SSE-wrapped responses, which is
-	// what our mcpClient parser expects.
-	req.Header.Set("Accept", "application/json")
+	// MCP streamable HTTP spec requires both content types in Accept.
+	// The server may respond with plain JSON or SSE-wrapped JSON depending on
+	// the request; we handle both below.
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	if c.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
 	}
@@ -146,9 +166,25 @@ func (c *mcpClient) do(ctx context.Context, method string, id int, params any) (
 		return nil, fmt.Errorf("method %q returned HTTP %d (body: %s)", method, resp.StatusCode, respBody)
 	}
 
+	// Determine response format from Content-Type.
+	// The MCP server may return plain JSON or SSE-wrapped JSON.
+	ct := resp.Header.Get("Content-Type")
+	var jsonData []byte
+	switch {
+	case strings.Contains(ct, "text/event-stream"):
+		// SSE format: parse lines, find "data: {...}" line and extract JSON.
+		jsonData, err = extractSSEData(respBody)
+		if err != nil {
+			return nil, fmt.Errorf("parsing SSE response for %q: %w (body: %s)", method, err, respBody)
+		}
+	default:
+		// Plain JSON response.
+		jsonData = respBody
+	}
+
 	var result map[string]any
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("decoding JSON response for %q: %w (body: %s)", method, err, respBody)
+	if err := json.Unmarshal(jsonData, &result); err != nil {
+		return nil, fmt.Errorf("decoding JSON response for %q: %w (body: %s)", method, err, jsonData)
 	}
 
 	// Capture the session ID from the initialize response.
@@ -385,7 +421,7 @@ func MCPEndpoint() features.Feature {
 		Feature()
 }
 
-// MCPURL verifies that `kedge mcp url` prints a valid per-edge MCP endpoint URL.
+// MCPURL verifies that `kedge mcp url` prints valid MCP endpoint URLs.
 func MCPURL() features.Feature {
 	const edgeName = "e2e-mcp-edge"
 
@@ -400,10 +436,10 @@ func MCPURL() features.Feature {
 
 			out, err := client.Run(ctx, "mcp", "url", "--edge", edgeName)
 			if err != nil {
-				t.Fatalf("kedge mcp url failed: %v (output: %s)", err, out)
+				t.Fatalf("kedge mcp url --edge failed: %v (output: %s)", err, out)
 			}
 			out = strings.TrimSpace(out)
-			t.Logf("kedge mcp url output: %s", out)
+			t.Logf("kedge mcp url --edge output: %s", out)
 
 			// The output must be a valid per-edge MCP URL.
 			if !strings.HasPrefix(out, "https://") {
@@ -417,7 +453,138 @@ func MCPURL() features.Feature {
 			}
 			return ctx
 		}).
+		Assess("kedge mcp url --name default prints KubernetesMCP URL", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv == nil {
+				t.Fatal("cluster environment not found in context")
+			}
+
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			out, err := client.Run(ctx, "mcp", "url", "--name", "default")
+			if err != nil {
+				t.Fatalf("kedge mcp url --name failed: %v (output: %s)", err, out)
+			}
+			out = strings.TrimSpace(out)
+			t.Logf("kedge mcp url --name output: %s", out)
+
+			if !strings.HasPrefix(out, "https://") {
+				t.Errorf("expected URL to start with https://, got: %s", out)
+			}
+			if !strings.Contains(out, "/services/mcp/") {
+				t.Errorf("expected URL to contain /services/mcp/, got: %s", out)
+			}
+			if !strings.Contains(out, "/kubernetesmcps/default/mcp") {
+				t.Errorf("expected URL to contain /kubernetesmcps/default/mcp, got: %s", out)
+			}
+			return ctx
+		}).
 		Feature()
+}
+
+// MCPKubernetesMCP verifies the KubernetesMCP multi-edge MCP endpoint.
+// It uses the auto-created "default" KubernetesMCP (all edges).
+func MCPKubernetesMCP() features.Feature {
+	const edgeName = "e2e-kmcp-edge"
+
+	return features.New("MCP/KubernetesMCP").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			if clusterEnv == nil {
+				t.Fatal("cluster environment not found in context")
+			}
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("login failed: %v", err)
+			}
+			if err := client.EdgeCreate(ctx, edgeName, "kubernetes", "env=e2e"); err != nil {
+				t.Fatalf("edge create failed: %v", err)
+			}
+
+			edgeKubeconfigPath := filepath.Join(clusterEnv.WorkDir, "edge-"+edgeName+"-kmcp.kubeconfig")
+			if err := client.ExtractEdgeKubeconfig(ctx, edgeName, edgeKubeconfigPath); err != nil {
+				t.Fatalf("failed to extract edge kubeconfig: %v", err)
+			}
+
+			agent := framework.NewAgent(framework.RepoRoot(), edgeKubeconfigPath, clusterEnv.AgentKubeconfig, edgeName)
+			if err := agent.Start(ctx); err != nil {
+				t.Fatalf("failed to start agent: %v", err)
+			}
+			return context.WithValue(ctx, mcpAgentKey{}, agent)
+		}).
+		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+
+			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
+				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
+			}
+			return ctx
+		}).
+		Assess("KubernetesMCP default MCP initialize succeeds", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+
+			mcp, err := newMCPClientKubernetesMCP(clusterEnv.HubKubeconfig, "default")
+			if err != nil {
+				t.Fatalf("creating KubernetesMCP MCP client: %v", err)
+			}
+			t.Logf("KubernetesMCP MCP URL: %s", mcp.baseURL)
+
+			if err := mcp.initialize(ctx); err != nil {
+				t.Fatalf("KubernetesMCP MCP initialize failed: %v", err)
+			}
+			t.Logf("KubernetesMCP MCP session ID: %s", mcp.sessionID)
+
+			return context.WithValue(ctx, mcpClientKey{}, mcp)
+		}).
+		Assess("KubernetesMCP tools/list returns namespaces_list", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			mcp, ok := ctx.Value(mcpClientKey{}).(*mcpClient)
+			if !ok || mcp == nil {
+				t.Fatal("mcpClient not found in context — initialize step may have failed")
+			}
+
+			names, err := mcp.toolsList(ctx)
+			if err != nil {
+				t.Fatalf("KubernetesMCP tools/list failed: %v", err)
+			}
+			t.Logf("KubernetesMCP tools: %v", names)
+
+			nameSet := make(map[string]bool, len(names))
+			for _, n := range names {
+				nameSet[n] = true
+			}
+			if !nameSet["namespaces_list"] {
+				t.Errorf("expected tool 'namespaces_list' in tools/list, got: %v", names)
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if a, ok := ctx.Value(mcpAgentKey{}).(*framework.Agent); ok {
+				a.Stop()
+			}
+			clusterEnv := framework.ClusterEnvFrom(ctx)
+			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			_ = client.EdgeDelete(ctx, edgeName)
+			return ctx
+		}).
+		Feature()
+}
+
+// extractSSEData extracts the JSON payload from an SSE response body.
+// SSE format: "event: message\ndata: {...}\n\n"
+// Returns the raw JSON bytes from the first "data:" line found.
+func extractSSEData(body []byte) ([]byte, error) {
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data != "" {
+				return []byte(data), nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("no data line found in SSE response: %s", body)
 }
 
 // clusterNameFromKubeconfig extracts the kcp cluster name from the server URL

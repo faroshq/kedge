@@ -85,3 +85,58 @@ func TestMCPURLFromServerURL(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPKubernetesMCPURLFromServerURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverURL  string
+		kmcpName   string
+		wantURL    string
+		wantErrMsg string
+	}{
+		{
+			name:      "standard kcp URL with default",
+			serverURL: "https://kedge.localhost:8443/clusters/root:kedge:user-default",
+			kmcpName:  "default",
+			wantURL:   "https://kedge.localhost:8443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp",
+		},
+		{
+			name:      "trailing slash is stripped",
+			serverURL: "https://kedge.localhost:8443/clusters/root:kedge:user-default/",
+			kmcpName:  "default",
+			wantURL:   "https://kedge.localhost:8443/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp",
+		},
+		{
+			name:      "custom KubernetesMCP name",
+			serverURL: "https://hub.example.com/clusters/root",
+			kmcpName:  "my-mcp",
+			wantURL:   "https://hub.example.com/services/mcp/root/apis/mcp.kedge.faros.sh/v1alpha1/kubernetesmcps/my-mcp/mcp",
+		},
+		{
+			name:       "no /clusters/ path returns error",
+			serverURL:  "https://kedge.localhost:8443",
+			kmcpName:   "default",
+			wantErrMsg: "cannot determine cluster name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mcpKubernetesMCPURLFromServerURL(tc.serverURL, tc.kmcpName)
+
+			if tc.wantErrMsg != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil (url=%q)", tc.wantErrMsg, got)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantURL {
+				t.Errorf("mcpKubernetesMCPURLFromServerURL(%q, %q)\n  got:  %q\n  want: %q", tc.serverURL, tc.kmcpName, got, tc.wantURL)
+			}
+		})
+	}
+}

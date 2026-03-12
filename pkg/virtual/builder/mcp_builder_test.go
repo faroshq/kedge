@@ -82,7 +82,8 @@ func TestMCPHandler_withToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	// MCP streamable HTTP spec requires both content types in Accept.
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -103,7 +104,8 @@ func TestMCPHandler_edgeNotConnected(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`))
 	req.Header.Set("Authorization", "Bearer valid-token")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	// MCP streamable HTTP spec requires both content types in Accept.
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)

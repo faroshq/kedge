@@ -203,8 +203,9 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 	}
 	status["sshCredentials"] = sshStatus
 
-	// Set the proxy URL path.
-	status["URL"] = fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s", cluster, edgeName)
+	// Note: status.URL is managed by the hub's mount_reconciler (full edges-proxy
+	// SSH URL).  Do NOT set it here — a relative /clusters/... path would break
+	// the CLI's SSH WebSocket dialler.
 
 	p.logger.Info("SSH credentials stored for edge", "cluster", cluster, "edge", edgeName, "user", creds.User)
 	return nil

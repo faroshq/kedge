@@ -312,6 +312,42 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		return "", fmt.Errorf("creating APIBinding in tenant workspace %s: %w", userID, err)
 	}
 
+	// Also create an APIBinding for mcp.kedge.faros.sh so that the multicluster
+	// manager can watch KubernetesMCP resources in this workspace.  Without this
+	// binding the manager's "failed to add cluster" error prevents ALL controllers
+	// (mount, token, RBAC) from reconciling in the user workspace.
+	mcpBinding := &apisv1alpha2.APIBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
+			Kind:       "APIBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "kedge-mcp",
+		},
+		Spec: apisv1alpha2.APIBindingSpec{
+			Reference: apisv1alpha2.BindingReference{
+				Export: &apisv1alpha2.ExportBindingReference{
+					Path: "root:kedge:providers",
+					Name: "mcp.kedge.faros.sh",
+				},
+			},
+		},
+	}
+
+	mcpU, err := toUnstructured(mcpBinding)
+	if err != nil {
+		return "", fmt.Errorf("converting MCP APIBinding to unstructured: %w", err)
+	}
+
+	_, err = tenantClient.Resource(apiBindingGVR).Create(ctx, mcpU, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		// Already bound — nothing to update (no permission claims to sync).
+	} else if err != nil {
+		// Non-fatal: the MCP binding is optional for edge operation.
+		// Log the error but continue — the workspace will work for edges.
+		logger.Error(err, "Failed to create mcp.kedge.faros.sh APIBinding in tenant workspace (non-fatal)", "userID", userID)
+	}
+
 	// TODO: Wait for APIBinding to be ready before returning, to ensure the tenant can use the API immediately after login.
 
 	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)

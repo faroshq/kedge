@@ -683,15 +683,13 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		}
 	}
 
-	// Build the proxy URL path for this edge.
-	// Format: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
-	edgeURL := fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s",
-		a.opts.Cluster, a.opts.EdgeName)
-
+	// Note: status.URL is managed by the hub's mount_reconciler, which sets it
+	// to the full edges-proxy SSH URL (https://hub/services/edges-proxy/...).
+	// The agent must NOT overwrite it here — a relative-path URL like
+	// /clusters/{cluster}/... breaks the CLI's SSH WebSocket dialler.
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"sshCredentials": sshCreds,
-			"URL":            edgeURL,
 		},
 	}
 	patchBytes, err := json.Marshal(patch)

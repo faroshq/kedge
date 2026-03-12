@@ -49,17 +49,6 @@ var edgeGVR = schema.GroupVersionResource{
 // call the kcp API directly (the join token is not a valid kcp credential).
 // Best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string, sshCreds *sshCredsFromAgent) {
-	if p.kcpConfig == nil {
-		// Hub-only mode (no kcp): the mount_reconciler doesn't run, so status.URL
-		// is never set for SSH (server-type) edges.  Always try to set it here
-		// when any agent connects; setEdgeSSHURLHubOnly checks spec.type internally
-		// and only patches server-type edges.  This covers both join-token mode
-		// (where sshCreds != nil) and kubeconfig mode (where sshCreds is nil
-		// because SSH headers are not sent).
-		p.setEdgeSSHURLHubOnly(ctx, cluster, name)
-		return
-	}
-
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
 
@@ -218,60 +207,6 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 	return nil
 }
 
-// setEdgeSSHURLHubOnly patches status.URL on a server-type edge when running in
-// hub-only mode (kcpConfig == nil).  In hub-only mode the mount_reconciler never
-// runs, so we must set status.URL here when the agent's SSH tunnel connects.
-// This function checks spec.type and is a no-op for non-server-type edges.
-// Best-effort: errors are logged but not propagated.
-func (p *virtualWorkspaces) setEdgeSSHURLHubOnly(ctx context.Context, cluster, name string) {
-	if p.baseConfig == nil || p.hubExternalURL == "" {
-		return
-	}
-
-	dynClient, err := dynamic.NewForConfig(p.baseConfig)
-	if err != nil {
-		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to create dynamic client",
-			"cluster", cluster, "edge", name)
-		return
-	}
-
-	edge, err := dynClient.Resource(edgeGVR).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to get edge", "edge", name)
-		return
-	}
-
-	// Only set the SSH URL for server-type edges.  Kubernetes-type edges have
-	// their own URL set by the mount_reconciler (or not at all in hub-only mode).
-	edgeType, _, _ := unstructured.NestedString(edge.Object, "spec", "type")
-	if edgeType != string(kedgev1alpha1.EdgeTypeServer) {
-		p.logger.V(4).Info("setEdgeSSHURLHubOnly: skipping non-server-type edge",
-			"edge", name, "type", edgeType)
-		return
-	}
-
-	expectedURL := p.hubExternalURL + "/services/edges-proxy/clusters/" + cluster +
-		"/apis/kedge.faros.sh/v1alpha1/edges/" + name + "/ssh"
-
-	currentURL, _, _ := unstructured.NestedString(edge.Object, "status", "URL")
-	if currentURL == expectedURL {
-		return
-	}
-
-	if err := unstructured.SetNestedField(edge.Object, expectedURL, "status", "URL"); err != nil {
-		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to set URL field", "edge", name)
-		return
-	}
-
-	_, err = dynClient.Resource(edgeGVR).UpdateStatus(ctx, edge, metav1.UpdateOptions{})
-	if err != nil {
-		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to update edge status", "edge", name)
-		return
-	}
-
-	p.logger.Info("Hub-only mode: SSH URL set on edge", "edge", name, "url", expectedURL)
-}
-
 // markEdgeDisconnected patches an Edge's status to Connected=false,
 // Phase=Disconnected on the hub.  It is called by the agent-proxy-v2 handler
 // when the agent's revdial tunnel closes so that the hub's view of edge
@@ -280,10 +215,6 @@ func (p *virtualWorkspaces) setEdgeSSHURLHubOnly(ctx context.Context, cluster, n
 //
 // It is best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) markEdgeDisconnected(ctx context.Context, cluster, name string) {
-	if p.kcpConfig == nil {
-		return
-	}
-
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = kcp.AppendClusterPath(cfg.Host, cluster)
 

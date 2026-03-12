@@ -57,6 +57,9 @@ var (
 	apiBindingGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
+	kubernetesmcpGVR = schema.GroupVersionResource{
+		Group: "mcp.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesmcps",
+	}
 )
 
 // Bootstrapper sets up the kcp workspace hierarchy and API exports.
@@ -346,9 +349,34 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID string)
 		// Non-fatal: the MCP binding is optional for edge operation.
 		// Log the error but continue — the workspace will work for edges.
 		logger.Error(err, "Failed to create mcp.kedge.faros.sh APIBinding in tenant workspace (non-fatal)", "userID", userID)
+	} else {
+		// Wait for the mcp.kedge.faros.sh APIBinding to be Bound so that
+		// the KubernetesMCP CRD is available before we try to create the
+		// "default" KubernetesMCP below.
+		if waitErr := waitForAPIBindingBound(ctx, tenantClient, "kedge-mcp"); waitErr != nil {
+			logger.Error(waitErr, "mcp.kedge.faros.sh APIBinding did not become Bound (non-fatal)", "userID", userID)
+		}
 	}
 
-	// TODO: Wait for APIBinding to be ready before returning, to ensure the tenant can use the API immediately after login.
+	// Ensure a "default" KubernetesMCP exists in the tenant workspace.
+	// This object enables the multi-edge MCP endpoint without requiring the
+	// user to create it manually.  An empty EdgeSelector selects all edges.
+	defaultKMCP := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "mcp.kedge.faros.sh/v1alpha1",
+			"kind":       "KubernetesMCP",
+			"metadata": map[string]interface{}{
+				"name": "default",
+			},
+			"spec": map[string]interface{}{},
+		},
+	}
+	if _, createKMCPErr := tenantClient.Resource(kubernetesmcpGVR).Create(ctx, defaultKMCP, metav1.CreateOptions{}); createKMCPErr != nil {
+		if !errors.IsAlreadyExists(createKMCPErr) {
+			// Non-fatal: log and continue.
+			logger.Error(createKMCPErr, "Failed to create default KubernetesMCP in tenant workspace (non-fatal)", "userID", userID)
+		}
+	}
 
 	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)
 	return clusterName, nil
@@ -422,4 +450,16 @@ func AppendClusterPath(host, clusterPath string) string {
 		host = host[:idx]
 	}
 	return host + "/clusters/" + clusterPath
+}
+
+// waitForAPIBindingBound polls until an APIBinding has phase "Bound".
+func waitForAPIBindingBound(ctx context.Context, client dynamic.Interface, name string) error {
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
+		obj, err := client.Resource(apiBindingGVR).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
+		return phase == "Bound", nil
+	})
 }

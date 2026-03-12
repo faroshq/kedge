@@ -23,6 +23,14 @@ import (
 
 	mcpconfig "github.com/containers/kubernetes-mcp-server/pkg/config"
 	mcpserver "github.com/containers/kubernetes-mcp-server/pkg/mcp"
+
+	// Register MCP toolsets via side-effect imports (init() functions populate the toolset registry).
+	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/config"
+	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/core"
+	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/helm"
+	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kcp"
+	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kiali"
+	_ "github.com/containers/kubernetes-mcp-server/pkg/toolsets/kubevirt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -70,9 +78,11 @@ func (p *virtualWorkspaces) buildMCPHandler(cluster, edgeName string) http.Handl
 		}
 
 		// 3. Create a stateless MCP server for this request.
-		staticCfg := &mcpconfig.StaticConfig{
-			Stateless: true,
-		}
+		// Use the default toolset configuration (core, config, helm) so that
+		// tools/list returns the expected tools. Override Stateless=true for
+		// load-balanced / serverless deployments.
+		staticCfg := mcpconfig.Default()
+		staticCfg.Stateless = true
 		srv, err := mcpserver.NewServer(mcpserver.Configuration{StaticConfig: staticCfg}, provider)
 		if err != nil {
 			logger.Error(err, "failed to create MCP server", "cluster", cluster, "edge", edgeName)
@@ -209,8 +219,20 @@ func (p *virtualWorkspaces) buildKubernetesMCPHandler() http.Handler {
 		}
 
 		// 8. Create a stateless MCP server and serve.
-		staticCfg := &mcpconfig.StaticConfig{
-			Stateless: true,
+		// Start from defaults (core, config, helm toolsets) and override with any
+		// toolsets explicitly listed in the KubernetesMCP spec.
+		staticCfg := mcpconfig.Default()
+		staticCfg.Stateless = true
+		if toolsetsRaw, ok := specRaw["toolsets"].([]interface{}); ok && len(toolsetsRaw) > 0 {
+			names := make([]string, 0, len(toolsetsRaw))
+			for _, t := range toolsetsRaw {
+				if s, ok := t.(string); ok {
+					names = append(names, s)
+				}
+			}
+			if len(names) > 0 {
+				staticCfg.Toolsets = names
+			}
 		}
 		srv, err := mcpserver.NewServer(mcpserver.Configuration{StaticConfig: staticCfg}, provider)
 		if err != nil {

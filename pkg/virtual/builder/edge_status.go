@@ -50,6 +50,12 @@ var edgeGVR = schema.GroupVersionResource{
 // Best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string, sshCreds *sshCredsFromAgent) {
 	if p.kcpConfig == nil {
+		// Hub-only mode (no kcp): the mount_reconciler doesn't run, so status.URL
+		// is never set for SSH (server-type) edges.  Set it here directly using
+		// the base config so the CLI's SSH WebSocket dialler can find the endpoint.
+		if sshCreds != nil {
+			p.setEdgeSSHURLHubOnly(ctx, cluster, name)
+		}
 		return
 	}
 
@@ -209,6 +215,50 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 
 	p.logger.Info("SSH credentials stored for edge", "cluster", cluster, "edge", edgeName, "user", creds.User)
 	return nil
+}
+
+// setEdgeSSHURLHubOnly patches status.URL on a server-type edge when running in
+// hub-only mode (kcpConfig == nil).  In hub-only mode the mount_reconciler never
+// runs, so we must set status.URL here when the agent's SSH tunnel connects.
+// Best-effort: errors are logged but not propagated.
+func (p *virtualWorkspaces) setEdgeSSHURLHubOnly(ctx context.Context, cluster, name string) {
+	if p.baseConfig == nil || p.hubExternalURL == "" {
+		return
+	}
+
+	dynClient, err := dynamic.NewForConfig(p.baseConfig)
+	if err != nil {
+		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to create dynamic client",
+			"cluster", cluster, "edge", name)
+		return
+	}
+
+	edge, err := dynClient.Resource(edgeGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to get edge", "edge", name)
+		return
+	}
+
+	expectedURL := p.hubExternalURL + "/services/edges-proxy/clusters/" + cluster +
+		"/apis/kedge.faros.sh/v1alpha1/edges/" + name + "/ssh"
+
+	currentURL, _, _ := unstructured.NestedString(edge.Object, "status", "URL")
+	if currentURL == expectedURL {
+		return
+	}
+
+	if err := unstructured.SetNestedField(edge.Object, expectedURL, "status", "URL"); err != nil {
+		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to set URL field", "edge", name)
+		return
+	}
+
+	_, err = dynClient.Resource(edgeGVR).UpdateStatus(ctx, edge, metav1.UpdateOptions{})
+	if err != nil {
+		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to update edge status", "edge", name)
+		return
+	}
+
+	p.logger.Info("Hub-only mode: SSH URL set on edge", "edge", name, "url", expectedURL)
 }
 
 // markEdgeDisconnected patches an Edge's status to Connected=false,

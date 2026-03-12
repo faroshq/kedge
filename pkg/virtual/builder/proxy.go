@@ -38,6 +38,7 @@ type authorizeFnType func(ctx context.Context, kcpConfig *rest.Config, token, cl
 type virtualWorkspaces struct {
 	connManager     *connman.ConnectionManager
 	edgeConnManager *ConnManager         // shared between agent-proxy-v2 and edges-proxy builders
+	baseConfig      *rest.Config         // hub's base k8s rest config (always set; used for hub-only edge status updates)
 	kcpConfig       *rest.Config         // kcp rest config for token verification (nil if kcp not configured)
 	kcpK8sClient    kubernetes.Interface // kubernetes client for fetching secrets
 	kedgeClient     *kedgeclient.Client  // kedge client for fetching Edge resources
@@ -55,9 +56,10 @@ type VirtualWorkspaceHandlers struct {
 }
 
 // NewVirtualWorkspaces creates a new VirtualWorkspaceHandlers.
+// baseConfig is the hub's base Kubernetes REST config (always required).
 // kcpConfig is required for SA token authorization against kcp and for fetching Edge resources/secrets.
 // hubExternalURL is the externally reachable URL of the hub, used when building kubeconfigs for agents.
-func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config, staticTokens []string, hubExternalURL string, logger klog.Logger) (*VirtualWorkspaceHandlers, error) {
+func NewVirtualWorkspaces(cm *connman.ConnectionManager, baseConfig *rest.Config, kcpConfig *rest.Config, staticTokens []string, hubExternalURL string, logger klog.Logger) (*VirtualWorkspaceHandlers, error) {
 	staticTokenSet := make(map[string]struct{}, len(staticTokens))
 	for _, t := range staticTokens {
 		staticTokenSet[t] = struct{}{}
@@ -84,6 +86,7 @@ func NewVirtualWorkspaces(cm *connman.ConnectionManager, kcpConfig *rest.Config,
 		vws: &virtualWorkspaces{
 			connManager:     cm,
 			edgeConnManager: NewConnManager(),
+			baseConfig:      baseConfig,
 			kcpConfig:       kcpConfig,
 			kcpK8sClient:    kcpK8sClient,
 			kedgeClient:     kedgeClient,

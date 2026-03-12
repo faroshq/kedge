@@ -139,7 +139,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// Update status if needed.
 	patch := client.MergeFrom(kmcp.DeepCopy())
-	kmcp.Status.Endpoint = endpoint
+	kmcp.Status.URL = endpoint
 	kmcp.Status.ConnectedEdges = connectedCount
 
 	// Merge condition.
@@ -155,7 +155,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("patching KubernetesMCP status: %w", err)
 	}
 
-	logger.Info("Reconciled KubernetesMCP", "endpoint", endpoint, "connectedEdges", connectedCount)
+	logger.Info("Reconciled KubernetesMCP", "URL", endpoint, "connectedEdges", connectedCount)
 
 	// Requeue periodically so ConnectedEdges stays fresh.
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil

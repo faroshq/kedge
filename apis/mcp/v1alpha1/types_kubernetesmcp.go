@@ -24,13 +24,13 @@ import (
 // +genclient:nonNamespaced
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,shortName=kmcp
-// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=".status.endpoint"
+// +kubebuilder:printcolumn:name="URL",type=string,JSONPath=".status.URL"
 // +kubebuilder:printcolumn:name="ConnectedEdges",type=integer,JSONPath=".status.connectedEdges"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // KubernetesMCP represents a multi-edge MCP (Model Context Protocol) server for
 // a set of Kubernetes edges matched by a label selector.  Users point MCP-compatible
-// AI clients at the Endpoint URL to interact with all matching connected edges.
+// AI clients at the URL to interact with all matching connected edges.
 type KubernetesMCP struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -58,9 +58,9 @@ type KubernetesMCPSpec struct {
 
 // KubernetesMCPStatus defines the observed state of KubernetesMCP.
 type KubernetesMCPStatus struct {
-	// Endpoint is the URL at which this MCP server is reachable.
+	// URL is the MCP endpoint URL at which this server is reachable.
 	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
+	URL string `json:"URL,omitempty"`
 
 	// ConnectedEdges is the number of currently connected edges matching the selector.
 	// +optional

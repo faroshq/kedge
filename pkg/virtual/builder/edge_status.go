@@ -51,11 +51,12 @@ var edgeGVR = schema.GroupVersionResource{
 func (p *virtualWorkspaces) markEdgeConnected(ctx context.Context, cluster, name string, sshCreds *sshCredsFromAgent) {
 	if p.kcpConfig == nil {
 		// Hub-only mode (no kcp): the mount_reconciler doesn't run, so status.URL
-		// is never set for SSH (server-type) edges.  Set it here directly using
-		// the base config so the CLI's SSH WebSocket dialler can find the endpoint.
-		if sshCreds != nil {
-			p.setEdgeSSHURLHubOnly(ctx, cluster, name)
-		}
+		// is never set for SSH (server-type) edges.  Always try to set it here
+		// when any agent connects; setEdgeSSHURLHubOnly checks spec.type internally
+		// and only patches server-type edges.  This covers both join-token mode
+		// (where sshCreds != nil) and kubeconfig mode (where sshCreds is nil
+		// because SSH headers are not sent).
+		p.setEdgeSSHURLHubOnly(ctx, cluster, name)
 		return
 	}
 
@@ -220,6 +221,7 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 // setEdgeSSHURLHubOnly patches status.URL on a server-type edge when running in
 // hub-only mode (kcpConfig == nil).  In hub-only mode the mount_reconciler never
 // runs, so we must set status.URL here when the agent's SSH tunnel connects.
+// This function checks spec.type and is a no-op for non-server-type edges.
 // Best-effort: errors are logged but not propagated.
 func (p *virtualWorkspaces) setEdgeSSHURLHubOnly(ctx context.Context, cluster, name string) {
 	if p.baseConfig == nil || p.hubExternalURL == "" {
@@ -236,6 +238,15 @@ func (p *virtualWorkspaces) setEdgeSSHURLHubOnly(ctx context.Context, cluster, n
 	edge, err := dynClient.Resource(edgeGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		p.logger.Error(err, "setEdgeSSHURLHubOnly: failed to get edge", "edge", name)
+		return
+	}
+
+	// Only set the SSH URL for server-type edges.  Kubernetes-type edges have
+	// their own URL set by the mount_reconciler (or not at all in hub-only mode).
+	edgeType, _, _ := unstructured.NestedString(edge.Object, "spec", "type")
+	if edgeType != string(kedgev1alpha1.EdgeTypeServer) {
+		p.logger.V(4).Info("setEdgeSSHURLHubOnly: skipping non-server-type edge",
+			"edge", name, "type", edgeType)
 		return
 	}
 

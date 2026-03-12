@@ -89,3 +89,8 @@ func TestAgentHelmInstall(t *testing.T) {
 func TestMCPEndpoint(t *testing.T)      { testenv.Test(t, cases.MCPEndpoint()) }
 func TestMCPURL(t *testing.T)           { testenv.Test(t, cases.MCPURL()) }
 func TestMCPKubernetesMCP(t *testing.T) { testenv.Test(t, cases.MCPKubernetesMCP()) }
+
+// Join-token + SSH credentials test requires the token reconciler (needs kcp).
+func TestJoinTokenSSHCredentialsStoredAfterConnect(t *testing.T) {
+	testenv.Test(t, cases.JoinTokenSSHCredentialsStoredAfterConnect())
+}

@@ -83,9 +83,4 @@ spec:
     schema: v260301-1a00c73.virtualworkloads.kedge.faros.sh
     storage:
       crd: {}
-  - group: mcp.kedge.faros.sh
-    name: kubernetesmcps
-    schema: v260312-35cac3a.kubernetesmcps.mcp.kedge.faros.sh
-    storage:
-      crd: {}
 status: {}

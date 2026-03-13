@@ -338,7 +338,7 @@ metadata:
 		if hubURL == "" {
 			return fmt.Errorf("--hub-url is required when using --token for kubernetes-type join")
 		}
-		// kedge-agent is a standalone binary; flags are passed directly (no subcommands).
+		// The container ENTRYPOINT is [/kedge, agent, run]; args are appended directly.
 		deployArgs := fmt.Sprintf("--hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
 			hubURL, opts.EdgeName, opts.Token)
 		if opts.InsecureSkipTLSVerify {
@@ -401,7 +401,7 @@ stringData:
 			return fmt.Errorf("creating hub kubeconfig secret: %w", err)
 		}
 
-		// kedge-agent is a standalone binary; flags are passed directly (no subcommands).
+		// The container ENTRYPOINT is [/kedge, agent, run]; args are appended directly.
 		deployArgs := fmt.Sprintf("--hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
 		if opts.InsecureSkipTLSVerify {
 			deployArgs += " --insecure-skip-tls-verify"
@@ -535,7 +535,7 @@ func newAgentTokenCommand() *cobra.Command {
 // Token lifecycle note: when a join token is embedded (--token / --hub-url), the
 // agent will exchange it for a hub kubeconfig on first connect and save it to
 // $HOME/.kedge/agent-<edge-name>.kubeconfig.  On every subsequent start the agent
-// binary detects the saved kubeconfig (cmd/kedge-agent/main.go checks
+// binary detects the saved kubeconfig (see runAgentForeground which checks
 // LoadAgentKubeconfig before using the token) and clears --token automatically,
 // so the unit file does not need to be rewritten after first registration.
 const systemdUnitTemplate = `[Unit]

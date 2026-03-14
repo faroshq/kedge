@@ -79,12 +79,13 @@ func AgentCLIFlow() features.Feature {
 
 			// Step 4: Parse Option C from the output and start the agent.
 			t.Log("step 4: parse join-command output and start agent")
-			parsedHubURL, parsedEdgeName, parsedToken, err := parseJoinCommandOutput(joinOut)
+			parsedHubURL, parsedEdgeName, parsedToken, parsedType, err := parseJoinCommandOutput(joinOut)
 			if err != nil {
 				t.Fatalf("parsing join-command output: %v", err)
 			}
 
 			agent := framework.NewAgentWithToken(framework.RepoRoot(), parsedHubURL, parsedEdgeName, parsedToken).
+				WithType(parsedType).
 				WithAgentKubeconfig(clusterEnv.AgentKubeconfig)
 			if err := agent.Start(ctx); err != nil {
 				t.Fatalf("failed to start agent: %v", err)
@@ -144,10 +145,10 @@ func AgentCLIFlow() features.Feature {
 		Feature()
 }
 
-// parseJoinCommandOutput extracts --hub-url, --edge-name, and --token from the
-// output of `kedge edge join-command`. It looks for the "Option C" section
-// containing "kedge agent run" and parses the multiline backslash-continuation
-// flags.
+// parseJoinCommandOutput extracts --hub-url, --edge-name, --type, and --token
+// from the output of `kedge edge join-command`. It looks for the "Option C"
+// section containing "kedge agent run" and parses the multiline
+// backslash-continuation flags.
 //
 // Expected output format:
 //
@@ -157,7 +158,7 @@ func AgentCLIFlow() features.Feature {
 //	  --edge-name my-edge \
 //	  --type kubernetes \
 //	  --token abc123
-func parseJoinCommandOutput(output string) (hubURL, edgeName, token string, err error) {
+func parseJoinCommandOutput(output string) (hubURL, edgeName, token, agentType string, err error) {
 	lines := strings.Split(output, "\n")
 	inBlock := false
 
@@ -178,6 +179,8 @@ func parseJoinCommandOutput(output string) (hubURL, edgeName, token string, err 
 			hubURL = strings.TrimPrefix(line, "--hub-url ")
 		case strings.HasPrefix(line, "--edge-name "):
 			edgeName = strings.TrimPrefix(line, "--edge-name ")
+		case strings.HasPrefix(line, "--type "):
+			agentType = strings.TrimPrefix(line, "--type ")
 		case strings.HasPrefix(line, "--token "):
 			token = strings.TrimPrefix(line, "--token ")
 		}
@@ -194,10 +197,14 @@ func parseJoinCommandOutput(output string) (hubURL, edgeName, token string, err 
 	}
 
 	if hubURL == "" || edgeName == "" || token == "" {
-		return "", "", "", fmt.Errorf(
+		return "", "", "", "", fmt.Errorf(
 			"could not parse join-command output: hubURL=%q edgeName=%q token=%q\noutput:\n%s",
 			hubURL, edgeName, token, output,
 		)
 	}
-	return hubURL, edgeName, token, nil
+	// Default to "kubernetes" if type was not printed (forward-compat).
+	if agentType == "" {
+		agentType = "kubernetes"
+	}
+	return hubURL, edgeName, token, agentType, nil
 }

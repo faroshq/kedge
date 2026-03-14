@@ -84,6 +84,37 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 	// This allows the agent to reconnect after the first successful join
 	// without requiring the operator to re-supply the bootstrap join token.
 	if opts.HubKubeconfig == "" && opts.EdgeName != "" {
+		// In-cluster mode: check the kubeconfig Secret FIRST.  On the initial
+		// run the Secret does not exist yet so we fall through to token-based
+		// bootstrap.  After the first successful join the hub kubeconfig is
+		// persisted in the Secret (see SaveKubeconfigToSecret / os.Exit(1)
+		// restart dance).  On subsequent restarts we load the Secret here so
+		// the agent never tries to re-use the already-cleared bootstrap token.
+		if agent.IsInCluster() {
+			kubeconfigData, err := agent.LoadKubeconfigFromSecret(opts.EdgeName)
+			if err != nil {
+				logger.Info("Could not load in-cluster kubeconfig Secret (will try other sources)", "err", err)
+			} else if kubeconfigData != "" {
+				// Write to a temp file so the rest of the startup path can use it.
+				tmpFile, err := os.CreateTemp("", "kedge-agent-kubeconfig-*")
+				if err != nil {
+					return fmt.Errorf("creating temp kubeconfig file: %w", err)
+				}
+				if _, err := tmpFile.WriteString(kubeconfigData); err != nil {
+					return fmt.Errorf("writing temp kubeconfig: %w", err)
+				}
+				if closeErr := tmpFile.Close(); closeErr != nil {
+					return fmt.Errorf("closing temp kubeconfig file: %w", closeErr)
+				}
+				logger.Info("Using hub kubeconfig from in-cluster Secret", "edgeName", opts.EdgeName, "secret", agent.AgentKubeconfigSecretName(opts.EdgeName))
+				opts.HubKubeconfig = tmpFile.Name()
+				opts.Token = "" // Secret kubeconfig takes precedence over bootstrap token.
+				opts.UsingSavedKubeconfig = true
+			}
+		}
+	}
+
+	if opts.HubKubeconfig == "" && opts.EdgeName != "" {
 		// Prefer a saved kubeconfig (from a previous join-token exchange) over
 		// the bootstrap token. This allows the agent to reconnect after restart
 		// even when --token is still present in the systemd unit.
@@ -338,11 +369,11 @@ metadata:
 		if hubURL == "" {
 			return fmt.Errorf("--hub-url is required when using --token for kubernetes-type join")
 		}
-		// The container ENTRYPOINT is [/kedge, agent, run]; args are appended directly.
+		// kedge-agent is a standalone binary; flags are passed directly (no subcommands).
 		deployArgs := fmt.Sprintf("--hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
 			hubURL, opts.EdgeName, opts.Token)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --hub-insecure-skip-tls-verify"
+			deployArgs += " --insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
@@ -401,10 +432,10 @@ stringData:
 			return fmt.Errorf("creating hub kubeconfig secret: %w", err)
 		}
 
-		// The container ENTRYPOINT is [/kedge, agent, run]; args are appended directly.
+		// kedge-agent is a standalone binary; flags are passed directly (no subcommands).
 		deployArgs := fmt.Sprintf("--hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --hub-insecure-skip-tls-verify"
+			deployArgs += " --insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
@@ -535,7 +566,7 @@ func newAgentTokenCommand() *cobra.Command {
 // Token lifecycle note: when a join token is embedded (--token / --hub-url), the
 // agent will exchange it for a hub kubeconfig on first connect and save it to
 // $HOME/.kedge/agent-<edge-name>.kubeconfig.  On every subsequent start the agent
-// binary detects the saved kubeconfig (see runAgentForeground which checks
+// binary detects the saved kubeconfig (cmd/kedge-agent/main.go checks
 // LoadAgentKubeconfig before using the token) and clears --token automatically,
 // so the unit file does not need to be rewritten after first registration.
 const systemdUnitTemplate = `[Unit]

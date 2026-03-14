@@ -342,7 +342,7 @@ metadata:
 		deployArgs := fmt.Sprintf("--hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
 			hubURL, opts.EdgeName, opts.Token)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --insecure-skip-tls-verify"
+			deployArgs += " --hub-insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
@@ -404,7 +404,7 @@ stringData:
 		// The container ENTRYPOINT is [/kedge, agent, run]; args are appended directly.
 		deployArgs := fmt.Sprintf("--hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --insecure-skip-tls-verify"
+			deployArgs += " --hub-insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster

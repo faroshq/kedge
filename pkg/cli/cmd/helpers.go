@@ -31,8 +31,8 @@ import (
 )
 
 var (
-	kubeconfig            string
-	globalInsecureTLS     bool
+	kubeconfig        string
+	globalInsecureTLS bool
 )
 
 func loadRestConfig() (*rest.Config, error) {
@@ -53,9 +53,9 @@ func loadRestConfig() (*rest.Config, error) {
 		return nil, err
 	}
 	if globalInsecureTLS {
-		config.TLSClientConfig.Insecure = true
-		config.TLSClientConfig.CAData = nil
-		config.TLSClientConfig.CAFile = ""
+		config.Insecure = true
+		config.CAData = nil
+		config.CAFile = ""
 	}
 	return config, nil
 }

@@ -114,15 +114,22 @@ func AgentCLIFlow() features.Feature {
 			}
 
 			// Step 7: kubectl --kubeconfig <path> get nodes → assert Ready.
+			// The edge API proxy may not be immediately available after the kubeconfig
+			// is written (the tunnel needs to be fully established), so we retry.
 			t.Log("step 7: kubectl get nodes")
-			out, err := framework.KubectlWithConfig(ctx, kubeconfigPath, "--insecure-skip-tls-verify", "get", "nodes")
-			if err != nil {
-				t.Fatalf("kubectl get nodes failed: %v", err)
+			var lastOut string
+			if err := framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+				out, err := framework.KubectlWithConfig(ctx, kubeconfigPath, "--insecure-skip-tls-verify", "get", "nodes")
+				if err != nil {
+					lastOut = out
+					return false, nil // keep retrying on transient errors
+				}
+				lastOut = out
+				return strings.Contains(out, "Ready"), nil
+			}); err != nil {
+				t.Fatalf("kubectl get nodes did not return Ready nodes within timeout: %v\nlast output:\n%s", err, lastOut)
 			}
-			if !strings.Contains(out, "Ready") {
-				t.Fatalf("expected 'Ready' in kubectl get nodes output, got:\n%s", out)
-			}
-			t.Logf("kubectl get nodes output:\n%s", out)
+			t.Logf("kubectl get nodes output:\n%s", lastOut)
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {

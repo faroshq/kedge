@@ -373,7 +373,7 @@ metadata:
 		deployArgs := fmt.Sprintf("--hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
 			hubURL, opts.EdgeName, opts.Token)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --insecure-skip-tls-verify"
+			deployArgs += " --hub-insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster
@@ -435,7 +435,7 @@ stringData:
 		// kedge-agent is a standalone binary; flags are passed directly (no subcommands).
 		deployArgs := fmt.Sprintf("--hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
 		if opts.InsecureSkipTLSVerify {
-			deployArgs += " --insecure-skip-tls-verify"
+			deployArgs += " --hub-insecure-skip-tls-verify"
 		}
 		if opts.Cluster != "" {
 			deployArgs += " --cluster=" + opts.Cluster

@@ -40,7 +40,7 @@ The hub is the only component that needs to be publicly reachable. Agents connec
 
 The hub is the only component that needs a public endpoint. Any device you're comfortable exposing works — a VPS, cloud VM, home server, or anything behind a Cloudflare Tunnel or ingress controller.
 
-→ **[Full hub installation guide](https://faroshq.github.io/kedge/installation/)** (Kubernetes, Helm, TLS, ingress, OIDC)
+→ **[Installation](https://faroshq.github.io/kedge/helm.html)**
 
 ### CLI
 

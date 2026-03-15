@@ -40,7 +40,7 @@ The hub is the only component that needs to be publicly reachable. Agents connec
 
 The hub needs to be reachable by agents from anywhere — it's the only component that requires a public endpoint. A typical setup:
 
-1. **Get a server** — a VPS, cloud VM, or any machine with a public IP works fine
+1. **Get a server** — a VPS, cloud VM, home server, or any device you're comfortable exposing publicly (via a direct public IP, Cloudflare Tunnel, or other ingress) works fine
 2. **Install Kubernetes** — [k3s](https://k3s.io) or [k0s](https://k0sproject.io) are easy single-node choices
 3. **Set up ingress** — configure TLS passthrough ingress (see [Ingress Setup](https://faroshq.github.io/kedge/ingress/)) so the hub's port 8443 is reachable from the internet
 4. **Install the hub via Helm:**

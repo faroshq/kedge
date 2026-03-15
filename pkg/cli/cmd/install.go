@@ -187,19 +187,19 @@ const agentManifestTemplate = `---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: kedge-system
+  name: kedge-agent
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kedge-agent-{{ .EdgeName }}
-  namespace: kedge-system
+  namespace: kedge-agent
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: kedge-agent-{{ .EdgeName }}-kubeconfig
-  namespace: kedge-system
+  namespace: kedge-agent
 type: Opaque
 data: {}
 ---
@@ -207,7 +207,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: kedge-agent-{{ .EdgeName }}
-  namespace: kedge-system
+  namespace: kedge-agent
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -218,11 +218,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: kedge-agent-{{ .EdgeName }}
-  namespace: kedge-system
+  namespace: kedge-agent
 subjects:
 - kind: ServiceAccount
   name: kedge-agent-{{ .EdgeName }}
-  namespace: kedge-system
+  namespace: kedge-agent
 roleRef:
   kind: Role
   name: kedge-agent-{{ .EdgeName }}
@@ -232,7 +232,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kedge-agent-{{ .EdgeName }}
-  namespace: kedge-system
+  namespace: kedge-agent
   labels:
     app: kedge-agent
     kedge.faros.sh/edge: {{ .EdgeName }}
@@ -335,8 +335,8 @@ func installKubernetes(opts *installOptions) error {
 
 	fmt.Println()
 	fmt.Println("✓ kedge-agent deployed to Kubernetes")
-	fmt.Printf("  Namespace: kedge-system\n")
-	fmt.Printf("  Check status: kubectl get pods -n kedge-system\n")
-	fmt.Printf("  Logs:         kubectl logs -n kedge-system deploy/kedge-agent -f\n")
+	fmt.Printf("  Namespace: kedge-agent\n")
+	fmt.Printf("  Check status: kubectl get pods -n kedge-agent\n")
+	fmt.Printf("  Logs:         kubectl logs -n kedge-agent deploy/kedge-agent -f\n")
 	return nil
 }

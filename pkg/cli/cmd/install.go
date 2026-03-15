@@ -204,6 +204,49 @@ type: Opaque
 data: {}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kedge-edge-agent
+rules:
+- apiGroups: [""]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["batch"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kedge-edge-agent-{{ .EdgeName }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kedge-edge-agent
+subjects:
+- kind: ServiceAccount
+  name: kedge-agent-{{ .EdgeName }}
+  namespace: kedge-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: kedge-agent-{{ .EdgeName }}
@@ -212,7 +255,7 @@ rules:
 - apiGroups: [""]
   resources: ["secrets"]
   resourceNames: ["kedge-agent-{{ .EdgeName }}-kubeconfig"]
-  verbs: ["get", "update", "patch"]
+  verbs: ["get", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -253,12 +296,14 @@ spec:
         - name: kedge-agent
           image: {{.Image}}:{{.ImageTag}}
           imagePullPolicy: {{.ImagePullPolicy}}
+          env:
+            - name: HOME
+              value: /tmp
           args:
             - --hub-url={{ .HubURL }}
             - --edge-name={{ .EdgeName }}
             - --type=kubernetes
             - --token={{ .Token }}
-          envFrom: []
           resources:
             requests:
               cpu: 50m

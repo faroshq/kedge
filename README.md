@@ -66,7 +66,11 @@ go install github.com/faroshq/kedge/cmd/kedge@latest
 ### 1. Log in
 
 ```bash
+# OIDC (browser-based)
 kedge login --hub-url https://kedge.example.com
+
+# Static token (home labs / no OIDC)
+kedge login --hub-url https://kedge.example.com --token <your-token>
 ```
 
 ### 2. Connect a Kubernetes cluster
@@ -79,10 +83,16 @@ kedge edge create my-cluster --type kubernetes
 kedge edge join-command my-cluster
 ```
 
-Copy the printed command and run it on the target cluster. Once the agent connects:
+The command prints three options — choose one and run it on the target cluster:
+
+- **Option A** — Helm install (recommended for production)
+- **Option B** — `kedge agent join --type kubernetes` — creates a Deployment in `kedge-agent` namespace
+- **Option C** — `kedge agent run --type kubernetes` — foreground process (dev/containers)
+
+Once the agent connects:
 
 ```bash
-kedge edge list                                # should show my-cluster as Ready
+kedge edge list                                # shows my-cluster as Ready
 kedge kubeconfig edge my-cluster > kc.yaml    # get a kubeconfig for the edge
 kubectl --kubeconfig kc.yaml get nodes
 ```
@@ -123,7 +133,12 @@ kedge edge create my-server --type server
 kedge edge join-command my-server
 ```
 
-Run the printed command on the target host, then:
+The command prints install options — run the chosen command on the target host:
+
+- **Option A** — `kedge agent join --type server` — installs a systemd service (persistent, survives reboots)
+- **Option B** — `kedge agent run --type server` — foreground process (dev/containers)
+
+Once connected:
 
 ```bash
 kedge ssh my-server              # interactive shell
@@ -132,21 +147,58 @@ kedge ssh my-server -- df -h     # single command
 
 ## CLI Reference
 
+### Authentication
+
+| Command | Flags | Description |
+|---|---|---|
+| `kedge login` | `--hub-url` (required), `--token` (skip OIDC), `--insecure-skip-tls-verify` | Authenticate with the hub |
+
+### Edge management
+
+| Command | Flags | Description |
+|---|---|---|
+| `kedge edge create <name>` | `--type kubernetes\|server`, `--labels key=val` | Register a new edge |
+| `kedge edge join-command <name>` | `--insecure-skip-tls-verify` | Print agent install command with join token |
+| `kedge edge list` | — | List all edges and their connection status |
+| `kedge edge get <name>` | — | Show details for a specific edge |
+| `kedge edge delete <name>` | — | Remove an edge |
+
+### Agent
+
+| Command | Flags | Description |
+|---|---|---|
+| `kedge agent run` | `--hub-url`, `--edge-name`, `--type kubernetes\|server`, `--token`, `--hub-kubeconfig`, `--hub-context`, `--tunnel-url`, `--kubeconfig`, `--context`, `--labels`, `--cluster`, `--hub-insecure-skip-tls-verify`, `--ssh-proxy-port`, `--ssh-user`, `--ssh-password`, `--ssh-private-key` | Run agent as a foreground process (containers/dev) |
+| `kedge agent join` | same flags as `run`, plus `--unit-name` (systemd), `--ssh-proxy-port` | Persistently install agent (systemd service or Kubernetes Deployment) |
+| `kedge agent install` | `--hub-kubeconfig`, `--edge-name`, `--type`, `--cluster`, `--ssh-proxy-port`, `--ssh-user`, `--ssh-private-key`, `--unit-name`, `--hub-insecure-skip-tls-verify` | Install agent as a systemd service |
+| `kedge agent uninstall` | `--edge-name`, `--unit-name` | Uninstall agent systemd service |
+
+### Kubeconfig
+
+| Command | Flags | Description |
+|---|---|---|
+| `kedge kubeconfig edge <name>` | `--output` / `-o`, `--insecure-skip-tls-verify` | Generate a kubeconfig for a Kubernetes-type edge |
+
+### SSH
+
 | Command | Description |
 |---|---|
-| `kedge login` | Authenticate with the hub (OIDC or static token) |
-| `kedge edge create <name>` | Register a new edge |
-| `kedge edge join-command <name>` | Print the agent run command with join token |
-| `kedge edge list` | List all edges and their connection status |
-| `kedge edge get <name>` | Show details for a specific edge |
-| `kedge edge delete <name>` | Remove an edge |
-| `kedge kubeconfig edge <name>` | Generate a kubeconfig for a Kubernetes-type edge |
-| `kedge ssh <name>` | Open an SSH session to a server-mode edge |
-| `kedge ssh <name> -- <cmd>` | Run a single command on a server-mode edge |
-| `kedge agent run` | Start the agent as a foreground process |
-| `kedge agent join` | Install the agent as a persistent service (systemd / Deployment) |
-| `kedge mcp url --name <name>` | Print the Kubernetes multi-cluster MCP endpoint URL |
-| `kedge mcp url --edge <name>` | Print the per-edge MCP endpoint URL |
+| `kedge ssh <name>` | Open an interactive SSH session to a server-mode edge |
+| `kedge ssh <name> -- <cmd> [args...]` | Run a single command on a server-mode edge |
+
+### MCP
+
+| Command | Flags | Description |
+|---|---|---|
+| `kedge mcp url` | `--name <kubernetes-mcp-name>` (multi-cluster), `--edge <edge-name>` (per-edge) | Print the MCP endpoint URL and setup instructions |
+
+### Other
+
+| Command | Description |
+|---|---|
+| `kedge workspace` | Manage kcp workspaces (aliases: `ws`) |
+| `kedge apply -f <file>` | Apply a kedge resource from a file |
+| `kedge get [resource]` | Get kedge resources |
+| `kedge version` | Print CLI version |
 
 ## Documentation
 

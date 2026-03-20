@@ -425,28 +425,42 @@ func patchHubStatefulSetGraphQLURL(ctx context.Context, hubClient kubernetes.Int
 		return fmt.Errorf("updating kedge-hub StatefulSet: %w", err)
 	}
 
+	// Record the old pod's UID so we can detect when the StatefulSet controller
+	// has replaced it with a fresh pod carrying the updated args.
+	oldPod, err := hubClient.CoreV1().Pods(namespace).Get(ctx, "kedge-hub-0", metav1.GetOptions{})
+	oldUID := ""
+	if err == nil {
+		oldUID = string(oldPod.UID)
+	}
+
 	// Force-delete the pod so the StatefulSet controller recreates it with new args.
 	// GracePeriodSeconds=0 ensures immediate termination rather than waiting the
-	// default 30s grace period, which would eat into the 2-minute termination wait.
+	// default 30s grace period.
 	gracePeriod := int64(0)
 	_ = hubClient.CoreV1().Pods(namespace).Delete(ctx, "kedge-hub-0", metav1.DeleteOptions{
 		GracePeriodSeconds: &gracePeriod,
 	})
 
-	// Wait for the old pod to fully terminate before returning.
-	// This prevents WaitForHubReady from seeing a 200 from the old pod (which
-	// lacks --graphql-gateway-url) and returning prematurely.
+	// Wait for the StatefulSet controller to create a new pod (different UID).
+	// We do NOT wait for the old pod to disappear — a StatefulSet immediately
+	// recreates the pod, so the old pod may still be Terminating while the new
+	// pod already exists.  Instead we poll until the UID changes, which means
+	// the new pod (with --graphql-gateway-url) is in flight.
 	waitCtx, waitCancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer waitCancel()
 	for {
 		select {
 		case <-waitCtx.Done():
-			return fmt.Errorf("timed out waiting for kedge-hub-0 to terminate: %w", waitCtx.Err())
+			return fmt.Errorf("timed out waiting for kedge-hub-0 to be replaced: %w", waitCtx.Err())
 		case <-time.After(2 * time.Second):
 		}
-		_, err := hubClient.CoreV1().Pods(namespace).Get(waitCtx, "kedge-hub-0", metav1.GetOptions{})
+		pod, err := hubClient.CoreV1().Pods(namespace).Get(waitCtx, "kedge-hub-0", metav1.GetOptions{})
 		if err != nil {
-			// Pod is gone — StatefulSet controller will now recreate it with the new args.
+			// Pod not yet recreated — keep waiting.
+			continue
+		}
+		if string(pod.UID) != oldUID {
+			// New pod has been created by the StatefulSet controller.
 			return nil
 		}
 	}

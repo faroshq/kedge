@@ -109,6 +109,18 @@ func GraphQLGatewayIntegrated() features.Feature {
 			}
 			t.Logf("created kcp kubeconfig secret %s/%s", graphqlNamespace, secretName)
 
+			// Ensure a "default" namespace exists in the kcp tenant workspace.
+			// The GraphQL gateway listener is configured with
+			//   anchorResource=object.metadata.name == 'default'  (namespaces.v1)
+			// so it only emits a schema for "/api/clusters/default" once it sees
+			// a namespace with that name. Unlike regular Kubernetes, kcp workspaces
+			// do not auto-create a "default" namespace, so we create it explicitly
+			// here using the admin credentials we already extracted for the gateway.
+			if ensureErr := ensureKCPDefaultNamespace(ctx, clusterEnv.HubAdminKubeconfig, clusterEnv.HubKubeconfig); ensureErr != nil {
+				t.Fatalf("ensuring default namespace in kcp workspace: %v", ensureErr)
+			}
+			t.Logf("ensured default namespace in kcp tenant workspace")
+
 			installCtx, installCancel := context.WithTimeout(ctx, 6*time.Minute)
 			defer installCancel()
 
@@ -504,6 +516,41 @@ func clusterIDFromHubKubeconfig(hubKubeconfigPath string) (string, error) {
 		return "", fmt.Errorf("cluster ID is empty in server URL: %s", serverURL)
 	}
 	return clusterID, nil
+}
+
+// ensureKCPDefaultNamespace creates a "default" namespace in the kcp tenant
+// workspace if it does not already exist. The GraphQL gateway listener uses
+// anchorResource=object.metadata.name == 'default' (namespaces.v1) to detect
+// which clusters to expose. kcp workspaces do not auto-create a "default"
+// namespace (unlike plain Kubernetes), so without this the gateway never emits
+// a schema for /api/clusters/default and the 3-minute readiness wait expires.
+//
+// We authenticate by exec-ing into the kedge-hub-0 pod (which has the kcp
+// admin kubeconfig mounted) and running kubectl against the tenant workspace
+// path identified from the HubKubeconfig server URL.
+func ensureKCPDefaultNamespace(ctx context.Context, hubAdminKubeconfig, hubKubeconfig string) error {
+	clusterID, err := clusterIDFromHubKubeconfig(hubKubeconfig)
+	if err != nil {
+		return fmt.Errorf("extracting cluster ID: %w", err)
+	}
+
+	// Try to create the namespace; ignore AlreadyExists.
+	createNSCmd := fmt.Sprintf(
+		`KUBECONFIG=/kcp-kubeconfig/admin.kubeconfig `+
+			`kubectl create namespace default `+
+			`--server https://kcp:6443/clusters/%s `+
+			`--insecure-skip-tls-verify 2>&1 || true`,
+		clusterID,
+	)
+	out, err := exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", hubAdminKubeconfig,
+		"exec", "-n", "kedge-system", "kedge-hub-0", "--",
+		"sh", "-c", createNSCmd,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("exec creating default namespace in kcp workspace %s: %w (output: %s)", clusterID, err, out)
+	}
+	return nil
 }
 
 // waitForGraphQLReadyWithClient polls the GraphQL endpoint until 200 OK.

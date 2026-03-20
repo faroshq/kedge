@@ -91,9 +91,9 @@ func GraphQLGatewayIntegrated() features.Feature {
 			}, metav1.CreateOptions{})
 
 			// Build a kubeconfig for the gateway listener that points to the kcp
-			// workspace. The kcp ExternalName service (kcp.kedge-system.svc.cluster.local)
-			// resolves inside the hub cluster and the admin cert from the hub's kcp
-			// kubeconfig has access to the workspace APIs.
+			// workspace. Uses "kcp:6443" — CoreDNS rewrites "kcp" to
+			// kcp.kcp.svc.cluster.local inside the cluster. The admin cert from the
+			// hub's kcp kubeconfig has access to the workspace APIs.
 			kcpKubeconfigBytes, err := buildKCPWorkspaceKubeconfig(ctx, clusterEnv.HubAdminKubeconfig, clusterEnv.HubKubeconfig)
 			if err != nil {
 				t.Fatalf("building kcp workspace kubeconfig: %v", err)
@@ -341,8 +341,10 @@ func buildKCPWorkspaceKubeconfig(ctx context.Context, hubAdminKubeconfig, hubKub
 		return nil, fmt.Errorf("getting kcp admin key: %w", err)
 	}
 
-	// Build kubeconfig using the ExternalName service so it's reachable from pods.
-	inClusterServer := fmt.Sprintf("https://kcp.kedge-system.svc.cluster.local:6443/clusters/%s", clusterID)
+	// Build kubeconfig using the CoreDNS-rewritten "kcp" hostname (rewritten to
+	// kcp.kcp.svc.cluster.local by the CoreDNS rewrite rule installed during setup).
+	// The hub pod's in-cluster kubeconfig also uses "kcp:6443" for the same reason.
+	inClusterServer := fmt.Sprintf("https://kcp:6443/clusters/%s", clusterID)
 	kubeconfigYAML := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:

@@ -34,6 +34,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -165,6 +166,25 @@ func GraphQLGatewayIntegrated() features.Feature {
 			}
 			t.Logf("graphql gateway helm install completed")
 
+			// The hub StatefulSet was deployed without --graphql-gateway-url because
+			// the graphql gateway is installed as a standalone chart (not as the
+			// kedge-hub subchart). Patch the hub StatefulSet to add the flag so the
+			// hub starts proxying /services/graphql/* to the gateway, then bounce the
+			// pod so the new flag takes effect.
+			gwServiceURL := fmt.Sprintf("http://%s-kubernetes-graphql-gateway.%s.svc.cluster.local:8080",
+				graphqlReleaseName, graphqlNamespace)
+			if err := patchHubStatefulSetGraphQLURL(ctx, hubClient, graphqlNamespace, gwServiceURL, t); err != nil {
+				t.Fatalf("failed to patch hub StatefulSet with graphql-gateway-url: %v", err)
+			}
+
+			// Wait for the hub to become healthy again after the pod bounce.
+			hubHealthCtx, hubHealthCancel := context.WithTimeout(ctx, 3*time.Minute)
+			defer hubHealthCancel()
+			if err := framework.WaitForHubReady(hubHealthCtx, framework.DefaultHubURL); err != nil {
+				t.Fatalf("hub not healthy after patching graphql-gateway-url: %v", err)
+			}
+			t.Logf("hub is healthy and proxying graphql gateway at %s", gwServiceURL)
+
 			return ctx
 		}).
 		Assess("graphql_introspection_and_edge_query", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -267,13 +287,15 @@ func GraphQLGatewayIntegrated() features.Feature {
 				}
 			}()
 
-			// The GraphQL gateway is configured with the kubernetes provider pointing at
-			// the hub's kcp proxy (https://kedge-hub.kedge-system.svc.cluster.local:8443/clusters/<id>).
-			// The gateway forwards the caller's Bearer token to that server; the hub's kcp
-			// proxy authenticates it. Use the same static dev-token used for kedge login.
-			kcpToken := clusterEnv.Token
-			if kcpToken == "" {
-				kcpToken = framework.DevToken
+			// The GraphQL gateway forwards the caller's Bearer token directly to the kcp
+			// workspace server for resource queries. The hub's static dev-token is NOT
+			// known to kcp, so we mint a short-lived service-account token in the tenant
+			// workspace. The default SA in kedge-system has cluster-admin in the workspace
+			// (bound by the hub's edge RBAC controller).
+			kcpToken, tokenErr := mintKCPSAToken(ctx, clusterEnv.HubAdminKubeconfig)
+			if tokenErr != nil {
+				t.Logf("warning: could not mint kcp SA token (%v); edge query may fail with auth errors", tokenErr)
+				kcpToken = ""
 			}
 
 			// Poll until the edge appears in the GraphQL response (gateway may lag slightly
@@ -364,6 +386,47 @@ func waitForGraphQLReadyWithClient(ctx context.Context, client *http.Client, url
 	return fmt.Errorf("graphql endpoint %s not ready after %v", url, timeout)
 }
 
+// mintKCPSAToken mints a short-lived service-account token in the kcp tenant workspace
+// (kedge-system/default) by exec-ing into the hub pod, which has direct kcp access.
+// The token is forwarded by the GraphQL gateway to kcp for resource queries.
+func mintKCPSAToken(ctx context.Context, hubAdminKubeconfig string) (string, error) {
+	// Step 1: get the tenant workspace cluster name from kcp workspaces.
+	wsOut, err := exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", hubAdminKubeconfig,
+		"exec", "-n", "kedge-system", "kedge-hub-0", "--",
+		"sh", "-c",
+		"KUBECONFIG=/kcp-kubeconfig/admin.kubeconfig "+
+			"kubectl get workspaces --server https://kcp:6443/clusters/root:kedge "+
+			"-o jsonpath='{.items[0].status.URL}' 2>/dev/null "+
+			"| grep -oE '[a-z0-9]+$'",
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("getting workspace cluster name: %w", err)
+	}
+	clusterName := strings.TrimSpace(string(wsOut))
+	if clusterName == "" {
+		return "", fmt.Errorf("workspace cluster name is empty")
+	}
+
+	// Step 2: create a SA token in that workspace.
+	tokenOut, err := exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", hubAdminKubeconfig,
+		"exec", "-n", "kedge-system", "kedge-hub-0", "--",
+		"sh", "-c",
+		"KUBECONFIG=/kcp-kubeconfig/admin.kubeconfig "+
+			"kubectl create token default -n kedge-system --duration=1h "+
+			"--server https://kcp:6443/clusters/"+clusterName+" 2>/dev/null",
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("creating kcp SA token: %w", err)
+	}
+	token := strings.TrimSpace(string(tokenOut))
+	if token == "" {
+		return "", fmt.Errorf("minted token is empty")
+	}
+	return token, nil
+}
+
 // buildInClusterHubKubeconfig reads the HubKubeconfig (which has a workspace-scoped
 // server URL like https://kedge.localhost:8443/clusters/<id>), replaces the external
 // hostname with the hub's in-cluster service FQDN, and returns a kubeconfig YAML
@@ -425,11 +488,112 @@ users:
 	return []byte(yaml), nil
 }
 
-// mintKCPToken creates a short-lived service-account token in the kcp tenant
-// workspace (kedge-system/default) and returns it as a string.
+// patchHubStatefulSetGraphQLURL patches the kedge-hub StatefulSet to add the
+// --graphql-gateway-url flag to the hub container, then deletes the running pod
+// so the StatefulSet controller restarts it with the new flag.
 //
-// The KCP kubeconfig may point at the root workspace; we derive the tenant
-// workspace path by reading the hub's user kubeconfig server URL, then issue a
-// kubectl create token via the admin kubeconfig.  The token is subsequently
-// forwarded as the Bearer token in GraphQL requests so kcp can authorise
-// resource lookups.
+// This is required when the graphql gateway is installed as a standalone chart
+// (not as the kedge-hub subchart): the hub must be told where to forward
+// /services/graphql/* traffic after the gateway is deployed.
+func patchHubStatefulSetGraphQLURL(ctx context.Context, client kubernetes.Interface, namespace, gwURL string, t *testing.T) error {
+	const (
+		hubSTSName       = "kedge-hub"
+		hubContainerName = "hub"
+		flagPrefix       = "--graphql-gateway-url="
+	)
+
+	// Fetch the current StatefulSet.
+	sts, err := client.AppsV1().StatefulSets(namespace).Get(ctx, hubSTSName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting kedge-hub StatefulSet: %w", err)
+	}
+
+	// Find the hub container and check if the flag is already present.
+	containerIdx := -1
+	for i, c := range sts.Spec.Template.Spec.Containers {
+		if c.Name == hubContainerName {
+			containerIdx = i
+			break
+		}
+	}
+	if containerIdx == -1 {
+		return fmt.Errorf("container %q not found in kedge-hub StatefulSet", hubContainerName)
+	}
+
+	// Check if already set (idempotent).
+	for _, arg := range sts.Spec.Template.Spec.Containers[containerIdx].Args {
+		if strings.HasPrefix(arg, flagPrefix) {
+			t.Logf("hub container already has %s; skipping patch", flagPrefix)
+			return nil
+		}
+	}
+
+	// Build a strategic merge patch that appends the flag to the container args.
+	// We use a JSON merge patch on the full args list to avoid strategic merge
+	// pitfalls with list atomicity.
+	newArgs := append(sts.Spec.Template.Spec.Containers[containerIdx].Args, flagPrefix+gwURL)
+	patchData := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"template": map[string]interface{}{
+				"spec": map[string]interface{}{
+					"containers": []map[string]interface{}{
+						{
+							"name": hubContainerName,
+							"args": newArgs,
+						},
+					},
+				},
+			},
+		},
+	}
+	patchBytes, err := json.Marshal(patchData)
+	if err != nil {
+		return fmt.Errorf("marshalling hub StatefulSet patch: %w", err)
+	}
+
+	if _, err := client.AppsV1().StatefulSets(namespace).Patch(
+		ctx, hubSTSName, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{},
+	); err != nil {
+		return fmt.Errorf("patching kedge-hub StatefulSet: %w", err)
+	}
+	t.Logf("patched kedge-hub StatefulSet: added %s%s", flagPrefix, gwURL)
+
+	// Delete the running pod so the StatefulSet controller respawns it with the
+	// new args. The StatefulSet's pod management policy is OrderedReady by
+	// default, so deleting pod/0 causes an immediate replacement.
+	if err := client.CoreV1().Pods(namespace).Delete(ctx, hubSTSName+"-0", metav1.DeleteOptions{}); err != nil {
+		t.Logf("warning: could not delete kedge-hub-0 pod (may already be terminating): %v", err)
+	} else {
+		t.Logf("deleted kedge-hub-0 pod; waiting for StatefulSet to respawn it")
+	}
+
+	// Wait for the new pod to become ready (up to 2 minutes).
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		pod, err := client.CoreV1().Pods(namespace).Get(ctx, hubSTSName+"-0", metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if pod.Status.Phase == corev1.PodRunning {
+			ready := false
+			for _, cond := range pod.Status.Conditions {
+				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+					ready = true
+					break
+				}
+			}
+			if ready {
+				t.Logf("kedge-hub-0 pod is Running and Ready")
+				return nil
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("kedge-hub-0 pod did not become ready within 2 minutes after StatefulSet patch")
+}

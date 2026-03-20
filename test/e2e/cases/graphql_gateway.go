@@ -132,6 +132,9 @@ func GraphQLGatewayIntegrated() features.Feature {
 				"--set", "listener.kubeconfigSecretKey=kubeconfig",
 				"--set", "listener.extraArgs[0]=--apiexport-endpoint-slice-name=kedge.faros.sh",
 				"--set", "gateway.playground=false",
+				// Use "latest" tag — the chart appVersion (v0.0.1) uses a "v" prefix that
+				// doesn't match the published image tags (0.0.1, latest) in ghcr.io.
+				"--set", "image.tag=latest",
 			}
 
 			cmd := exec.CommandContext(installCtx, "helm", helmArgs...)

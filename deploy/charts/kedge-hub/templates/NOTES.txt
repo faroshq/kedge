@@ -36,3 +36,8 @@ Login:
 
 For identity provider deployment, see docs/idp.md.
 {{- end }}
+{{- if index .Values "kubernetes-graphql-gateway" "enabled" }}
+
+GraphQL API (via hub proxy):
+  https://{{ .Values.hub.hubExternalURL | default "<hub-url>" }}/services/graphql/api/clusters/default
+{{- end }}

@@ -72,6 +72,9 @@ spec:
             - --kcp-admin-kubeconfig-secret={{ include "kedge-hub.graphqlKubeconfigSecretName" . }}
             - --namespace={{ .Release.Namespace }}
             {{- end }}
+            {{- if index .Values "kubernetes-graphql-gateway" "enabled" }}
+            - "--graphql-gateway-url=http://{{ .Release.Name }}-kubernetes-graphql-gateway.{{ .Release.Namespace }}.svc.cluster.local:8080"
+            {{- end }}
             - --data-dir=/data/hub
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}

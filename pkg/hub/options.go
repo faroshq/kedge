@@ -50,6 +50,12 @@ type Options struct {
 	// Used when creating the KCPAdminKubeconfigSecretName secret.
 	// Defaults to "kedge-system".
 	Namespace string
+
+	// GraphQLGatewayURL is the URL of the kubernetes-graphql-gateway service.
+	// When set, the hub proxies /services/graphql/* to this URL.
+	// Example: http://kedge-graphql-gateway-kubernetes-graphql-gateway.kedge-system.svc.cluster.local:8080
+	// +optional
+	GraphQLGatewayURL string
 }
 
 // NewOptions returns default Options.

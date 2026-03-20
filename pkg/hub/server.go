@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -261,6 +263,19 @@ func (s *Server) Run(ctx context.Context) error {
 	router.PathPrefix(apiurl.PathPrefixMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCP, vws.KubernetesMCPHandler()))
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
+
+	// GraphQL gateway proxy: forward /services/graphql/* to the gateway service.
+	if s.opts.GraphQLGatewayURL != "" {
+		gwTarget, err := url.Parse(s.opts.GraphQLGatewayURL)
+		if err != nil {
+			return fmt.Errorf("parsing graphql gateway URL: %w", err)
+		}
+		gwProxy := httputil.NewSingleHostReverseProxy(gwTarget)
+		router.PathPrefix(apiurl.PathPrefixGraphQL + "/").Handler(
+			http.StripPrefix(apiurl.PathPrefixGraphQL, gwProxy),
+		)
+		logger.Info("GraphQL gateway proxy registered", "url", s.opts.GraphQLGatewayURL)
+	}
 
 	// Health check
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

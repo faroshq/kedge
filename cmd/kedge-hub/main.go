@@ -76,6 +76,8 @@ func main() {
 			"When set, the hub exports the kubeconfig at startup so in-cluster consumers (e.g. the graphql gateway) can discover it automatically.")
 	cmd.Flags().StringVar(&opts.Namespace, "namespace", opts.Namespace,
 		"Kubernetes namespace the hub is running in (used for creating the kcp admin kubeconfig secret)")
+	cmd.Flags().StringVar(&opts.GraphQLGatewayURL, "graphql-gateway-url", "",
+		"URL of the kubernetes-graphql-gateway service; when set, /services/graphql/* is proxied to it")
 
 	// Add klog flags (provides -v for log verbosity, shared with embedded kcp)
 	goFlags := flag.NewFlagSet("", flag.ContinueOnError)

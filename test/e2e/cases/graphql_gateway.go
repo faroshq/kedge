@@ -144,7 +144,7 @@ func GraphQLGatewayIntegrated() features.Feature {
 
 			return ctx
 		}).
-		Assess("graphql_introspection_returns_kedge_types", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("graphql_introspection_and_edge_query", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			if clusterEnv == nil {
 				t.Fatal("cluster environment not found in context")
@@ -169,16 +169,20 @@ func GraphQLGatewayIntegrated() features.Feature {
 			}
 			defer pfCmd.Process.Kill() //nolint:errcheck
 
+			// The gateway serves GraphQL at /api/clusters/{clusterName} where the cluster
+			// name is determined by the kubernetes provider (defaults to "default" for a
+			// single-cluster setup pointing at the tenant kcp workspace).
+			gwBaseURL := fmt.Sprintf("http://localhost:%d/api/clusters/default", graphqlLocalPort)
+
 			// Wait for port-forward to be ready.
-			gwURL := fmt.Sprintf("http://localhost:%d/graphql", graphqlLocalPort)
-			if err := waitForGraphQLReady(ctx, gwURL, 30*time.Second); err != nil {
+			if err := waitForGraphQLReady(ctx, gwBaseURL, 30*time.Second); err != nil {
 				t.Fatalf("graphql gateway not ready after port-forward: %v", err)
 			}
-			t.Logf("graphql gateway reachable at %s", gwURL)
+			t.Logf("graphql gateway reachable at %s", gwBaseURL)
 
-			// Run GraphQL introspection query.
-			introspectionQuery := `{"query": "{ __schema { types { name } } }"}`
-			resp, err := http.Post(gwURL, "application/json", strings.NewReader(introspectionQuery))
+			// --- Step 1: Introspection — verify kedge_faros_sh type is present ---
+			introspectionQuery := `{"query": "{ __schema { queryType { fields { name } } } }"}`
+			resp, err := http.Post(gwBaseURL, "application/json", strings.NewReader(introspectionQuery))
 			if err != nil {
 				t.Fatalf("introspection query failed: %v", err)
 			}
@@ -193,31 +197,99 @@ func GraphQLGatewayIntegrated() features.Feature {
 				t.Fatalf("failed to read introspection response: %v", err)
 			}
 
-			var result struct {
+			var introspectResult struct {
 				Data struct {
 					Schema struct {
-						Types []struct {
-							Name string `json:"name"`
-						} `json:"types"`
+						QueryType struct {
+							Fields []struct {
+								Name string `json:"name"`
+							} `json:"fields"`
+						} `json:"queryType"`
 					} `json:"__schema"`
 				} `json:"data"`
 			}
-			if err := json.Unmarshal(body, &result); err != nil {
+			if err := json.Unmarshal(body, &introspectResult); err != nil {
 				t.Fatalf("failed to parse introspection response: %v\nbody: %s", err, body)
 			}
 
-			if len(result.Data.Schema.Types) == 0 {
-				t.Fatalf("introspection returned empty schema")
+			// Verify kedge_faros_sh field exists in the schema.
+			var hasKedgeField bool
+			for _, f := range introspectResult.Data.Schema.QueryType.Fields {
+				if f.Name == "kedge_faros_sh" {
+					hasKedgeField = true
+					break
+				}
+			}
+			if !hasKedgeField {
+				fieldNames := make([]string, 0, len(introspectResult.Data.Schema.QueryType.Fields))
+				for _, f := range introspectResult.Data.Schema.QueryType.Fields {
+					fieldNames = append(fieldNames, f.Name)
+				}
+				t.Fatalf("kedge_faros_sh field not found in GraphQL schema; got: %v", fieldNames)
+			}
+			t.Logf("introspection confirmed: kedge_faros_sh field present in schema")
+
+			// --- Step 2: Create a test edge and query it via GraphQL ---
+
+			// Create an edge using the kedge client.
+			kedgeCli := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, framework.DefaultHubURL)
+			if err := kedgeCli.Login(ctx, framework.DevToken); err != nil {
+				t.Fatalf("kedge login failed: %v", err)
+			}
+			const testEdgeName = "graphql-edge-test"
+			if err := kedgeCli.EdgeCreate(ctx, testEdgeName, "kubernetes"); err != nil {
+				t.Fatalf("failed to create test edge: %v", err)
+			}
+			t.Logf("created test edge %q", testEdgeName)
+			defer func() {
+				if err := kedgeCli.EdgeDelete(ctx, testEdgeName); err != nil {
+					t.Logf("cleanup: failed to delete edge %q: %v", testEdgeName, err)
+				}
+			}()
+
+			// Obtain a kcp service-account token so the GraphQL gateway can forward
+			// credentials to kcp when resolving resources.
+			//
+			// The gateway proxies the caller's Bearer token to kcp; in the e2e setup the
+			// easiest credential to obtain programmatically is a SA token minted from the
+			// hub cluster's kcp server.
+			kcpToken, err := mintKCPToken(ctx, clusterEnv.KCPKubeconfig, clusterEnv.HubAdminKubeconfig)
+			if err != nil {
+				t.Fatalf("failed to obtain kcp token: %v", err)
 			}
 
-			// Log all type names for debugging.
-			typeNames := make([]string, 0, len(result.Data.Schema.Types))
-			for _, tp := range result.Data.Schema.Types {
-				typeNames = append(typeNames, tp.Name)
-			}
-			t.Logf("graphql schema types: %v", typeNames)
+			// Poll until the edge appears in the GraphQL response (gateway may lag slightly
+			// behind the kcp store).
+			edgeQuery := `{"query":"{ kedge_faros_sh { v1alpha1 { Edges { items { metadata { name } } } } } }"}`
+			var found bool
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, gwBaseURL, strings.NewReader(edgeQuery))
+				if reqErr != nil {
+					t.Fatalf("building edge query request: %v", reqErr)
+				}
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+kcpToken)
 
-			t.Logf("graphql introspection succeeded: %d types in schema", len(result.Data.Schema.Types))
+				edgeResp, doErr := http.DefaultClient.Do(req)
+				if doErr != nil {
+					time.Sleep(time.Second)
+					continue
+				}
+				edgeBody, _ := io.ReadAll(edgeResp.Body)
+				_ = edgeResp.Body.Close()
+
+				if bytes.Contains(edgeBody, []byte(testEdgeName)) {
+					found = true
+					t.Logf("edge %q found in GraphQL response", testEdgeName)
+					break
+				}
+				time.Sleep(time.Second)
+			}
+			if !found {
+				t.Fatalf("edge %q not found in GraphQL response after 30s", testEdgeName)
+			}
+
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -264,4 +336,37 @@ func waitForGraphQLReady(ctx context.Context, url string, timeout time.Duration)
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("graphql endpoint %s not ready after %v", url, timeout)
+}
+
+// mintKCPToken creates a short-lived service-account token in the kcp tenant
+// workspace (kedge-system/default) and returns it as a string.
+//
+// The KCP kubeconfig may point at the root workspace; we derive the tenant
+// workspace path by reading the hub's user kubeconfig server URL, then issue a
+// kubectl create token via the admin kubeconfig.  The token is subsequently
+// forwarded as the Bearer token in GraphQL requests so kcp can authorise
+// resource lookups.
+func mintKCPToken(ctx context.Context, kcpKubeconfig, hubAdminKubeconfig string) (string, error) {
+	// kubectl create token needs to run against the tenant workspace.
+	// The kcp kubeconfig's server is the root workspace; pass the hub admin
+	// kubeconfig which resolves to the user workspace via kcp's context.
+	out, err := exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", hubAdminKubeconfig,
+		"create", "token", "default",
+		"-n", "kedge-system",
+		"--duration", "1h",
+	).Output()
+	if err != nil {
+		// Fallback: try directly with kcp admin kubeconfig.
+		out, err = exec.CommandContext(ctx, "kubectl",
+			"--kubeconfig", kcpKubeconfig,
+			"create", "token", "default",
+			"-n", "kedge-system",
+			"--duration", "1h",
+		).Output()
+		if err != nil {
+			return "", fmt.Errorf("kubectl create token failed: %w", err)
+		}
+	}
+	return strings.TrimSpace(string(out)), nil
 }

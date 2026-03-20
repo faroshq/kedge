@@ -50,7 +50,7 @@ const (
 // deployed and that the hub proxies /services/graphql/* to it.
 //
 // The test:
-//  1. Installs the gateway chart with grpc schema handler + kcp workspace kubeconfig
+//  1. Installs the gateway chart with file schema handler + kcp workspace kubeconfig
 //  2. Patches the hub StatefulSet to add --graphql-gateway-url and bounces the pod
 //  3. Waits for the proxy to serve the kedge GraphQL schema
 //  4. Creates a test edge and verifies it appears in the GraphQL response
@@ -119,15 +119,23 @@ func GraphQLGatewayIntegrated() features.Feature {
 				"--kubeconfig", clusterEnv.HubAdminKubeconfig,
 				"--wait",
 				"--timeout", "5m",
-				"--set", "schemaHandler=grpc",
+				// Use file schema handler instead of gRPC to avoid a startup race condition:
+				// with grpc mode, if the gateway container's Subscribe call fires before the
+				// listener container has bound port 50051, gRPC returns an immediate
+				// UNAVAILABLE error (FailFast=true default) and the gateway runs forever with
+				// an empty schema registry, returning 404 for all cluster paths.
+				// File mode uses a shared emptyDir + fsnotify which has no ordering dependency
+				// between the listener and gateway containers.
+				"--set", "schemaHandler=file",
 				"--set", "listener.provider=kubernetes",
 				"--set", "listener.anchorResource=object.metadata.name == 'default'",
 				"--set", "listener.reconcilerGVR=namespaces.v1",
 				"--set", "listener.kubeconfigSecret=" + secretName,
 				"--set", "listener.kubeconfigSecretKey=kubeconfig",
 				"--set", "gateway.playground=false",
-				// Use latest tag; chart appVersion has v prefix that doesn't match published tags.
-				"--set", "image.tag=latest",
+				// Pin to v0.0.6 which includes the WaitForReady gRPC fix to tolerate
+				// listener startup ordering (fixes /api/clusters/default 404).
+				"--set", "image.tag=0.0.6",
 			}
 			cmd := exec.CommandContext(installCtx, "helm", helmArgs...)
 			cmd.Stdout = os.Stdout

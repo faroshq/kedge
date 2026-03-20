@@ -184,9 +184,12 @@ func GraphQLGatewayIntegrated() features.Feature {
 			// can take up to a minute in CI; sleep 5s to avoid early false-negatives.
 			time.Sleep(5 * time.Second)
 
-			// Wait for port-forward to be ready.  3 minutes provides headroom for kcp
-			// schema discovery to complete on slower CI runners.
-			if err := waitForGraphQLReady(ctx, gwBaseURL, 3*time.Minute); err != nil {
+			// Wait for port-forward to be ready.  6 minutes provides headroom for kcp
+			// schema discovery to complete on slower CI runners.  The External KCP
+			// scenario (kcp via Helm + static token) has been observed to take >3 minutes
+			// for API discovery; 6 minutes provides a safe margin without blocking the
+			// overall 20m e2e timeout.
+			if err := waitForGraphQLReady(ctx, gwBaseURL, 6*time.Minute); err != nil {
 				t.Fatalf("graphql gateway not ready after port-forward: %v", err)
 			}
 			t.Logf("graphql gateway reachable at %s", gwBaseURL)

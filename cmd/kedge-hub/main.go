@@ -71,6 +71,11 @@ func main() {
 	cmd.Flags().StringVar(&opts.KCPBatteriesInclude, "kcp-batteries-include", opts.KCPBatteriesInclude, "Comma-separated list of kcp batteries to include")
 	cmd.Flags().StringVar(&opts.KCPTLSCertFile, "kcp-tls-cert-file", "", "TLS certificate file for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPTLSKeyFile, "kcp-tls-key-file", "", "TLS key file for embedded kcp API server")
+	cmd.Flags().StringVar(&opts.KCPAdminKubeconfigSecretName, "kcp-admin-kubeconfig-secret", opts.KCPAdminKubeconfigSecretName,
+		"Name of a Kubernetes Secret to create/update with the embedded kcp admin kubeconfig (embedded kcp only). "+
+			"When set, the hub exports the kubeconfig at startup so in-cluster consumers (e.g. the graphql gateway) can discover it automatically.")
+	cmd.Flags().StringVar(&opts.Namespace, "namespace", opts.Namespace,
+		"Kubernetes namespace the hub is running in (used for creating the kcp admin kubeconfig secret)")
 
 	// Add klog flags (provides -v for log verbosity, shared with embedded kcp)
 	goFlags := flag.NewFlagSet("", flag.ContinueOnError)

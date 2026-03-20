@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,11 +29,13 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -135,6 +138,16 @@ func (s *Server) Run(ctx context.Context) error {
 			kcpConfig, err = clientcmd.BuildConfigFromFlags("", embeddedKCP.AdminKubeconfigPath())
 			if err != nil {
 				return fmt.Errorf("loading embedded kcp admin kubeconfig: %w", err)
+			}
+		}
+
+		// Export the kcp admin kubeconfig as a Kubernetes Secret so that
+		// in-cluster consumers (e.g. the graphql gateway) can discover it
+		// automatically without manual configuration.
+		if s.opts.KCPAdminKubeconfigSecretName != "" {
+			if exportErr := s.exportKCPAdminKubeconfigSecret(ctx, embeddedKCP.AdminKubeconfigPath()); exportErr != nil {
+				logger.Error(exportErr, "Failed to export kcp admin kubeconfig as secret; graphql gateway may not connect")
+				// Non-fatal: log and continue — the hub itself can still serve traffic.
 			}
 		}
 	} else if s.opts.ExternalKCPKubeconfig != "" {
@@ -426,6 +439,57 @@ func (s *Server) buildRestConfig() (*rest.Config, error) {
 		return kubeConfig.ClientConfig()
 	}
 	return config, nil
+}
+
+// exportKCPAdminKubeconfigSecret creates or updates a Kubernetes Secret in the
+// hub's namespace containing the embedded kcp admin kubeconfig. This allows
+// in-cluster consumers (e.g. the graphql gateway) to discover the kubeconfig
+// without manual configuration.
+func (s *Server) exportKCPAdminKubeconfigSecret(ctx context.Context, kubeconfigPath string) error {
+	kubeconfigBytes, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("reading kcp admin kubeconfig %s: %w", kubeconfigPath, err)
+	}
+
+	// Build a client targeting the base cluster (not kcp) so the Secret lands
+	// in the hub's own namespace inside the management cluster.
+	baseCfg, err := s.buildRestConfig()
+	if err != nil {
+		return fmt.Errorf("building base cluster rest config: %w", err)
+	}
+	k8sClient, err := kubernetes.NewForConfig(baseCfg)
+	if err != nil {
+		return fmt.Errorf("creating k8s client for secret export: %w", err)
+	}
+
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      s.opts.KCPAdminKubeconfigSecretName,
+			Namespace: s.opts.Namespace,
+		},
+		Data: map[string][]byte{
+			"admin.kubeconfig": kubeconfigBytes,
+		},
+	}
+
+	_, createErr := k8sClient.CoreV1().Secrets(s.opts.Namespace).Create(ctx, desired, metav1.CreateOptions{})
+	if createErr == nil {
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(createErr) {
+		return fmt.Errorf("creating kcp admin kubeconfig secret: %w", createErr)
+	}
+
+	// Secret already exists — update it so the kubeconfig stays current.
+	existing, err := k8sClient.CoreV1().Secrets(s.opts.Namespace).Get(ctx, s.opts.KCPAdminKubeconfigSecretName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting existing kcp admin kubeconfig secret: %w", err)
+	}
+	existing.Data = desired.Data
+	if _, err := k8sClient.CoreV1().Secrets(s.opts.Namespace).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating kcp admin kubeconfig secret: %w", err)
+	}
+	return nil
 }
 
 // kubernetesGVR is the GroupVersionResource for Kubernetes MCP.

@@ -139,10 +139,13 @@ kubernetes-graphql-gateway:
     reconcilerGVR: ""
     grpcListenAddr: ":50051"
     enableClusterAccessController: false
-    # Secret containing the kcp admin kubeconfig (key: admin.kubeconfig)
-    # For external kcp: automatically set to the existing kcp kubeconfig secret.
-    # For embedded kcp: you must create a Secret manually after the hub starts.
-    kubeconfigSecret: ""
+    # Secret containing the kcp admin kubeconfig (key: admin.kubeconfig).
+    # For external kcp: set this to the name of your kcp kubeconfig secret.
+    # For embedded kcp (kcp.embedded.enabled=true): leave this as-is — the hub
+    # auto-creates the secret at startup and the subchart evaluates this template
+    # string using tpl to resolve the release-scoped name automatically.
+    # Value is a Go template string evaluated by the subchart at render time.
+    kubeconfigSecret: '{{ printf "%s-kcp-admin-kubeconfig" .Release.Name }}'
     kubeconfigSecretKey: "admin.kubeconfig"
     # kcp-specific: watch the kedge.faros.sh APIExport endpoint slice
     extraArgs:

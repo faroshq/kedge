@@ -474,6 +474,15 @@ func patchHubStatefulSetGraphQLURL(ctx context.Context, client kubernetes.Interf
 	}
 	t.Logf("patched kedge-hub StatefulSet: added %s%s", flagPrefix, gwURL)
 
+	// Record the old pod UID so we can tell when a genuinely new pod has replaced
+	// it. Without this, the wait loop may see the old pod in Running+Ready state
+	// immediately after Delete() returns (before the kubelet has terminated it),
+	// leading the test to proceed without the hub ever picking up the new flag.
+	var oldPodUID types.UID
+	if oldPod, err := client.CoreV1().Pods(namespace).Get(ctx, hubSTSName+"-0", metav1.GetOptions{}); err == nil {
+		oldPodUID = oldPod.UID
+	}
+
 	// Delete the running pod so the StatefulSet controller respawns it with the
 	// new args. The StatefulSet's pod management policy is OrderedReady by
 	// default, so deleting pod/0 causes an immediate replacement.
@@ -483,8 +492,10 @@ func patchHubStatefulSetGraphQLURL(ctx context.Context, client kubernetes.Interf
 		t.Logf("deleted kedge-hub-0 pod; waiting for StatefulSet to respawn it")
 	}
 
-	// Wait for the new pod to become ready (up to 2 minutes).
-	deadline := time.Now().Add(2 * time.Minute)
+	// Wait for a NEW pod (different UID) to become ready (up to 3 minutes).
+	// We must check the UID to avoid treating the still-terminating old pod as
+	// the replacement — the kubelet may not have terminated it yet when we poll.
+	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -493,6 +504,11 @@ func patchHubStatefulSetGraphQLURL(ctx context.Context, client kubernetes.Interf
 		}
 		pod, err := client.CoreV1().Pods(namespace).Get(ctx, hubSTSName+"-0", metav1.GetOptions{})
 		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		// Skip the old pod — we need a replacement with a different UID.
+		if pod.UID == oldPodUID {
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -511,5 +527,5 @@ func patchHubStatefulSetGraphQLURL(ctx context.Context, client kubernetes.Interf
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("kedge-hub-0 pod did not become ready within 2 minutes after StatefulSet patch")
+	return fmt.Errorf("kedge-hub-0 pod did not become ready within 3 minutes after StatefulSet patch")
 }

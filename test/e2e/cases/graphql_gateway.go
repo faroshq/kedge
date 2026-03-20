@@ -19,10 +19,12 @@ package cases
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,12 +97,20 @@ func GraphQLGatewayIntegrated() features.Feature {
 				ObjectMeta: metav1.ObjectMeta{Name: graphqlNamespace},
 			}, metav1.CreateOptions{})
 
-			// Create Secret with the hub kubeconfig (workspace-scoped after kedge login).
-			// We use the kubernetes provider pointing at the tenant workspace directly,
-			// so the listener needs the workspace-scoped kubeconfig, not the kcp root kubeconfig.
-			kcpKubeconfigBytes, err := os.ReadFile(clusterEnv.HubKubeconfig)
+			// Build an in-cluster kubeconfig for the graphql-gateway listener.
+			//
+			// The listener runs as a pod inside the hub cluster and needs to reach the kcp
+			// workspace server. The HubKubeconfig (written after kedge login) has a server
+			// URL of the form https://kedge.localhost:8443/clusters/<workspace-id> — this
+			// hostname is only resolvable on the CI runner host, not inside pods.
+			//
+			// Solution: replace the external host with the hub's in-cluster service FQDN
+			// (kedge-hub.kedge-system.svc.cluster.local) and authenticate with the static
+			// dev-token that the hub accepts. The hub's kcp proxy forwards the request to
+			// kcp on behalf of the caller.
+			kcpKubeconfigBytes, err := buildInClusterHubKubeconfig(clusterEnv.HubKubeconfig, clusterEnv.Token)
 			if err != nil {
-				t.Fatalf("failed to read hub kubeconfig: %v", err)
+				t.Fatalf("failed to build in-cluster hub kubeconfig: %v", err)
 			}
 			secretName := graphqlReleaseName + "-kcp-kubeconfig"
 			_, err = hubClient.CoreV1().Secrets(graphqlNamespace).Create(ctx, &corev1.Secret{
@@ -163,48 +173,36 @@ func GraphQLGatewayIntegrated() features.Feature {
 				t.Fatal("cluster environment not found in context")
 			}
 
-			// Port-forward the gateway service.
-			pfCtx, pfCancel := context.WithCancel(ctx)
-			defer pfCancel()
-
-			svcName := graphqlReleaseName + "-kubernetes-graphql-gateway"
-			pfCmd := exec.CommandContext(pfCtx, "kubectl",
-				"--kubeconfig", clusterEnv.HubAdminKubeconfig,
-				"port-forward",
-				"-n", graphqlNamespace,
-				"svc/"+svcName,
-				fmt.Sprintf("%d:8080", graphqlLocalPort),
-			)
-			pfCmd.Stdout = io.Discard
-			pfCmd.Stderr = io.Discard
-			if err := pfCmd.Start(); err != nil {
-				t.Fatalf("failed to start kubectl port-forward: %v", err)
+			// GraphQL is proxied through the hub API server at /services/graphql/*.
+			// The hub wires --graphql-gateway-url when the subchart is enabled, so no
+			// second ingress or port-forward is needed.
+			//
+			// Path: https://<hub>/services/graphql/api/clusters/default
+			// The hub TLS cert uses a self-signed CA; skip verification for e2e.
+			hubURL := clusterEnv.HubURL
+			if hubURL == "" {
+				hubURL = framework.DefaultHubURL
 			}
-			defer pfCmd.Process.Kill() //nolint:errcheck
+			gwBaseURL := hubURL + "/services/graphql/api/clusters/default"
 
-			// The gateway serves GraphQL at /api/clusters/{clusterName} where the cluster
-			// name is determined by the kubernetes provider (defaults to "default" for a
-			// single-cluster setup pointing at the tenant kcp workspace).
-			gwBaseURL := fmt.Sprintf("http://localhost:%d/api/clusters/default", graphqlLocalPort)
-
-			// Give the port-forward process a moment to establish the tunnel before polling.
-			// The kcp listener performs API discovery after the pod becomes ready, which
-			// can take up to a minute in CI; sleep 5s to avoid early false-negatives.
-			time.Sleep(5 * time.Second)
-
-			// Wait for port-forward to be ready.  6 minutes provides headroom for kcp
-			// schema discovery to complete on slower CI runners.  The External KCP
-			// scenario (kcp via Helm + static token) has been observed to take >3 minutes
-			// for API discovery; 6 minutes provides a safe margin without blocking the
-			// overall 20m e2e timeout.
-			if err := waitForGraphQLReady(ctx, gwBaseURL, 6*time.Minute); err != nil {
-				t.Fatalf("graphql gateway not ready after port-forward: %v", err)
+			// Create an HTTP client that skips TLS verification (hub uses self-signed cert in e2e).
+			tlsClient := &http.Client{
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // e2e only
+				},
 			}
-			t.Logf("graphql gateway reachable at %s", gwBaseURL)
+
+			// Wait for the hub proxy to start serving GraphQL.  The gateway pod needs a
+			// moment after helm install to become Ready and register its cluster.
+			t.Logf("waiting for GraphQL proxy at %s", gwBaseURL)
+			if err := waitForGraphQLReadyWithClient(ctx, tlsClient, gwBaseURL, 6*time.Minute); err != nil {
+				t.Fatalf("graphql gateway not ready via hub proxy: %v", err)
+			}
+			t.Logf("graphql gateway reachable via hub proxy at %s", gwBaseURL)
 
 			// --- Step 1: Introspection — verify kedge_faros_sh type is present ---
 			introspectionQuery := `{"query": "{ __schema { queryType { fields { name } } } }"}`
-			resp, err := http.Post(gwBaseURL, "application/json", strings.NewReader(introspectionQuery))
+			resp, err := tlsClient.Post(gwBaseURL, "application/json", strings.NewReader(introspectionQuery))
 			if err != nil {
 				t.Fatalf("introspection query failed: %v", err)
 			}
@@ -269,15 +267,13 @@ func GraphQLGatewayIntegrated() features.Feature {
 				}
 			}()
 
-			// Obtain a kcp service-account token for credential forwarding.
-			// The gateway (kubernetes provider mode) forwards the caller's Bearer token
-			// to the kcp workspace server. We mint a token for kedge-system/default SA
-			// which has cluster-admin in the tenant workspace (bound by the hub's edge
-			// RBAC controller).
-			kcpToken, err := mintKCPToken(ctx, clusterEnv.KCPKubeconfig, clusterEnv.HubAdminKubeconfig)
-			if err != nil {
-				t.Logf("warning: could not mint kcp token (%v); queries may fail with auth errors", err)
-				kcpToken = ""
+			// The GraphQL gateway is configured with the kubernetes provider pointing at
+			// the hub's kcp proxy (https://kedge-hub.kedge-system.svc.cluster.local:8443/clusters/<id>).
+			// The gateway forwards the caller's Bearer token to that server; the hub's kcp
+			// proxy authenticates it. Use the same static dev-token used for kedge login.
+			kcpToken := clusterEnv.Token
+			if kcpToken == "" {
+				kcpToken = framework.DevToken
 			}
 
 			// Poll until the edge appears in the GraphQL response (gateway may lag slightly
@@ -295,7 +291,7 @@ func GraphQLGatewayIntegrated() features.Feature {
 					req.Header.Set("Authorization", "Bearer "+kcpToken)
 				}
 
-				edgeResp, doErr := http.DefaultClient.Do(req)
+				edgeResp, doErr := tlsClient.Do(req)
 				if doErr != nil {
 					time.Sleep(time.Second)
 					continue
@@ -340,9 +336,9 @@ func GraphQLGatewayIntegrated() features.Feature {
 		Feature()
 }
 
-// waitForGraphQLReady polls the GraphQL endpoint until it returns a response
-// or the timeout is reached.
-func waitForGraphQLReady(ctx context.Context, url string, timeout time.Duration) error {
+// waitForGraphQLReadyWithClient polls the GraphQL endpoint using the provided
+// HTTP client until it returns a 200 OK or the timeout is reached.
+func waitForGraphQLReadyWithClient(ctx context.Context, client *http.Client, url string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
@@ -350,7 +346,13 @@ func waitForGraphQLReady(ctx context.Context, url string, timeout time.Duration)
 			return ctx.Err()
 		default:
 		}
-		resp, err := http.Post(url, "application/json", bytes.NewBufferString(`{"query":"{ __typename }"}`))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
+			bytes.NewBufferString(`{"query":"{ __typename }"}`))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -362,6 +364,67 @@ func waitForGraphQLReady(ctx context.Context, url string, timeout time.Duration)
 	return fmt.Errorf("graphql endpoint %s not ready after %v", url, timeout)
 }
 
+// buildInClusterHubKubeconfig reads the HubKubeconfig (which has a workspace-scoped
+// server URL like https://kedge.localhost:8443/clusters/<id>), replaces the external
+// hostname with the hub's in-cluster service FQDN, and returns a kubeconfig YAML
+// suitable for use by pods running inside the hub cluster.
+//
+// Auth is via the static bearer token (dev-token in e2e) that the hub accepts.
+func buildInClusterHubKubeconfig(hubKubeconfigPath, token string) ([]byte, error) {
+	hubCfg, err := clientcmd.LoadFromFile(hubKubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading hub kubeconfig: %w", err)
+	}
+
+	ctx := hubCfg.CurrentContext
+	if ctx == "" {
+		for k := range hubCfg.Contexts {
+			ctx = k
+			break
+		}
+	}
+	ctxObj := hubCfg.Contexts[ctx]
+	if ctxObj == nil {
+		return nil, fmt.Errorf("context %q not found in hub kubeconfig", ctx)
+	}
+
+	clusterObj := hubCfg.Clusters[ctxObj.Cluster]
+	if clusterObj == nil {
+		return nil, fmt.Errorf("cluster %q not found in hub kubeconfig", ctxObj.Cluster)
+	}
+
+	// Extract just the path component (/clusters/<id>) from the external server URL.
+	serverURL := clusterObj.Server
+	parsed, parseErr := url.Parse(serverURL)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parsing hub server URL %q: %w", serverURL, parseErr)
+	}
+
+	// Build in-cluster URL: hub service FQDN + original path.
+	inClusterServer := fmt.Sprintf("https://kedge-hub.kedge-system.svc.cluster.local:8443%s", parsed.Path)
+
+	yaml := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    insecure-skip-tls-verify: true
+    server: %s
+  name: hub-incluster
+contexts:
+- context:
+    cluster: hub-incluster
+    user: dev
+  name: hub-incluster
+current-context: hub-incluster
+users:
+- name: dev
+  user:
+    token: %s
+`, inClusterServer, token)
+
+	return []byte(yaml), nil
+}
+
 // mintKCPToken creates a short-lived service-account token in the kcp tenant
 // workspace (kedge-system/default) and returns it as a string.
 //
@@ -370,27 +433,3 @@ func waitForGraphQLReady(ctx context.Context, url string, timeout time.Duration)
 // kubectl create token via the admin kubeconfig.  The token is subsequently
 // forwarded as the Bearer token in GraphQL requests so kcp can authorise
 // resource lookups.
-func mintKCPToken(ctx context.Context, kcpKubeconfig, hubAdminKubeconfig string) (string, error) {
-	// kubectl create token needs to run against the tenant workspace.
-	// The kcp kubeconfig's server is the root workspace; pass the hub admin
-	// kubeconfig which resolves to the user workspace via kcp's context.
-	out, err := exec.CommandContext(ctx, "kubectl",
-		"--kubeconfig", hubAdminKubeconfig,
-		"create", "token", "default",
-		"-n", "kedge-system",
-		"--duration", "1h",
-	).Output()
-	if err != nil {
-		// Fallback: try directly with kcp admin kubeconfig.
-		out, err = exec.CommandContext(ctx, "kubectl",
-			"--kubeconfig", kcpKubeconfig,
-			"create", "token", "default",
-			"-n", "kedge-system",
-			"--duration", "1h",
-		).Output()
-		if err != nil {
-			return "", fmt.Errorf("kubectl create token failed: %w", err)
-		}
-	}
-	return strings.TrimSpace(string(out)), nil
-}

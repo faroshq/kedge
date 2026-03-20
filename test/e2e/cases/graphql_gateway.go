@@ -160,7 +160,15 @@ func GraphQLGatewayIntegrated() features.Feature {
 			if err := framework.WaitForHubReady(hubHealthCtx, framework.DefaultHubURL); err != nil {
 				t.Fatalf("hub not healthy after patching graphql-gateway-url: %v", err)
 			}
-			t.Logf("hub is healthy and proxying graphql gateway at %s", gwServiceURL)
+			t.Logf("hub is healthy after pod bounce")
+
+			// Verify the bounced hub pod actually has the --graphql-gateway-url flag set.
+			// This confirms the StatefulSet patch took effect before we start waiting for
+			// the GraphQL proxy to become available.
+			if err := waitForHubPodGraphQLFlag(ctx, hubClient, graphqlNamespace, gwServiceURL, t); err != nil {
+				t.Fatalf("hub pod does not have --graphql-gateway-url flag: %v", err)
+			}
+			t.Logf("confirmed: hub pod has --graphql-gateway-url=%s; proxying GraphQL gateway", gwServiceURL)
 
 			return ctx
 		}).
@@ -191,8 +199,11 @@ func GraphQLGatewayIntegrated() features.Feature {
 
 			// Wait for the hub proxy to start serving GraphQL.  The gateway pod needs a
 			// moment after helm install to become Ready and register its cluster.
+			// The listener scans the hub cluster's OpenAPI V3 schema (which includes cert-manager
+			// and other CRDs) before writing the schema file; allow up to 10 minutes for
+			// the full cycle (schema generation + file write + fsnotify + endpoint registration).
 			t.Logf("waiting for GraphQL proxy at %s", gwBaseURL)
-			if err := waitForGraphQLReadyWithClient(ctx, tlsClient, gwBaseURL, 6*time.Minute); err != nil {
+			if err := waitForGraphQLReadyWithClient(ctx, tlsClient, gwBaseURL, 10*time.Minute); err != nil {
 				t.Fatalf("graphql gateway not ready via hub proxy: %v", err)
 			}
 			t.Logf("graphql gateway reachable via hub proxy at %s", gwBaseURL)
@@ -337,8 +348,12 @@ func GraphQLGatewayIntegrated() features.Feature {
 
 // waitForGraphQLReadyWithClient polls the GraphQL endpoint using the provided
 // HTTP client until it returns a 200 OK or the timeout is reached.
+// It logs the last observed status code to aid debugging.
 func waitForGraphQLReadyWithClient(ctx context.Context, client *http.Client, url string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastStatus int
+	var lastErr error
+	logTick := time.Now()
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -352,15 +367,71 @@ func waitForGraphQLReadyWithClient(ctx context.Context, client *http.Client, url
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
-		if err == nil {
+		if err != nil {
+			lastErr = err
+			lastStatus = 0
+		} else {
+			lastStatus = resp.StatusCode
+			lastErr = nil
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}
 		}
+		// Log progress every 30 seconds to aid debugging.
+		if time.Since(logTick) >= 30*time.Second {
+			if lastErr != nil {
+				fmt.Printf("  [graphql-wait] %s still not ready (error: %v)\n", url, lastErr)
+			} else {
+				fmt.Printf("  [graphql-wait] %s still not ready (HTTP %d)\n", url, lastStatus)
+			}
+			logTick = time.Now()
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("graphql endpoint %s not ready after %v", url, timeout)
+	if lastErr != nil {
+		return fmt.Errorf("graphql endpoint %s not ready after %v (last error: %w)", url, timeout, lastErr)
+	}
+	return fmt.Errorf("graphql endpoint %s not ready after %v (last HTTP status: %d)", url, timeout, lastStatus)
+}
+
+// waitForHubPodGraphQLFlag waits until the running kedge-hub-0 pod's container args include
+// the --graphql-gateway-url flag pointing at the expected gateway URL.  This verifies that
+// the StatefulSet patch took effect and the hub will proxy /services/graphql/* to the gateway.
+func waitForHubPodGraphQLFlag(ctx context.Context, hubClient kubernetes.Interface, namespace, expectedURL string, t *testing.T) error {
+	const flagPrefix = "--graphql-gateway-url="
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		pod, err := hubClient.CoreV1().Pods(namespace).Get(ctx, "kedge-hub-0", metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		// Only check Running+Ready pods.
+		if pod.Status.Phase != corev1.PodRunning {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		for _, c := range pod.Spec.Containers {
+			if c.Name != "hub" {
+				continue
+			}
+			for _, arg := range c.Args {
+				if arg == flagPrefix+expectedURL {
+					return nil
+				}
+			}
+			// Flag absent — log the actual args for diagnostics.
+			t.Logf("hub pod args do not contain %s yet; actual args: %v", flagPrefix+expectedURL, c.Args)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("hub pod kedge-hub-0 did not have %s%s after 2 minutes", flagPrefix, expectedURL)
 }
 
 // mintKCPSAToken mints a short-lived service-account token in the kcp tenant workspace

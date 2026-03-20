@@ -9,3 +9,8 @@ sources:
   - https://github.com/faroshq/kedge
 maintainers:
   - name: Faros Authors
+dependencies:
+  - name: kubernetes-graphql-gateway
+    version: "0.0.1"
+    repository: "oci://ghcr.io/faroshq/charts"
+    condition: kubernetes-graphql-gateway.enabled

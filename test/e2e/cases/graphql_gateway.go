@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,35 +97,10 @@ func GraphQLGatewayIntegrated() features.Feature {
 				ObjectMeta: metav1.ObjectMeta{Name: graphqlNamespace},
 			}, metav1.CreateOptions{})
 
-			// Build an in-cluster kubeconfig for the graphql-gateway listener.
-			//
-			// The listener runs as a pod inside the hub cluster and needs to reach the kcp
-			// workspace server. The HubKubeconfig (written after kedge login) has a server
-			// URL of the form https://kedge.localhost:8443/clusters/<workspace-id> — this
-			// hostname is only resolvable on the CI runner host, not inside pods.
-			//
-			// Solution: replace the external host with the hub's in-cluster service FQDN
-			// (kedge-hub.kedge-system.svc.cluster.local) and authenticate with the static
-			// dev-token that the hub accepts. The hub's kcp proxy forwards the request to
-			// kcp on behalf of the caller.
-			kcpKubeconfigBytes, err := buildInClusterHubKubeconfig(clusterEnv.HubKubeconfig, clusterEnv.Token)
-			if err != nil {
-				t.Fatalf("failed to build in-cluster hub kubeconfig: %v", err)
-			}
-			secretName := graphqlReleaseName + "-kcp-kubeconfig"
-			_, err = hubClient.CoreV1().Secrets(graphqlNamespace).Create(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      secretName,
-					Namespace: graphqlNamespace,
-				},
-				Data: map[string][]byte{
-					"kubeconfig": kcpKubeconfigBytes,
-				},
-			}, metav1.CreateOptions{})
-			if err != nil {
-				t.Fatalf("failed to create kcp kubeconfig secret: %v", err)
-			}
-			t.Logf("created kcp kubeconfig secret %s/%s", graphqlNamespace, secretName)
+			// The listener uses in-cluster SA credentials via provider=kubernetes, so no
+			// external kubeconfig secret is needed.  It will discover APIs from the hub
+			// cluster's Kubernetes API server (not kcp) and register "default" as the
+			// cluster name in the schema registry.
 
 			// helm install the graphql gateway.
 			// The context timeout must exceed the helm --timeout so the helm process
@@ -141,14 +115,17 @@ func GraphQLGatewayIntegrated() features.Feature {
 				"--kubeconfig", clusterEnv.HubAdminKubeconfig,
 				"--wait",
 				"--timeout", "5m",
-				"--set", "schemaHandler=grpc",
-				// Use kubernetes provider pointing directly at the kcp tenant workspace.
-				// The HubKubeconfig context already contains the workspace-scoped server URL
-				// (/clusters/<workspace-id>) after kedge login. This avoids the auth complexity
-				// of the kcp virtual workspace provider while still querying real kedge resources.
+				// Use file schema handler instead of gRPC to avoid a startup race condition:
+				// with grpc mode, if the gateway container's Subscribe call fires before the
+				// listener container has bound port 50051, gRPC returns an immediate
+				// UNAVAILABLE error (FailFast=true default) and the gateway runs forever with
+				// an empty schema registry.  File mode uses a shared emptyDir + fsnotify
+				// which has no ordering dependency between the two containers.
+				"--set", "schemaHandler=file",
+				// Use kubernetes provider pointing directly at the hub cluster.
+				// The listener uses in-cluster SA credentials (no kubeconfig secret needed
+				// when schemaHandler=file and provider=kubernetes) to watch hub namespaces.
 				"--set", "listener.provider=kubernetes",
-				"--set", "listener.kubeconfigSecret=" + secretName,
-				"--set", "listener.kubeconfigSecretKey=kubeconfig",
 				// The anchorResource must be a valid CEL expression.
 				"--set", "listener.anchorResource=object.metadata.name == 'default'",
 				"--set", "listener.reconcilerGVR=namespaces.v1",
@@ -425,67 +402,6 @@ func mintKCPSAToken(ctx context.Context, hubAdminKubeconfig string) (string, err
 		return "", fmt.Errorf("minted token is empty")
 	}
 	return token, nil
-}
-
-// buildInClusterHubKubeconfig reads the HubKubeconfig (which has a workspace-scoped
-// server URL like https://kedge.localhost:8443/clusters/<id>), replaces the external
-// hostname with the hub's in-cluster service FQDN, and returns a kubeconfig YAML
-// suitable for use by pods running inside the hub cluster.
-//
-// Auth is via the static bearer token (dev-token in e2e) that the hub accepts.
-func buildInClusterHubKubeconfig(hubKubeconfigPath, token string) ([]byte, error) {
-	hubCfg, err := clientcmd.LoadFromFile(hubKubeconfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading hub kubeconfig: %w", err)
-	}
-
-	ctx := hubCfg.CurrentContext
-	if ctx == "" {
-		for k := range hubCfg.Contexts {
-			ctx = k
-			break
-		}
-	}
-	ctxObj := hubCfg.Contexts[ctx]
-	if ctxObj == nil {
-		return nil, fmt.Errorf("context %q not found in hub kubeconfig", ctx)
-	}
-
-	clusterObj := hubCfg.Clusters[ctxObj.Cluster]
-	if clusterObj == nil {
-		return nil, fmt.Errorf("cluster %q not found in hub kubeconfig", ctxObj.Cluster)
-	}
-
-	// Extract just the path component (/clusters/<id>) from the external server URL.
-	serverURL := clusterObj.Server
-	parsed, parseErr := url.Parse(serverURL)
-	if parseErr != nil {
-		return nil, fmt.Errorf("parsing hub server URL %q: %w", serverURL, parseErr)
-	}
-
-	// Build in-cluster URL: hub service FQDN + original path.
-	inClusterServer := fmt.Sprintf("https://kedge-hub.kedge-system.svc.cluster.local:8443%s", parsed.Path)
-
-	yaml := fmt.Sprintf(`apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    insecure-skip-tls-verify: true
-    server: %s
-  name: hub-incluster
-contexts:
-- context:
-    cluster: hub-incluster
-    user: dev
-  name: hub-incluster
-current-context: hub-incluster
-users:
-- name: dev
-  user:
-    token: %s
-`, inClusterServer, token)
-
-	return []byte(yaml), nil
 }
 
 // patchHubStatefulSetGraphQLURL patches the kedge-hub StatefulSet to add the

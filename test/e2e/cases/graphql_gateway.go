@@ -178,10 +178,13 @@ func GraphQLGatewayIntegrated() features.Feature {
 			gwBaseURL := fmt.Sprintf("http://localhost:%d/api/clusters/default", graphqlLocalPort)
 
 			// Give the port-forward process a moment to establish the tunnel before polling.
-			time.Sleep(2 * time.Second)
+			// The kcp listener performs API discovery after the pod becomes ready, which
+			// can take up to a minute in CI; sleep 5s to avoid early false-negatives.
+			time.Sleep(5 * time.Second)
 
-			// Wait for port-forward to be ready.
-			if err := waitForGraphQLReady(ctx, gwBaseURL, 90*time.Second); err != nil {
+			// Wait for port-forward to be ready.  3 minutes provides headroom for kcp
+			// schema discovery to complete on slower CI runners.
+			if err := waitForGraphQLReady(ctx, gwBaseURL, 3*time.Minute); err != nil {
 				t.Fatalf("graphql gateway not ready after port-forward: %v", err)
 			}
 			t.Logf("graphql gateway reachable at %s", gwBaseURL)

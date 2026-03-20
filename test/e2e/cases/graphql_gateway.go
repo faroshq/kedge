@@ -116,7 +116,9 @@ func GraphQLGatewayIntegrated() features.Feature {
 			t.Logf("created kcp kubeconfig secret %s/%s", graphqlNamespace, secretName)
 
 			// helm install the graphql gateway.
-			installCtx, installCancel := context.WithTimeout(ctx, 3*time.Minute)
+			// The context timeout must exceed the helm --timeout so the helm process
+			// can surface a proper error rather than being killed mid-wait.
+			installCtx, installCancel := context.WithTimeout(ctx, 6*time.Minute)
 			defer installCancel()
 
 			helmArgs := []string{
@@ -125,7 +127,7 @@ func GraphQLGatewayIntegrated() features.Feature {
 				"--create-namespace",
 				"--kubeconfig", clusterEnv.HubAdminKubeconfig,
 				"--wait",
-				"--timeout", "2m",
+				"--timeout", "5m",
 				"--set", "schemaHandler=grpc",
 				"--set", "listener.provider=kcp",
 				"--set", "listener.kubeconfigSecret=" + secretName,

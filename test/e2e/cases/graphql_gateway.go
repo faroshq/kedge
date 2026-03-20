@@ -177,8 +177,11 @@ func GraphQLGatewayIntegrated() features.Feature {
 			// single-cluster setup pointing at the tenant kcp workspace).
 			gwBaseURL := fmt.Sprintf("http://localhost:%d/api/clusters/default", graphqlLocalPort)
 
+			// Give the port-forward process a moment to establish the tunnel before polling.
+			time.Sleep(2 * time.Second)
+
 			// Wait for port-forward to be ready.
-			if err := waitForGraphQLReady(ctx, gwBaseURL, 30*time.Second); err != nil {
+			if err := waitForGraphQLReady(ctx, gwBaseURL, 90*time.Second); err != nil {
 				t.Fatalf("graphql gateway not ready after port-forward: %v", err)
 			}
 			t.Logf("graphql gateway reachable at %s", gwBaseURL)

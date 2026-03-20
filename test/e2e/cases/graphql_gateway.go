@@ -393,8 +393,14 @@ func mintKCPSAToken(ctx context.Context, hubAdminKubeconfig, hubKubeconfig strin
 }
 
 // patchHubStatefulSetGraphQLURL patches the kedge-hub StatefulSet to add
-// --graphql-gateway-url if not already present, then deletes the pod so
-// the StatefulSet controller creates a new one with the updated args.
+// --graphql-gateway-url if not already present, then deletes the pod and waits
+// for it to fully terminate so the StatefulSet controller creates a new one
+// with the updated args before the caller calls WaitForHubReady.
+//
+// Without the termination wait there is a race: the old pod (without
+// --graphql-gateway-url) can still answer /healthz during graceful shutdown,
+// causing WaitForHubReady to return immediately. The assess phase then hits the
+// old pod which has no /services/graphql/* route, and the 3-minute wait expires.
 func patchHubStatefulSetGraphQLURL(ctx context.Context, hubClient kubernetes.Interface, namespace, gwURL string) error {
 	ss, err := hubClient.AppsV1().StatefulSets(namespace).Get(ctx, "kedge-hub", metav1.GetOptions{})
 	if err != nil {
@@ -421,7 +427,24 @@ func patchHubStatefulSetGraphQLURL(ctx context.Context, hubClient kubernetes.Int
 
 	// Delete the pod so the StatefulSet controller recreates it with new args.
 	_ = hubClient.CoreV1().Pods(namespace).Delete(ctx, "kedge-hub-0", metav1.DeleteOptions{})
-	return nil
+
+	// Wait for the old pod to fully terminate before returning.
+	// This prevents WaitForHubReady from seeing a 200 from the old pod (which
+	// lacks --graphql-gateway-url) and returning prematurely.
+	waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer waitCancel()
+	for {
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("timed out waiting for kedge-hub-0 to terminate: %w", waitCtx.Err())
+		case <-time.After(2 * time.Second):
+		}
+		_, err := hubClient.CoreV1().Pods(namespace).Get(waitCtx, "kedge-hub-0", metav1.GetOptions{})
+		if err != nil {
+			// Pod is gone — StatefulSet controller will now recreate it with the new args.
+			return nil
+		}
+	}
 }
 
 // clusterIDFromHubKubeconfig extracts the kcp workspace cluster ID from the

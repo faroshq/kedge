@@ -298,6 +298,9 @@ func GraphQLGatewayIntegrated() features.Feature {
 					t.Logf("edge %q found in GraphQL response", testEdgeName)
 					break
 				}
+				if edgeResp.StatusCode != http.StatusOK || bytes.Contains(edgeBody, []byte("errors")) {
+					t.Logf("edge poll: status=%d body=%s", edgeResp.StatusCode, edgeBody)
+				}
 				time.Sleep(time.Second)
 			}
 			if !found {
@@ -634,7 +637,11 @@ func clusterIDFromHubKubeconfig(hubKubeconfigPath string) (string, error) {
 }
 
 // ensureKCPDefaultNamespace creates a "default" namespace in the kcp tenant
-// workspace if it does not already exist. The GraphQL gateway listener uses
+// workspace if it does not already exist, and grants the default SA in
+// kedge-system cluster-admin access in the kcp workspace so that the minted
+// SA token used by the GraphQL edge query can list Edge resources.
+//
+// The GraphQL gateway listener uses
 // anchorResource=object.metadata.name == 'default' (namespaces.v1) to detect
 // which clusters to expose. kcp workspaces do not auto-create a "default"
 // namespace (unlike plain Kubernetes), so without this the gateway never emits
@@ -665,6 +672,28 @@ func ensureKCPDefaultNamespace(ctx context.Context, hubAdminKubeconfig, hubKubec
 	if err != nil {
 		return fmt.Errorf("exec creating default namespace in kcp workspace %s: %w (output: %s)", clusterID, err, out)
 	}
+
+	// Grant the default SA in kedge-system cluster-admin access in the kcp workspace.
+	// The GraphQL edge-query poll uses a token minted for this SA; without RBAC it
+	// cannot list Edge resources and the query silently returns empty results.
+	createRBACCmd := fmt.Sprintf(
+		`KUBECONFIG=/kcp-kubeconfig/admin.kubeconfig `+
+			`kubectl create clusterrolebinding kedge-graphql-test-admin `+
+			`--clusterrole=cluster-admin `+
+			`--serviceaccount=kedge-system:default `+
+			`--server https://kcp:6443/clusters/%s `+
+			`--insecure-skip-tls-verify 2>&1 || true`,
+		clusterID,
+	)
+	out, err = exec.CommandContext(ctx, "kubectl",
+		"--kubeconfig", hubAdminKubeconfig,
+		"exec", "-n", "kedge-system", "kedge-hub-0", "--",
+		"sh", "-c", createRBACCmd,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("exec creating RBAC for default SA in kcp workspace %s: %w (output: %s)", clusterID, err, out)
+	}
+
 	return nil
 }
 

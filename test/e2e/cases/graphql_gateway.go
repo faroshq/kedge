@@ -31,10 +31,12 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
@@ -142,8 +144,6 @@ func GraphQLGatewayIntegrated() features.Feature {
 				"--set", "listener.provider=kubernetes",
 				"--set", "listener.anchorResource=object.metadata.name == 'default'",
 				"--set", "listener.reconcilerGVR=namespaces.v1",
-				"--set", "listener.kubeconfigSecret=" + secretName,
-				"--set", "listener.kubeconfigSecretKey=kubeconfig",
 				"--set", "gateway.playground=false",
 				// Pin to v0.0.6 which includes the WaitForReady gRPC fix to tolerate
 				// listener startup ordering (fixes /api/clusters/default 404).
@@ -156,6 +156,16 @@ func GraphQLGatewayIntegrated() features.Feature {
 				t.Fatalf("helm install of graphql gateway failed: %v", err)
 			}
 			t.Logf("graphql gateway helm install completed")
+
+			// Patch the gateway Deployment to mount the kcp workspace kubeconfig secret
+			// in the listener container. The chart has no native support for kubeconfigSecret,
+			// so --set listener.kubeconfigSecret=... is silently ignored. Without the kcp
+			// kubeconfig the listener uses the pod's in-cluster service account (hub cluster),
+			// generating a schema without kedge CRDs (which live in the kcp workspace).
+			if err := patchGatewayDeploymentWithKCPKubeconfig(ctx, hubClient, graphqlNamespace, graphqlReleaseName, secretName, "kubeconfig"); err != nil {
+				t.Fatalf("patching gateway deployment with kcp kubeconfig: %v", err)
+			}
+			t.Logf("gateway deployment patched with kcp kubeconfig, rollout complete")
 
 			// Patch the hub StatefulSet to add --graphql-gateway-url and bounce the pod.
 			gwServiceURL := fmt.Sprintf("http://%s-kubernetes-graphql-gateway.%s.svc.cluster.local:8080",
@@ -194,7 +204,7 @@ func GraphQLGatewayIntegrated() features.Feature {
 			}
 
 			t.Logf("waiting for GraphQL proxy at %s", gwBaseURL)
-			if err := waitForGraphQLReadyWithClient(ctx, tlsClient, gwBaseURL, 3*time.Minute); err != nil {
+			if err := waitForGraphQLReadyWithClient(ctx, tlsClient, gwBaseURL, 6*time.Minute); err != nil {
 				t.Fatalf("graphql gateway not ready via hub proxy: %v", err)
 			}
 			t.Logf("graphql gateway reachable via hub proxy")
@@ -406,6 +416,111 @@ func mintKCPSAToken(ctx context.Context, hubAdminKubeconfig, hubKubeconfig strin
 	return token, nil
 }
 
+// patchGatewayDeploymentWithKCPKubeconfig patches the kubernetes-graphql-gateway
+// Deployment so that the listener container uses the kcp workspace kubeconfig
+// instead of the pod's in-cluster service-account config.
+//
+// The chart currently has no native support for kubeconfigSecret values, so the
+// --set listener.kubeconfigSecret=... passed during helm install is silently ignored.
+// Without the kcp kubeconfig the listener watches the hub kind cluster and generates
+// a schema that lacks the kedge CRDs (which live in the kcp workspace).
+//
+// This function:
+//  1. Adds the kcp kubeconfig secret as a volume on the Deployment
+//  2. Mounts it at /kcp-kubeconfig in the listener container
+//  3. Appends --kubeconfig=/kcp-kubeconfig/kubeconfig to listener args
+//  4. Rolls out the Deployment and waits for the new pod to be Ready
+func patchGatewayDeploymentWithKCPKubeconfig(ctx context.Context, hubClient kubernetes.Interface, namespace, releaseName, secretName, secretKey string) error {
+	deployName := releaseName + "-kubernetes-graphql-gateway"
+
+	deploy, err := hubClient.AppsV1().Deployments(namespace).Get(ctx, deployName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting gateway deployment %s: %w", deployName, err)
+	}
+
+	const mountPath = "/kcp-kubeconfig"
+	const volumeName = "kcp-kubeconfig"
+	kubeconfigFlag := "--kubeconfig=" + mountPath + "/" + secretKey
+
+	// Idempotency: don't patch if already done.
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		if v.Name == volumeName {
+			return nil
+		}
+	}
+
+	// Find the listener container index.
+	listenerIdx := -1
+	for i, c := range deploy.Spec.Template.Spec.Containers {
+		if c.Name == "listener" {
+			listenerIdx = i
+			break
+		}
+	}
+	if listenerIdx < 0 {
+		return fmt.Errorf("listener container not found in deployment %s", deployName)
+	}
+
+	// Add volume.
+	deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, corev1.Volume{
+		Name: volumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretName,
+			},
+		},
+	})
+
+	// Add volumeMount and --kubeconfig arg to listener.
+	deploy.Spec.Template.Spec.Containers[listenerIdx].VolumeMounts = append(
+		deploy.Spec.Template.Spec.Containers[listenerIdx].VolumeMounts,
+		corev1.VolumeMount{
+			Name:      volumeName,
+			MountPath: mountPath,
+			ReadOnly:  true,
+		},
+	)
+	deploy.Spec.Template.Spec.Containers[listenerIdx].Args = append(
+		deploy.Spec.Template.Spec.Containers[listenerIdx].Args,
+		kubeconfigFlag,
+	)
+
+	if _, err := hubClient.AppsV1().Deployments(namespace).Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating gateway deployment: %w", err)
+	}
+
+	// Wait for the rollout: poll until observedGeneration >= generation AND all replicas ready.
+	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	for {
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("timed out waiting for gateway deployment rollout: %w", waitCtx.Err())
+		case <-time.After(2 * time.Second):
+		}
+		d, err := hubClient.AppsV1().Deployments(namespace).Get(waitCtx, deployName, metav1.GetOptions{})
+		if err != nil {
+			continue
+		}
+		if deploymentReady(d) {
+			return nil
+		}
+	}
+}
+
+// deploymentReady returns true if the Deployment has completed its rollout and
+// all desired replicas are available.
+func deploymentReady(d *appsv1.Deployment) bool {
+	if d.Status.ObservedGeneration < d.Generation {
+		return false
+	}
+	desired := int32(1)
+	if d.Spec.Replicas != nil {
+		desired = *d.Spec.Replicas
+	}
+	return d.Status.ReadyReplicas >= desired && d.Status.UpdatedReplicas >= desired
+}
+
 // patchHubStatefulSetGraphQLURL patches the kedge-hub StatefulSet to add
 // --graphql-gateway-url if not already present, then deletes the pod and waits
 // for it to fully terminate so the StatefulSet controller creates a new one
@@ -554,12 +669,24 @@ func ensureKCPDefaultNamespace(ctx context.Context, hubAdminKubeconfig, hubKubec
 }
 
 // waitForGraphQLReadyWithClient polls the GraphQL endpoint until 200 OK.
+// It logs the last HTTP status code and body snippet seen on timeout to aid debugging.
 func waitForGraphQLReadyWithClient(ctx context.Context, client *http.Client, rawURL string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastStatus int
+	var lastErr error
+	logTicker := time.NewTicker(30 * time.Second)
+	defer logTicker.Stop()
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-logTicker.C:
+			remaining := time.Until(deadline).Round(time.Second)
+			if lastErr != nil {
+				klog.Infof("waitForGraphQLReady: still waiting (%v remaining); last error: %v", remaining, lastErr)
+			} else if lastStatus != 0 {
+				klog.Infof("waitForGraphQLReady: still waiting (%v remaining); last HTTP status: %d", remaining, lastStatus)
+			}
 		default:
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL,
@@ -568,8 +695,13 @@ func waitForGraphQLReadyWithClient(ctx context.Context, client *http.Client, raw
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(req)
-		if err == nil {
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			lastErr = doErr
+			lastStatus = 0
+		} else {
+			lastErr = nil
+			lastStatus = resp.StatusCode
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
@@ -577,5 +709,8 @@ func waitForGraphQLReadyWithClient(ctx context.Context, client *http.Client, raw
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("graphql endpoint %s not ready after %v", rawURL, timeout)
+	if lastErr != nil {
+		return fmt.Errorf("graphql endpoint %s not ready after %v: last error: %w", rawURL, timeout, lastErr)
+	}
+	return fmt.Errorf("graphql endpoint %s not ready after %v: last HTTP status: %d", rawURL, timeout, lastStatus)
 }

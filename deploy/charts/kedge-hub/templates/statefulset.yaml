@@ -66,6 +66,15 @@ spec:
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}
+            {{- if and .Values.kcp.embedded.enabled (index .Values "kubernetes-graphql-gateway" "enabled") }}
+            # Auto-export kcp admin kubeconfig as a Secret so the graphql gateway can
+            # discover it without manual configuration.
+            - --kcp-admin-kubeconfig-secret={{ include "kedge-hub.graphqlKubeconfigSecretName" . }}
+            - --namespace={{ .Release.Namespace }}
+            {{- end }}
+            {{- if index .Values "kubernetes-graphql-gateway" "enabled" }}
+            - "--graphql-gateway-url=http://{{ .Release.Name }}-kubernetes-graphql-gateway.{{ .Release.Namespace }}.svc.cluster.local:8080"
+            {{- end }}
             - --data-dir=/data/hub
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}

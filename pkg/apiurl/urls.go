@@ -30,6 +30,7 @@ const (
 	PathPrefixAgentProxy = "/services/agent-proxy"
 	PathPrefixEdgesProxy = "/services/edges-proxy"
 	PathPrefixMCP        = "/services/mcp"
+	PathPrefixGraphQL    = "/services/graphql"
 	PathAuthCallback     = "/auth/callback"
 	PathAuthTokenLogin   = "/auth/token-login"
 	PathHealthz          = "/healthz"

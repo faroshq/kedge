@@ -619,19 +619,24 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 		if hubKubeconfig == "" {
 			hubKubeconfig = filepath.Join(workDir, hubCluster+".kubeconfig")
 		}
+		hubAdminKubeconfig := os.Getenv("KEDGE_HUB_ADMIN_KUBECONFIG")
+		if hubAdminKubeconfig == "" {
+			hubAdminKubeconfig = filepath.Join(workDir, hubCluster+"-admin.kubeconfig")
+		}
 		kcpKubeconfig := filepath.Join(workDir, DefaultKCPExternalKubeconfigFile)
 
 		agents := probeAgentClusters(workDir, agentCluster)
 		clusterEnv := &ClusterEnv{
-			HubClusterName:   hubCluster,
-			HubKubeconfig:    hubKubeconfig,
-			HubURL:           DefaultHubURL,
-			Token:            DevToken,
-			WorkDir:          workDir,
-			KCPKubeconfig:    kcpKubeconfig,
-			AgentClusters:    agents,
-			AgentClusterName: agents[0].Name,
-			AgentKubeconfig:  agents[0].Kubeconfig,
+			HubClusterName:     hubCluster,
+			HubKubeconfig:      hubKubeconfig,
+			HubAdminKubeconfig: hubAdminKubeconfig,
+			HubURL:             DefaultHubURL,
+			Token:              DevToken,
+			WorkDir:            workDir,
+			KCPKubeconfig:      kcpKubeconfig,
+			AgentClusters:      agents,
+			AgentClusterName:   agents[0].Name,
+			AgentKubeconfig:    agents[0].Kubeconfig,
 		}
 
 		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)

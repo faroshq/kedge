@@ -102,3 +102,12 @@ KCP kubeconfig Secret name (for external kcp mode).
 {{- printf "%s-kcp-kubeconfig" (include "kedge-hub.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Name of the Secret auto-created by the hub containing the embedded kcp admin kubeconfig.
+The hub binary populates this Secret at startup when --kcp-admin-kubeconfig-secret is set.
+The graphql gateway subchart reads it via tpl so it resolves to the correct release-scoped name.
+*/}}
+{{- define "kedge-hub.graphqlKubeconfigSecretName" -}}
+{{- printf "%s-kcp-admin-kubeconfig" (include "kedge-hub.fullname" .) -}}
+{{- end }}

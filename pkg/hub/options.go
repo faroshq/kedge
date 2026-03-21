@@ -39,6 +39,23 @@ type Options struct {
 	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")
 	KCPTLSCertFile      string // TLS certificate file for kcp API server
 	KCPTLSKeyFile       string // TLS key file for kcp API server
+
+	// KCPAdminKubeconfigSecretName is the name of the Kubernetes Secret to create/update
+	// with the kcp admin kubeconfig bytes. When set and EmbeddedKCP=true, the hub creates
+	// this secret in Namespace after embedded kcp starts. Used by the graphql gateway
+	// to discover the kcp admin kubeconfig automatically without manual configuration.
+	// Only used when EmbeddedKCP=true.
+	KCPAdminKubeconfigSecretName string
+	// Namespace is the Kubernetes namespace the hub pod runs in.
+	// Used when creating the KCPAdminKubeconfigSecretName secret.
+	// Defaults to "kedge-system".
+	Namespace string
+
+	// GraphQLGatewayURL is the URL of the kubernetes-graphql-gateway service.
+	// When set, the hub proxies /services/graphql/* to this URL.
+	// Example: http://kedge-graphql-gateway-kubernetes-graphql-gateway.kedge-system.svc.cluster.local:8080
+	// +optional
+	GraphQLGatewayURL string
 }
 
 // NewOptions returns default Options.
@@ -51,5 +68,6 @@ func NewOptions() *Options {
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",
 		KCPBatteriesInclude: "admin,user",
+		Namespace:           "kedge-system",
 	}
 }

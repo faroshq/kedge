@@ -125,3 +125,36 @@ podSecurityContext:
 securityContext:
   runAsNonRoot: true
   runAsUser: 65534
+
+# -- GraphQL Gateway (optional): deploy kubernetes-graphql-gateway alongside the hub
+# for a GraphQL read layer over kedge resources.
+# The listener connects to the embedded kcp using the kcp admin kubeconfig secret.
+kubernetes-graphql-gateway:
+  enabled: false
+  schemaHandler: grpc
+  listener:
+    # Use kcp multicluster provider to discover schemas per kcp workspace
+    provider: kcp
+    anchorResource: ""
+    reconcilerGVR: ""
+    grpcListenAddr: ":50051"
+    enableClusterAccessController: false
+    # Secret containing the kcp admin kubeconfig (key: admin.kubeconfig).
+    # For external kcp: set this to the name of your kcp kubeconfig secret.
+    # For embedded kcp (kcp.embedded.enabled=true): leave this as-is — the hub
+    # auto-creates the secret at startup and the subchart evaluates this template
+    # string using tpl to resolve the release-scoped name automatically.
+    # Value is a Go template string evaluated by the subchart at render time.
+    kubeconfigSecret: '{{ printf "%s-kcp-admin-kubeconfig" .Release.Name }}'
+    kubeconfigSecretKey: "admin.kubeconfig"
+    # kcp-specific: watch the kedge.faros.sh APIExport endpoint slice
+    extraArgs:
+      - "--apiexport-endpoint-slice-name=kedge.faros.sh"
+  gateway:
+    port: 8080
+    playground: false
+    urlSuffix: /graphql
+    grpcListenerAddress: "localhost:50051"
+  service:
+    type: ClusterIP
+    port: 8080

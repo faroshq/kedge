@@ -62,7 +62,6 @@ func NewOptions() *Options {
 		DataDir:             "/tmp/kedge-data",
 		ListenAddr:          ":9443",
 		HubExternalURL:      "https://localhost:9443",
-		GraphQLAddr:         "",
 		EmbeddedKCP:         false,
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",

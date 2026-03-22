@@ -71,19 +71,19 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: https
-              containerPort: 8443
+              containerPort: 9443
               protocol: TCP
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 8443
+              port: 9443
               scheme: HTTPS
             initialDelaySeconds: 30
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8443
+              port: 9443
               scheme: HTTPS
             initialDelaySeconds: 20
             periodSeconds: 5

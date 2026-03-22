@@ -49,13 +49,16 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-kedge build-hub
+build: build-kedge build-hub build-graphql
 
 build-kedge:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
 
 build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
+
+build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
+	go build $(GOFLAGS) -o $(BINDIR)/kedge-graphql ./cmd/graphql/
 
 # build-agent is an alias for build-kedge: the agent container image now ships
 # the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
@@ -144,10 +147,10 @@ $(KCP):
 	@echo "kcp binary: $(KCP)"
 
 dev-login: build-kedge
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:9443 --insecure-skip-tls-verify
 
 dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:8443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:9443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
 DEV_EDGE_NAME ?= dev-edge-1
 # TYPE selects the Edge type for dev-edge-create and dev-run-edge.
@@ -161,10 +164,10 @@ dev-run-edge: build-kedge ## Run the edge agent: TYPE=kubernetes (default) or TY
 	@test -f .env.edge || (echo "Run 'make dev-edge-create [TYPE=$(TYPE)]' first"; exit 1)
 ifeq ($(TYPE),server)
 	$(BINDIR)/kedge agent run \
-		--hub-url=https://localhost:8443 \
+		--hub-url=https://localhost:9443 \
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
-		--tunnel-url=https://localhost:8443 \
+		--tunnel-url=https://localhost:9443 \
 		--edge-name=$(DEV_EDGE_NAME) \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=server \
@@ -174,10 +177,10 @@ ifeq ($(TYPE),server)
 else
 	hack/scripts/ensure-kind-cluster.sh
 	$(BINDIR)/kedge agent run \
-		--hub-url=https://localhost:8443 \
+		--hub-url=https://localhost:9443 \
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
-		--tunnel-url=https://localhost:8443 \
+		--tunnel-url=https://localhost:9443 \
 		--edge-name=$(DEV_EDGE_NAME) \
 		--kubeconfig=.kubeconfig-kedge-agent \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
@@ -239,6 +242,20 @@ dev-run-ssh-server:
   --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
 
+GRAPHQL_GRPC_ADDR ?= localhost:50051
+GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
+GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:kedge:providers
+
+dev-run-graphql: build-graphql ## Run GraphQL (listener + gateway, kcp mode, gRPC transport, playground at :8080)
+	$(BINDIR)/kedge-graphql run \
+		--kubeconfig=$(KCP_DATA_DIR)/admin.kubeconfig \
+		--grpc-addr=$(GRAPHQL_GRPC_ADDR) \
+		--apiexport-endpoint-slice-name=$(GRAPHQL_APIEXPORT_SLICE) \
+		--apiexport-endpoint-slice-logicalcluster=$(GRAPHQL_APIEXPORT_LOGICAL_CLUSTER) \
+		--workspace-schema-kubeconfig-override=$(KCP_DATA_DIR)/admin.kubeconfig \
+		--enable-playground \
+		--gateway-port=9090
+
 # --- Hub configuration options ---
 # These can be combined to create different run configurations.
 
@@ -248,7 +265,7 @@ STATIC_AUTH_TOKEN ?= dev-token
 HUB_FLAGS_BASE := \
 	--serving-cert-file=certs/apiserver.crt \
 	--serving-key-file=certs/apiserver.key \
-	--hub-external-url=https://localhost:8443 \
+	--hub-external-url=https://localhost:9443 \
 	--dev-mode -v 4
 
 # Auth: OIDC via Dex

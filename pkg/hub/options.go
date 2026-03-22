@@ -45,8 +45,8 @@ type Options struct {
 func NewOptions() *Options {
 	return &Options{
 		DataDir:             "/tmp/kedge-data",
-		ListenAddr:          ":8443",
-		HubExternalURL:      "https://localhost:8443",
+		ListenAddr:          ":9443",
+		HubExternalURL:      "https://localhost:9443",
 		EmbeddedKCP:         false,
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",

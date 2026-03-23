@@ -291,7 +291,7 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 			req.Header.Set("Impersonate-User", user.Spec.RBACIdentity)
 			req.Header.Set("Impersonate-Group", "system:authenticated")
 		},
-		Transport: p.transport,
+		Transport: p.passthroughTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error (static token)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")

@@ -4,11 +4,11 @@ import AppHeader from './AppHeader.vue'
 </script>
 
 <template>
-  <div class="flex h-screen">
+  <div class="flex h-screen bg-surface">
     <AppSidebar />
     <div class="flex flex-1 flex-col overflow-hidden">
       <AppHeader />
-      <main class="flex-1 overflow-y-auto bg-gray-50 p-6">
+      <main class="flex-1 overflow-y-auto p-6">
         <slot />
       </main>
     </div>

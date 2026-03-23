@@ -31,34 +31,6 @@ const routes = [
     props: true,
   },
   {
-    path: '/workloads',
-    name: 'workloads',
-    component: () => import('@/pages/WorkloadsPage.vue'),
-  },
-  {
-    path: '/workloads/:name',
-    name: 'workload-detail',
-    component: () => import('@/pages/WorkloadDetailPage.vue'),
-    props: true,
-  },
-  {
-    path: '/mcp',
-    name: 'mcp',
-    component: () => import('@/pages/MCPPage.vue'),
-  },
-  {
-    path: '/mcp/:name',
-    name: 'mcp-detail',
-    component: () => import('@/pages/MCPDetailPage.vue'),
-    props: true,
-  },
-  {
-    path: '/edges/:name/terminal',
-    name: 'edge-terminal',
-    component: () => import('@/pages/TerminalPage.vue'),
-    props: true,
-  },
-  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/pages/NotFoundPage.vue'),

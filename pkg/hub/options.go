@@ -31,9 +31,20 @@ type Options struct {
 	DevMode               bool
 	StaticAuthTokens      []string
 
-	// GraphQLAddr is the address of the GraphQL gateway to proxy /graphql/ requests to.
-	// If empty, the graphql proxy is disabled.
+	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
+	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
 	GraphQLAddr string
+
+	// EmbeddedGraphQL runs the GraphQL listener+gateway in-process alongside the hub.
+	// When true, GraphQLAddr is ignored.
+	EmbeddedGraphQL bool
+
+	// GraphQL listener options (used when EmbeddedGraphQL is true).
+	GraphQLAPIExportSliceName           string // APIExportEndpointSlice name (default: "core.faros.sh")
+	GraphQLAPIExportLogicalCluster      string // logical cluster of that endpointslice (default: "root:kedge:providers")
+	GraphQLGRPCAddr                     string // in-process gRPC address (default: "localhost:50051")
+	GraphQLPlayground                   bool   // enable playground UI
+	GraphQLPort                         int    // port for the embedded GraphQL HTTP server; 0 = serve via hub mux only
 
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server
@@ -51,10 +62,15 @@ func NewOptions() *Options {
 		DataDir:             "/tmp/kedge-data",
 		ListenAddr:          ":9443",
 		HubExternalURL:      "https://localhost:9443",
-		GraphQLAddr:         "localhost:9090",
+		GraphQLAddr:         "",
 		EmbeddedKCP:         false,
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",
 		KCPBatteriesInclude: "admin,user",
+
+		GraphQLAPIExportSliceName:      "core.faros.sh",
+		GraphQLAPIExportLogicalCluster: "root:kedge:providers",
+		GraphQLGRPCAddr:                "localhost:50051",
+		GraphQLPlayground:              true,
 	}
 }

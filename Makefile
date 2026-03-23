@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -288,6 +288,18 @@ HUB_FLAGS_KCP_EMBEDDED := \
 	--kcp-root-dir=.kcp \
 	--kcp-secure-port=6443
 
+# GraphQL: Embedded (runs listener+gateway in-process alongside hub)
+GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
+GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:kedge:providers
+GRAPHQL_GRPC_ADDR ?= localhost:50051
+
+HUB_FLAGS_GRAPHQL_EMBEDDED := \
+	--embedded-graphql \
+	--graphql-apiexport-slice-name=$(GRAPHQL_APIEXPORT_SLICE) \
+	--graphql-apiexport-logical-cluster=$(GRAPHQL_APIEXPORT_LOGICAL_CLUSTER) \
+	--graphql-grpc-addr=$(GRAPHQL_GRPC_ADDR) \
+	--graphql-playground
+
 # --- Run targets ---
 # Naming convention: run-hub-[auth]-[kcp]
 # auth: oidc | static
@@ -310,13 +322,21 @@ run-hub-embedded: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
 	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
 
-## Embedded KCP + static token auth (standalone - no external deps)
+## Embedded KCP + static token auth + embedded GraphQL (standalone - no external deps)
 run-hub-embedded-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED)
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
-## Alias for the simplest standalone mode
-run-hub-standalone: run-hub-embedded-static
+## Embedded KCP + static token + embedded GraphQL (fully standalone)
+run-hub-standalone: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
+
+## Embedded KCP + OIDC + embedded GraphQL
+run-hub-embedded-graphql: build-hub certs
+	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
 dev-status: ## Show status of dev services (dex, kcp)
 	@source $(SERVICE_HOOKS) && list_services
@@ -333,13 +353,15 @@ help-dev: ## Show development environment options
 	@echo "=== Kedge Hub Development Modes ==="
 	@echo ""
 	@echo "STANDALONE (no external dependencies):"
-	@echo "  make run-hub-standalone     - Embedded kcp + static token"
-	@echo "                                Just run this and use: make dev-login-static"
+	@echo "  make run-hub-standalone         - Embedded kcp + static token + embedded GraphQL"
+	@echo "                                    Just run this and use: make dev-login-static"
+	@echo "  make run-hub-embedded-static    - Embedded kcp + static token (no GraphQL)"
 	@echo ""
 	@echo "WITH DEX (OIDC authentication):"
 	@echo "  Terminal 1: make run-dex"
-	@echo "  Terminal 2: make run-hub-embedded    - Embedded kcp + OIDC"
-	@echo "              make dev-login           - Login via browser"
+	@echo "  Terminal 2: make run-hub-embedded-graphql - Embedded kcp + OIDC + embedded GraphQL"
+	@echo "              make run-hub-embedded          - Embedded kcp + OIDC (no GraphQL)"
+	@echo "              make dev-login                 - Login via browser"
 	@echo ""
 	@echo "WITH EXTERNAL KCP:"
 	@echo "  Terminal 1: make dev-run-kcp"

@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
@@ -252,8 +254,18 @@ func (s *Server) Run(ctx context.Context) error {
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
-	// GraphQL proxy: forward /graphql/* to the GraphQL gateway.
-	if s.opts.GraphQLAddr != "" {
+	// GraphQL: either embedded (in-process) or external reverse proxy.
+	// graphqlGroup is non-nil when embedded mode is active; we wait on it after
+	// the HTTP server exits so the listener/gateway goroutines are cleanly joined.
+	var graphqlGroup *errgroup.Group
+	if s.opts.EmbeddedGraphQL && kcpConfig != nil {
+		g, gctx := errgroup.WithContext(ctx)
+		graphqlGroup = g
+		if err := startEmbeddedGraphQL(gctx, g, s.opts, kcpConfig, router); err != nil {
+			return fmt.Errorf("starting embedded GraphQL: %w", err)
+		}
+		logger.Info("Embedded GraphQL enabled")
+	} else if s.opts.GraphQLAddr != "" {
 		graphqlTarget := &url.URL{Scheme: "http", Host: s.opts.GraphQLAddr}
 		graphqlProxy := &httputil.ReverseProxy{
 			Director: func(req *http.Request) {
@@ -431,6 +443,13 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		// Wait for HTTP server to finish shutting down.
 		<-httpErrCh
+	}
+
+	// If embedded GraphQL was started, wait for its goroutines to finish.
+	if graphqlGroup != nil {
+		if err := graphqlGroup.Wait(); err != nil && err != context.Canceled {
+			logger.Error(err, "Embedded GraphQL exited with error")
+		}
 	}
 
 	return nil

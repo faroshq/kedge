@@ -4,7 +4,7 @@ import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
-import { Server, Wifi, WifiOff, Clock, Hash, FileCode, ChevronDown, ChevronUp, ArrowLeft } from 'lucide-vue-next'
+import { Server, Wifi, WifiOff, Clock, Hash, FileCode, ChevronDown, ChevronUp, ArrowLeft, TerminalSquare } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 
@@ -22,6 +22,11 @@ const { data: yamlData, loading: yamlLoading } = useGraphQLQuery<GetEdgeYamlResu
 
 const edge = computed(() => data.value?.kedge_faros_sh?.v1alpha1?.Edge)
 const yaml = computed(() => yamlData.value?.kedge_faros_sh?.v1alpha1?.EdgeYaml ?? '')
+
+const canSSH = computed(() => {
+  if (!edge.value) return false
+  return edge.value.spec?.type === 'server' && edge.value.status?.connected
+})
 
 const details = computed(() => {
   if (!edge.value) return []
@@ -137,8 +142,18 @@ const details = computed(() => {
         </div>
       </div>
 
-      <!-- YAML section -->
-      <div class="stagger-item mt-5" style="animation-delay: 200ms">
+      <!-- Actions -->
+      <div class="stagger-item mt-5 flex items-center gap-3" style="animation-delay: 200ms">
+        <!-- SSH Terminal button -->
+        <router-link
+          v-if="canSSH"
+          :to="`/edges/${props.name}/terminal`"
+          class="glow-ring flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-4 py-2 text-[12px] font-medium text-accent backdrop-blur transition-all duration-150 hover:bg-accent/20 hover:shadow-lg hover:shadow-accent/10"
+        >
+          <TerminalSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+          SSH Terminal
+        </router-link>
+
         <button
           class="glow-ring flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-4 py-2 text-[12px] font-medium text-text-secondary backdrop-blur transition-all duration-150 hover:border-accent/30 hover:text-text-primary"
           @click="showYaml = !showYaml"
@@ -147,15 +162,15 @@ const details = computed(() => {
           {{ showYaml ? 'Hide' : 'Show' }} YAML
           <component :is="showYaml ? ChevronUp : ChevronDown" class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
         </button>
+      </div>
 
-        <div v-if="showYaml" class="mt-3">
-          <div v-if="yamlLoading" class="flex items-center gap-2 text-[12px] text-text-muted">
-            <div class="shimmer h-4 w-4 rounded" />
-            Loading...
-          </div>
-          <div v-else class="border-beam rounded-2xl">
-            <pre class="max-h-[500px] overflow-auto rounded-2xl border border-border-subtle bg-surface-overlay/60 p-5 font-mono text-[11px] leading-relaxed text-text-secondary backdrop-blur">{{ yaml }}</pre>
-          </div>
+      <div v-if="showYaml" class="stagger-item mt-3" style="animation-delay: 240ms">
+        <div v-if="yamlLoading" class="flex items-center gap-2 text-[12px] text-text-muted">
+          <div class="shimmer h-4 w-4 rounded" />
+          Loading...
+        </div>
+        <div v-else class="border-beam rounded-2xl">
+          <pre class="max-h-[500px] overflow-auto rounded-2xl border border-border-subtle bg-surface-overlay/60 p-5 font-mono text-[11px] leading-relaxed text-text-secondary backdrop-blur">{{ yaml }}</pre>
         </div>
       </div>
     </template>

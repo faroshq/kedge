@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { Hexagon, LayoutDashboard, Server, LogOut, Zap } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, Server, Bot, LogOut, Zap } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -24,6 +24,7 @@ const timeStr = computed(() =>
 const navItems = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
   { label: 'Edges', to: '/edges', icon: Server },
+  { label: 'MCP', to: '/mcp', icon: Bot },
 ]
 
 function isActive(path: string) {

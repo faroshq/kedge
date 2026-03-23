@@ -30,6 +30,20 @@ export default defineConfig(({ command }) => ({
         changeOrigin: true,
         secure: false,
       },
+      '/services': {
+        target: 'https://localhost:9443',
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+        headers: {
+          Origin: 'https://localhost:9443',
+        },
+      },
+      '/clusters': {
+        target: 'https://localhost:9443',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
   build: {

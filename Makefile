@@ -57,6 +57,16 @@ build-kedge:
 build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
+build-hub-portal: build-portal ## Build hub with embedded portal
+	cp -r portal/dist pkg/hub/portal/
+	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
+
+build-portal: ## Build the portal Vue.js SPA
+	cd portal && npm ci && npm run build
+
+dev-portal: ## Run the portal dev server
+	cd portal && npm run dev
+
 build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
 	go build $(GOFLAGS) -o $(BINDIR)/kedge-graphql ./cmd/graphql/
 

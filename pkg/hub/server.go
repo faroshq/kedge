@@ -284,12 +284,17 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("GraphQL proxy enabled", "target", graphqlTarget.String())
 	}
 
-	// Health check
+	// Health check — includes OIDC config when enabled so the portal can
+	// perform token refresh directly against the OIDC provider.
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		oidcEnabled := authHandler != nil
-		_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":%t}`, oidcEnabled)
+		if oidcEnabled {
+			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":true,"issuerUrl":%q,"clientId":%q}`, s.opts.IDPIssuerURL, s.opts.IDPClientID)
+		} else {
+			_, _ = fmt.Fprint(w, `{"status":"ok","oidc":false}`)
+		}
 	})
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -373,6 +378,13 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Multicluster manager failed")
 			}
 		}()
+	}
+
+	// Portal: serve embedded Vue.js SPA at /portal/.
+	if err := registerPortalRoutes(router); err != nil {
+		logger.Info("Portal not available", "reason", err.Error())
+	} else {
+		logger.Info("Portal routes registered at /portal/")
 	}
 
 	// 8. Start HTTP server.

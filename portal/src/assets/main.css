@@ -1,1 +1,70 @@
 @import "tailwindcss";
+
+@theme {
+  --color-surface: #0a0a0f;
+  --color-surface-raised: #12121a;
+  --color-surface-overlay: #1a1a25;
+  --color-surface-hover: #22222f;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+  --color-accent-subtle: rgba(99, 102, 241, 0.12);
+  --color-text-primary: #f0f0f5;
+  --color-text-secondary: #8b8b9e;
+  --color-text-muted: #55556a;
+  --color-success: #22c55e;
+  --color-success-subtle: rgba(34, 197, 94, 0.12);
+  --color-warning: #f59e0b;
+  --color-warning-subtle: rgba(245, 158, 11, 0.12);
+  --color-danger: #ef4444;
+  --color-danger-subtle: rgba(239, 68, 68, 0.12);
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Smooth page transitions — opacity-only crossfade */
+.fade-enter-active {
+  transition: opacity 0.15s ease-in;
+}
+.fade-leave-active {
+  transition: opacity 0.1s ease-out;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Slide transition for sidebars */
+.slide-enter-active,
+.slide-leave-active {
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+}
+.slide-enter-from {
+  transform: translateX(-12px);
+  opacity: 0;
+}
+.slide-leave-to {
+  transform: translateX(-12px);
+  opacity: 0;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}

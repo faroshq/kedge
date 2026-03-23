@@ -6,6 +6,7 @@ import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult, type EdgeItem } from '@/graphql/queries/edges'
+import { Server, Wifi, WifiOff } from 'lucide-vue-next'
 
 const router = useRouter()
 const { data, loading, error } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
@@ -48,9 +49,17 @@ function handleRowClick(row: Record<string, unknown>) {
 
 <template>
   <AppLayout>
-    <h1 class="text-xl font-semibold text-gray-900">Edges</h1>
+    <div class="flex items-center gap-3">
+      <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-accent-subtle">
+        <Server class="h-4.5 w-4.5 text-accent" :stroke-width="1.75" />
+      </div>
+      <div>
+        <h1 class="text-lg font-semibold tracking-tight text-text-primary">Edges</h1>
+        <p class="text-[12px] text-text-muted">{{ rows.length }} edge{{ rows.length !== 1 ? 's' : '' }} registered</p>
+      </div>
+    </div>
 
-    <div class="mt-4">
+    <div class="mt-5">
       <ResourceTable
         :columns="columns"
         :rows="rows"
@@ -58,13 +67,30 @@ function handleRowClick(row: Record<string, unknown>) {
         :error="error"
         @row-click="handleRowClick"
       >
+        <template #name="{ value }">
+          <span class="font-medium text-text-primary">{{ value }}</span>
+        </template>
+        <template #type="{ value }">
+          <span class="rounded-md bg-surface-overlay px-2 py-0.5 text-[11px] font-medium text-text-secondary">{{ value }}</span>
+        </template>
         <template #phase="{ value, row }">
           <StatusBadge :status="value as string" :connected="row.connected as boolean" />
         </template>
         <template #connected="{ value }">
-          <span :class="value ? 'text-green-600' : 'text-red-500'" class="text-sm">
-            {{ value ? 'Yes' : 'No' }}
-          </span>
+          <div class="flex items-center gap-1.5">
+            <component
+              :is="value ? Wifi : WifiOff"
+              class="h-3.5 w-3.5"
+              :class="value ? 'text-success' : 'text-danger'"
+              :stroke-width="1.75"
+            />
+            <span :class="value ? 'text-success' : 'text-danger'" class="text-[13px]">
+              {{ value ? 'Yes' : 'No' }}
+            </span>
+          </div>
+        </template>
+        <template #age="{ value }">
+          <span class="font-mono text-[12px] text-text-muted">{{ value }}</span>
         </template>
       </ResourceTable>
     </div>

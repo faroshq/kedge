@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -250,6 +252,26 @@ func (s *Server) Run(ctx context.Context) error {
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
+	// GraphQL proxy: forward /graphql/* to the GraphQL gateway.
+	if s.opts.GraphQLAddr != "" {
+		graphqlTarget := &url.URL{Scheme: "http", Host: s.opts.GraphQLAddr}
+		graphqlProxy := &httputil.ReverseProxy{
+			Director: func(req *http.Request) {
+				auth := req.Header.Get("Authorization")
+				logger.Info("GraphQL proxy forwarding", "path", req.URL.Path, "hasAuth", auth != "")
+				req.URL.Scheme = graphqlTarget.Scheme
+				req.URL.Host = graphqlTarget.Host
+				req.Host = graphqlTarget.Host
+				if auth != "" {
+					req.Header.Set("Authorization", auth)
+				}
+			},
+		}
+		graphqlHandler := http.StripPrefix("/graphql", graphqlProxy)
+		router.PathPrefix("/graphql").Handler(graphqlHandler)
+		logger.Info("GraphQL proxy enabled", "target", graphqlTarget.String())
+	}
+
 	// Health check
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -348,7 +370,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if kcpProxy != nil {
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var match mux.RouteMatch
-			if router.Match(r, &match) {
+			matched := router.Match(r, &match)
+			logger.Info("hub routing", "path", r.URL.Path, "matched", matched, "matchErr", match.MatchErr)
+			if matched && match.MatchErr == nil {
 				router.ServeHTTP(w, r)
 				return
 			}

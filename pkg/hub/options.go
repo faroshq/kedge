@@ -31,6 +31,10 @@ type Options struct {
 	DevMode               bool
 	StaticAuthTokens      []string
 
+	// GraphQLAddr is the address of the GraphQL gateway to proxy /graphql/ requests to.
+	// If empty, the graphql proxy is disabled.
+	GraphQLAddr string
+
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server
 	KCPRootDir          string // Root directory for kcp data (default: <DataDir>/kcp)
@@ -47,6 +51,7 @@ func NewOptions() *Options {
 		DataDir:             "/tmp/kedge-data",
 		ListenAddr:          ":9443",
 		HubExternalURL:      "https://localhost:9443",
+		GraphQLAddr:         "localhost:9090",
 		EmbeddedKCP:         false,
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",

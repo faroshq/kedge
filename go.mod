@@ -1,6 +1,6 @@
 module github.com/faroshq/faros-kedge
 
-go 1.25.6
+go 1.26
 
 require (
 	github.com/containers/kubernetes-mcp-server v0.0.58

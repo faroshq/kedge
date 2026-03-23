@@ -113,6 +113,47 @@ In the GraphQL Playground, set the HTTP headers:
 }
 ```
 
+## Accessing via kubectl
+
+The GraphQL endpoint is proxied through the hub at `/graphql`. This means you can use `kubectl` with your normal kedge kubeconfig to send GraphQL queries.
+
+### Discover the cluster ID
+
+```bash
+kubectl get logicalclusters
+# NAME                  URL
+# a08bvxnomis2m558      https://127.0.0.1:6443/clusters/a08bvxnomis2m558
+```
+
+### Send a GraphQL query via kubectl
+
+```bash
+kubectl create --raw '/graphql/api/clusters/<cluster-id>' -f - <<'EOF'
+{"query":"{ v1 { Namespaces { items { metadata { name } } } } }"}
+EOF
+```
+
+Example with a real cluster ID:
+
+```bash
+kubectl create --raw '/graphql/api/clusters/a08bvxnomis2m558' -f - <<'EOF'
+{"query":"{ v1 { Namespaces { items { metadata { name } } } } }"}
+EOF
+```
+
+### Raw GET (no query body — returns schema error)
+
+```bash
+kubectl get --raw '/graphql/api/clusters/a08bvxnomis2m558'
+# {"data":null,"errors":[{"message":"Must provide an operation."}]}
+```
+
+This confirms the endpoint is reachable. To run a real query use `kubectl create --raw` with a JSON body as shown above.
+
+### Authentication
+
+`kubectl` automatically includes the bearer token from your kubeconfig. The hub proxy forwards it to the GraphQL gateway, which then forwards it to kcp for RBAC enforcement. No extra headers are needed.
+
 ## Example queries
 
 ### Introspect available API groups

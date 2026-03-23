@@ -6,7 +6,7 @@ import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult, type EdgeItem } from '@/graphql/queries/edges'
-import { Server, Wifi, WifiOff } from 'lucide-vue-next'
+import { Wifi, WifiOff, Server, CheckCircle } from 'lucide-vue-next'
 
 const router = useRouter()
 const { data, loading, error } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
@@ -29,8 +29,10 @@ function formatAge(timestamp: string): string {
   return `${Math.floor(hours / 24)}d`
 }
 
+const edges = computed(() => data.value?.kedge_faros_sh?.v1alpha1?.Edges?.items ?? [])
+
 const rows = computed(() =>
-  (data.value?.kedge_faros_sh?.v1alpha1?.Edges?.items ?? []).map((e: EdgeItem) => ({
+  edges.value.map((e: EdgeItem) => ({
     name: e.metadata.name,
     type: e.spec?.type ?? '',
     phase: e.status?.phase ?? 'Unknown',
@@ -42,6 +44,13 @@ const rows = computed(() =>
   })),
 )
 
+const stats = computed(() => {
+  const total = edges.value.length
+  const ready = edges.value.filter((e) => e.status?.phase === 'Ready').length
+  const connected = edges.value.filter((e) => e.status?.connected).length
+  return { total, ready, connected }
+})
+
 function handleRowClick(row: Record<string, unknown>) {
   router.push(`/edges/${row.name}`)
 }
@@ -49,20 +58,31 @@ function handleRowClick(row: Record<string, unknown>) {
 
 <template>
   <AppLayout>
-    <div class="flex items-center gap-3">
-      <div class="relative flex h-9 w-9 items-center justify-center">
-        <div class="absolute inset-0 rounded-lg bg-accent/15 blur-sm" />
-        <div class="relative flex h-9 w-9 items-center justify-center rounded-lg border border-accent/20 bg-surface-overlay">
-          <Server class="h-4.5 w-4.5 text-accent" :stroke-width="1.75" />
-        </div>
+    <!-- Mini stat pills -->
+    <div class="stagger-item mb-5 flex items-center gap-3" style="animation-delay: 0ms">
+      <div class="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-3 py-2 backdrop-blur">
+        <Server class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
+        <span class="text-[20px] font-bold tabular-nums text-text-primary">{{ stats.total }}</span>
+        <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">edges</span>
       </div>
-      <div>
-        <h1 class="text-gradient text-lg font-bold tracking-tight">Edges</h1>
-        <p class="text-[11px] font-mono text-text-muted">{{ rows.length }} edge{{ rows.length !== 1 ? 's' : '' }} registered</p>
+      <div class="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-3 py-2 backdrop-blur">
+        <CheckCircle class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
+        <span class="text-[20px] font-bold tabular-nums text-success">{{ stats.ready }}</span>
+        <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">ready</span>
+      </div>
+      <div class="flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-3 py-2 backdrop-blur">
+        <Wifi class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
+        <span class="text-[20px] font-bold tabular-nums text-accent">{{ stats.connected }}</span>
+        <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">online</span>
+      </div>
+      <div class="ml-auto flex items-center gap-1.5">
+        <div class="live-dot h-1.5 w-1.5 rounded-full text-success" />
+        <span class="font-mono text-[10px] text-text-muted">auto-refresh 10s</span>
       </div>
     </div>
 
-    <div class="mt-5">
+    <!-- Table in border-beam wrapper -->
+    <div class="border-beam stagger-item rounded-2xl" style="animation-delay: 80ms">
       <ResourceTable
         :columns="columns"
         :rows="rows"

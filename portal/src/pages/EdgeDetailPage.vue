@@ -3,10 +3,13 @@ import { computed, ref } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
+import { useAuthStore } from '@/stores/auth'
+import { getEdge } from '@/composables/useKubeAPI'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
-import { Server, Wifi, WifiOff, Clock, Hash, FileCode, ChevronDown, ChevronUp, ArrowLeft, TerminalSquare } from 'lucide-vue-next'
+import { Server, Wifi, WifiOff, Clock, Hash, FileCode, ChevronDown, ChevronUp, ArrowLeft, TerminalSquare, Copy, Check } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
+const auth = useAuthStore()
 
 const { data, loading, error } = useGraphQLQuery<GetEdgeResult>(
   GET_EDGE,
@@ -27,6 +30,83 @@ const canSSH = computed(() => {
   if (!edge.value) return false
   return edge.value.spec?.type === 'server' && edge.value.status?.connected
 })
+
+// --- Join instructions ---
+const showJoinInstructions = ref(false)
+const joinToken = ref<string | null>(null)
+const joinTokenLoading = ref(false)
+const joinTokenError = ref<string | null>(null)
+const copiedField = ref<string | null>(null)
+
+const needsJoin = computed(() => {
+  if (!edge.value) return false
+  return !edge.value.status?.connected
+})
+
+const hubURL = computed(() => {
+  const origin = window.location.origin
+  const cluster = auth.clusterName
+  return cluster ? `${origin}/clusters/${cluster}` : origin
+})
+
+const edgeType = computed(() => edge.value?.spec?.type ?? 'kubernetes')
+const maskedToken = '••••••••••••••••'
+
+function buildHelmSnippet(token: string) {
+  return `helm install kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\
+  --namespace kedge-agent --create-namespace \\
+  --set agent.edgeName=${props.name} \\
+  --set agent.hub.url=${hubURL.value} \\
+  --set agent.hub.token=${token}`
+}
+
+function buildCLIJoinSnippet(token: string) {
+  return `kedge agent join \\
+  --hub-url ${hubURL.value} \\
+  --edge-name ${props.name} \\
+  --type ${edgeType.value} \\
+  --token ${token}`
+}
+
+function buildCLIRunSnippet(token: string) {
+  return `kedge agent run \\
+  --hub-url ${hubURL.value} \\
+  --edge-name ${props.name} \\
+  --type ${edgeType.value} \\
+  --token ${token}`
+}
+
+const helmSnippet = computed(() => buildHelmSnippet(maskedToken))
+const cliJoinSnippet = computed(() => buildCLIJoinSnippet(maskedToken))
+const cliRunSnippet = computed(() => buildCLIRunSnippet(maskedToken))
+
+async function toggleJoinInstructions() {
+  showJoinInstructions.value = !showJoinInstructions.value
+  if (showJoinInstructions.value && !joinToken.value) {
+    joinTokenLoading.value = true
+    joinTokenError.value = null
+    try {
+      const edgeData = await getEdge(props.name)
+      joinToken.value = edgeData.status?.joinToken ?? null
+      if (!joinToken.value) {
+        joinTokenError.value = 'Join token not available. It may have been consumed after first connection.'
+      }
+    } catch (e) {
+      joinTokenError.value = e instanceof Error ? e.message : 'Failed to fetch join token'
+    } finally {
+      joinTokenLoading.value = false
+    }
+  }
+}
+
+async function copySnippet(builder: (token: string) => string, field: string) {
+  if (!joinToken.value) return
+  try {
+    await navigator.clipboard.writeText(builder(joinToken.value))
+    copiedField.value = field
+    setTimeout(() => (copiedField.value = null), 2000)
+  } catch {}
+}
 
 const details = computed(() => {
   if (!edge.value) return []
@@ -155,6 +235,16 @@ const details = computed(() => {
         </router-link>
 
         <button
+          v-if="needsJoin"
+          class="glow-ring flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-4 py-2 text-[12px] font-medium text-accent backdrop-blur transition-all duration-150 hover:bg-accent/20"
+          @click="toggleJoinInstructions"
+        >
+          <TerminalSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ showJoinInstructions ? 'Hide' : 'Show' }} Join Instructions
+          <component :is="showJoinInstructions ? ChevronUp : ChevronDown" class="h-3 w-3" :stroke-width="1.75" />
+        </button>
+
+        <button
           class="glow-ring flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-4 py-2 text-[12px] font-medium text-text-secondary backdrop-blur transition-all duration-150 hover:border-accent/30 hover:text-text-primary"
           @click="showYaml = !showYaml"
         >
@@ -162,6 +252,88 @@ const details = computed(() => {
           {{ showYaml ? 'Hide' : 'Show' }} YAML
           <component :is="showYaml ? ChevronUp : ChevronDown" class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
         </button>
+      </div>
+
+      <!-- Join Instructions -->
+      <div v-if="showJoinInstructions" class="stagger-item mt-4" style="animation-delay: 220ms">
+        <div v-if="joinTokenLoading" class="flex items-center gap-2 text-[12px] text-text-muted">
+          <div class="shimmer h-4 w-4 rounded" />
+          Fetching join token...
+        </div>
+
+        <div v-else-if="joinTokenError" class="rounded-xl border border-warning/20 bg-warning/5 p-4 text-[12px] text-warning">
+          {{ joinTokenError }}
+        </div>
+
+        <template v-else-if="joinToken">
+          <!-- Step 1: Install -->
+          <div class="mb-4">
+            <h3 class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted mb-2">Step 1: Install the kedge CLI</h3>
+            <pre class="overflow-x-auto rounded-lg bg-surface-overlay/60 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_linux_amd64.tar.gz | tar xz
+sudo mv kubectl-kedge /usr/local/bin/kedge
+
+# Or via krew:
+kubectl krew index add faros https://github.com/faroshq/krew-index.git
+kubectl krew install faros/kedge</pre>
+          </div>
+
+          <!-- Step 2: Connect -->
+          <div>
+            <h3 class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted mb-2">
+              Step 2: Connect this {{ edgeType === 'kubernetes' ? 'Kubernetes cluster' : 'server' }} as an edge
+            </h3>
+            <div class="space-y-3">
+              <!-- Helm (kubernetes only) -->
+              <div v-if="edgeType === 'kubernetes'" class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-4">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Option A — Helm (recommended)</span>
+                  <button
+                    class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                    @click="copySnippet(buildHelmSnippet, 'helm')"
+                  >
+                    <component :is="copiedField === 'helm' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                    {{ copiedField === 'helm' ? 'Copied' : 'Copy' }}
+                  </button>
+                </div>
+                <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ helmSnippet }}</pre>
+              </div>
+
+              <!-- CLI join -->
+              <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-4">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                    {{ edgeType === 'kubernetes' ? 'Option B' : 'Option A' }} — CLI persistent install
+                  </span>
+                  <button
+                    class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                    @click="copySnippet(buildCLIJoinSnippet, 'join')"
+                  >
+                    <component :is="copiedField === 'join' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                    {{ copiedField === 'join' ? 'Copied' : 'Copy' }}
+                  </button>
+                </div>
+                <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ cliJoinSnippet }}</pre>
+              </div>
+
+              <!-- CLI run -->
+              <div class="rounded-xl border border-border-subtle bg-surface-overlay/60 p-4">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                    {{ edgeType === 'kubernetes' ? 'Option C' : 'Option B' }} — Foreground process (dev)
+                  </span>
+                  <button
+                    class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                    @click="copySnippet(buildCLIRunSnippet, 'run')"
+                  >
+                    <component :is="copiedField === 'run' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
+                    {{ copiedField === 'run' ? 'Copied' : 'Copy' }}
+                  </button>
+                </div>
+                <pre class="overflow-x-auto rounded-lg bg-surface/80 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{{ cliRunSnippet }}</pre>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
 
       <div v-if="showYaml" class="stagger-item mt-3" style="animation-delay: 240ms">

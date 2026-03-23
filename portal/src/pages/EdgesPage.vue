@@ -1,15 +1,21 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import EdgeCreateModal from '@/components/EdgeCreateModal.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult, type EdgeItem } from '@/graphql/queries/edges'
-import { Wifi, WifiOff, Server, CheckCircle } from 'lucide-vue-next'
+import { Wifi, WifiOff, Server, CheckCircle, Plus } from 'lucide-vue-next'
 
 const router = useRouter()
-const { data, loading, error } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
+const { data, loading, error, refetch } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
+const showCreate = ref(false)
+
+function handleCreated() {
+  refetch()
+}
 
 const columns = [
   { key: 'name', label: 'Name' },
@@ -79,6 +85,13 @@ function handleRowClick(row: Record<string, unknown>) {
         <div class="live-dot h-1.5 w-1.5 rounded-full text-success" />
         <span class="font-mono text-[10px] text-text-muted">auto-refresh 10s</span>
       </div>
+      <button
+        class="glow-ring flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-3.5 py-2 text-[12px] font-medium text-accent transition-all hover:bg-accent/20"
+        @click="showCreate = true"
+      >
+        <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+        New Edge
+      </button>
     </div>
 
     <!-- Table in border-beam wrapper -->
@@ -117,5 +130,12 @@ function handleRowClick(row: Record<string, unknown>) {
         </template>
       </ResourceTable>
     </div>
+
+    <!-- Create modal -->
+    <EdgeCreateModal
+      v-if="showCreate"
+      @close="showCreate = false"
+      @created="handleCreated"
+    />
   </AppLayout>
 </template>

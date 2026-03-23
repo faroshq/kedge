@@ -6,9 +6,11 @@ import ResourceTable from '@/components/ResourceTable.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import MCPCreateModal from '@/components/MCPCreateModal.vue'
 import { useMCPList, deleteMCP, type KubernetesMCP } from '@/composables/useKubeAPI'
+import { useAuthStore } from '@/stores/auth'
 import { Bot, Plus, Server, Wifi, Copy, Check, Trash2, ClipboardCopy } from 'lucide-vue-next'
 
 const router = useRouter()
+const auth = useAuthStore()
 const { data, loading, error, refetch } = useMCPList(10000)
 const showCreate = ref(false)
 const copiedField = ref<string | null>(null)
@@ -71,27 +73,43 @@ function handleCreated() {
 }
 
 // --- Config snippet generation ---
-const claudeCodeSnippet = computed(() => {
+const maskedToken = '••••••••••••••••'
+
+function buildClaudeCodeSnippet(token: string) {
   const url = defaultMCP.value?.status?.URL ?? '<MCP_URL>'
   return `claude mcp add --transport http kedge "${url}" \\
-  -H "Authorization: Bearer <your-token>"`
-})
+  -H "Authorization: Bearer ${token}"`
+}
 
-const claudeDesktopSnippet = computed(() => {
+function buildClaudeDesktopSnippet(token: string) {
   const url = defaultMCP.value?.status?.URL ?? '<MCP_URL>'
   return JSON.stringify(
     {
       mcpServers: {
         kedge: {
           url,
-          headers: { Authorization: 'Bearer <your-token>' },
+          headers: { Authorization: `Bearer ${token}` },
         },
       },
     },
     null,
     2,
   )
-})
+}
+
+const claudeCodeSnippet = computed(() => buildClaudeCodeSnippet(maskedToken))
+const claudeDesktopSnippet = computed(() => buildClaudeDesktopSnippet(maskedToken))
+
+async function copySnippet(builder: (token: string) => string, field: string) {
+  try {
+    const token = await auth.getValidToken()
+    await navigator.clipboard.writeText(builder(token))
+    copiedField.value = field
+    setTimeout(() => (copiedField.value = null), 2000)
+  } catch {
+    // fallback
+  }
+}
 
 async function copyToClipboard(text: string, field: string) {
   try {
@@ -154,7 +172,7 @@ async function copyToClipboard(text: string, field: string) {
             <span class="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Claude Code</span>
             <button
               class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-              @click="copyToClipboard(claudeCodeSnippet, 'claude-code')"
+              @click="copySnippet(buildClaudeCodeSnippet, 'claude-code')"
             >
               <component :is="copiedField === 'claude-code' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
               {{ copiedField === 'claude-code' ? 'Copied' : 'Copy' }}
@@ -169,7 +187,7 @@ async function copyToClipboard(text: string, field: string) {
             <span class="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Claude Desktop / claude_desktop_config.json</span>
             <button
               class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-              @click="copyToClipboard(claudeDesktopSnippet, 'claude-desktop')"
+              @click="copySnippet(buildClaudeDesktopSnippet, 'claude-desktop')"
             >
               <component :is="copiedField === 'claude-desktop' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
               {{ copiedField === 'claude-desktop' ? 'Copied' : 'Copy' }}

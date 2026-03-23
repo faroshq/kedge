@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useMCPGet, updateMCP, deleteMCP, type KubernetesMCP } from '@/composables/useKubeAPI'
+import { useAuthStore } from '@/stores/auth'
 import {
   Bot, ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
   FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield,
@@ -11,6 +12,7 @@ import {
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
+const auth = useAuthStore()
 
 const nameRef = toRef(props, 'name')
 const { data: mcp, loading, error, refetch } = useMCPGet(nameRef, 10000)
@@ -57,27 +59,32 @@ const yamlContent = computed(() => {
 })
 
 // --- Config snippets ---
-const claudeCodeSnippet = computed(() => {
+const maskedToken = '••••••••••••••••'
+
+function buildClaudeCodeSnippet(token: string) {
   const url = mcp.value?.status?.URL ?? '<MCP_URL>'
   return `claude mcp add --transport http kedge-${props.name} "${url}" \\
-  -H "Authorization: Bearer <your-token>"`
-})
+  -H "Authorization: Bearer ${token}"`
+}
 
-const claudeDesktopSnippet = computed(() => {
+function buildClaudeDesktopSnippet(token: string) {
   const url = mcp.value?.status?.URL ?? '<MCP_URL>'
   return JSON.stringify(
     {
       mcpServers: {
         [`kedge-${props.name}`]: {
           url,
-          headers: { Authorization: 'Bearer <your-token>' },
+          headers: { Authorization: `Bearer ${token}` },
         },
       },
     },
     null,
     2,
   )
-})
+}
+
+const claudeCodeSnippet = computed(() => buildClaudeCodeSnippet(maskedToken))
+const claudeDesktopSnippet = computed(() => buildClaudeDesktopSnippet(maskedToken))
 
 function startEdit() {
   if (!mcp.value) return
@@ -136,13 +143,15 @@ async function handleDelete() {
   }
 }
 
-async function copyToClipboard(text: string, field: string) {
+async function copySnippet(builder: (token: string) => string, field: string) {
   try {
-    await navigator.clipboard.writeText(text)
+    const token = await auth.getValidToken()
+    await navigator.clipboard.writeText(builder(token))
     copiedField.value = field
     setTimeout(() => (copiedField.value = null), 2000)
   } catch {}
 }
+
 </script>
 
 <template>
@@ -278,7 +287,7 @@ async function copyToClipboard(text: string, field: string) {
             <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Claude Code</span>
             <button
               class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-              @click="copyToClipboard(claudeCodeSnippet, 'code')"
+              @click="copySnippet(buildClaudeCodeSnippet, 'code')"
             >
               <component :is="copiedField === 'code' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
               {{ copiedField === 'code' ? 'Copied' : 'Copy' }}
@@ -291,7 +300,7 @@ async function copyToClipboard(text: string, field: string) {
             <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Claude Desktop</span>
             <button
               class="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
-              @click="copyToClipboard(claudeDesktopSnippet, 'desktop')"
+              @click="copySnippet(buildClaudeDesktopSnippet, 'desktop')"
             >
               <component :is="copiedField === 'desktop' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
               {{ copiedField === 'desktop' ? 'Copied' : 'Copy' }}

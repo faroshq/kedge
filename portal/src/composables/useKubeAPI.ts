@@ -4,6 +4,9 @@ import { useAuthStore } from '@/stores/auth'
 const MCP_API_BASE = (cluster: string) =>
   `/clusters/${cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes`
 
+const EDGE_API_BASE = (cluster: string) =>
+  `/clusters/${cluster}/apis/kedge.faros.sh/v1alpha1/edges`
+
 interface UseListResult<T> {
   data: Ref<T | null>
   error: Ref<string | null>
@@ -202,6 +205,88 @@ export async function deleteMCP(name: string): Promise<void> {
   if (!auth.clusterName) throw new Error('No cluster selected')
   const token = await auth.getValidToken()
   const resp = await kubeRequest('DELETE', `${MCP_API_BASE(auth.clusterName)}/${name}`, token)
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`Delete failed: ${resp.status} ${text}`)
+  }
+}
+
+// --- Edge Types ---
+
+export interface Edge {
+  apiVersion: string
+  kind: string
+  metadata: {
+    name: string
+    creationTimestamp?: string
+    uid?: string
+    resourceVersion?: string
+    labels?: Record<string, string>
+  }
+  spec: {
+    type: string
+  }
+  status?: {
+    joinToken?: string
+    phase?: string
+    connected?: boolean
+    hostname?: string
+    agentVersion?: string
+  }
+}
+
+// --- Edge API ---
+
+export async function createEdge(
+  name: string,
+  edgeType: string,
+  labels?: Record<string, string>,
+): Promise<Edge> {
+  const auth = useAuthStore()
+  if (!auth.clusterName) throw new Error('No cluster selected')
+  const token = await auth.getValidToken()
+  const body: Record<string, unknown> = {
+    apiVersion: 'kedge.faros.sh/v1alpha1',
+    kind: 'Edge',
+    metadata: { name, ...(labels && Object.keys(labels).length > 0 ? { labels } : {}) },
+    spec: { type: edgeType },
+  }
+  const resp = await kubeRequest('POST', EDGE_API_BASE(auth.clusterName), token, body)
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`Create failed: ${resp.status} ${text}`)
+  }
+  return resp.json()
+}
+
+export async function getEdge(name: string): Promise<Edge> {
+  const auth = useAuthStore()
+  if (!auth.clusterName) throw new Error('No cluster selected')
+  const token = await auth.getValidToken()
+  const resp = await kubeRequest('GET', `${EDGE_API_BASE(auth.clusterName)}/${name}`, token)
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`Get failed: ${resp.status} ${text}`)
+  }
+  return resp.json()
+}
+
+/** Poll the edge resource until status.joinToken is set, or timeout (30s). */
+export async function pollEdgeJoinToken(name: string, timeoutMs = 30000): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const edge = await getEdge(name)
+    if (edge.status?.joinToken) return edge.status.joinToken
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  throw new Error('Timed out waiting for join token')
+}
+
+export async function deleteEdge(name: string): Promise<void> {
+  const auth = useAuthStore()
+  if (!auth.clusterName) throw new Error('No cluster selected')
+  const token = await auth.getValidToken()
+  const resp = await kubeRequest('DELETE', `${EDGE_API_BASE(auth.clusterName)}/${name}`, token)
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`Delete failed: ${resp.status} ${text}`)

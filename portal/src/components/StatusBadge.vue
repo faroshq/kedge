@@ -2,10 +2,13 @@
 import { computed } from 'vue'
 import { CheckCircle, Clock, AlertTriangle, XCircle, Circle } from 'lucide-vue-next'
 
-const props = defineProps<{
-  status: string
-  connected?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    status: string
+    connected?: boolean | null
+  }>(),
+  { connected: null },
+)
 
 const config = computed(() => {
   if (props.connected === false)

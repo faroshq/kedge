@@ -22,6 +22,29 @@
   --color-danger-subtle: rgba(248, 113, 113, 0.1);
 }
 
+/* ── Light mode overrides ── */
+html.light {
+  --color-surface: #f5f7fa;
+  --color-surface-raised: #ffffff;
+  --color-surface-overlay: #eef1f6;
+  --color-surface-hover: #e2e6ed;
+  --color-border-subtle: rgba(0, 0, 0, 0.06);
+  --color-border-default: rgba(0, 0, 0, 0.1);
+  --color-accent: #6d4fe0;
+  --color-accent-hover: #5b3fd0;
+  --color-accent-subtle: rgba(109, 79, 224, 0.08);
+  --color-accent-glow: rgba(109, 79, 224, 0.15);
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #94a3b8;
+  --color-success: #10b981;
+  --color-success-subtle: rgba(16, 185, 129, 0.1);
+  --color-warning: #d97706;
+  --color-warning-subtle: rgba(217, 119, 6, 0.08);
+  --color-danger: #ef4444;
+  --color-danger-subtle: rgba(239, 68, 68, 0.08);
+}
+
 body {
   background-color: var(--color-surface);
   color: var(--color-text-primary);
@@ -33,6 +56,9 @@ body {
   background-image: radial-gradient(circle, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
   background-size: 24px 24px;
 }
+html.light .dot-grid {
+  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+}
 
 /* ── Cross grid ── */
 .cross-grid {
@@ -41,6 +67,11 @@ body {
     linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
   background-size: 80px 80px;
 }
+html.light .cross-grid {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.025) 1px, transparent 1px);
+}
 
 /* ── Glass panel ── */
 .glass {
@@ -48,6 +79,10 @@ body {
   backdrop-filter: blur(24px) saturate(1.5);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
   border: 1px solid rgba(255, 255, 255, 0.04);
+}
+html.light .glass {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(0, 0, 0, 0.06);
 }
 
 /* ── Border beam (animated light tracing border) ── */
@@ -74,6 +109,9 @@ body {
   mask-composite: exclude;
   animation: beam-rotate 4s linear infinite;
   pointer-events: none;
+}
+html.light .border-beam::after {
+  background: conic-gradient(from var(--beam-angle, 0deg), transparent 0%, transparent 75%, rgba(109, 79, 224, 0.35) 85%, rgba(16, 185, 129, 0.3) 92%, transparent 100%);
 }
 @keyframes beam-rotate {
   0% { --beam-angle: 0deg; }
@@ -105,6 +143,9 @@ body {
 .card-glow:hover::before {
   opacity: 1;
 }
+html.light .card-glow::before {
+  background: linear-gradient(135deg, rgba(109, 79, 224, 0.1), transparent 40%, transparent 60%, rgba(16, 185, 129, 0.08));
+}
 
 /* ── 3D Tilt card (CSS-only perspective hover) ── */
 .tilt-card {
@@ -116,6 +157,9 @@ body {
   transform: perspective(800px) rotateX(-2deg) rotateY(3deg) scale(1.02);
   box-shadow: -4px 4px 24px rgba(124, 91, 245, 0.08), 0 0 0 1px rgba(124, 91, 245, 0.1);
 }
+html.light .tilt-card:hover {
+  box-shadow: -4px 4px 24px rgba(109, 79, 224, 0.06), 0 0 0 1px rgba(109, 79, 224, 0.08);
+}
 
 /* ── Glow ring ── */
 .glow-ring {
@@ -126,12 +170,21 @@ body {
 .glow-ring.active {
   box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.15), 0 0 20px rgba(124, 91, 245, 0.08);
 }
+html.light .glow-ring:focus,
+html.light .glow-ring.active {
+  box-shadow: 0 0 0 3px rgba(109, 79, 224, 0.12), 0 0 16px rgba(109, 79, 224, 0.06);
+}
 
 /* ── Gradient text ── */
 .text-gradient {
   background: linear-gradient(135deg, #eeeef3 0%, #7c5bf5 50%, #34d399 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+html.light .text-gradient {
+  background: linear-gradient(135deg, #0f172a 0%, #6d4fe0 50%, #10b981 100%);
+  -webkit-background-clip: text;
   background-clip: text;
 }
 
@@ -175,6 +228,14 @@ body {
     0 0 0 1px rgba(255, 255, 255, 0.02) inset,
     0 -4px 12px rgba(124, 91, 245, 0.04);
 }
+html.light .island {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.08),
+    0 0 0 1px rgba(0, 0, 0, 0.02) inset,
+    0 -4px 12px rgba(109, 79, 224, 0.04);
+}
 
 /* ── Island nav item ── */
 .island-nav {
@@ -206,6 +267,10 @@ body {
   background: linear-gradient(90deg, transparent, rgba(124, 91, 245, 0.3), rgba(52, 211, 153, 0.2), transparent);
   background-size: 200% 100%;
   animation: energy-flow 4s linear infinite;
+}
+html.light .energy-line {
+  background: linear-gradient(90deg, transparent, rgba(109, 79, 224, 0.2), rgba(16, 185, 129, 0.15), transparent);
+  background-size: 200% 100%;
 }
 
 /* ── Bento grid ── */
@@ -247,6 +312,9 @@ body {
 ::selection {
   background: rgba(124, 91, 245, 0.3);
   color: #fff;
+}
+html.light ::selection {
+  color: #0f172a;
 }
 
 /* ── Floating label ── */

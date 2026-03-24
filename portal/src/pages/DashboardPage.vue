@@ -4,11 +4,14 @@ import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { LIST_EDGES, type ListEdgesResult } from '@/graphql/queries/edges'
-import { Server, Wifi, WifiOff, CheckCircle, ChevronRight, Activity, Gauge } from 'lucide-vue-next'
+import { LIST_VIRTUAL_WORKLOADS, type ListVirtualWorkloadsResult } from '@/graphql/queries/workloads'
+import { Server, Wifi, WifiOff, CheckCircle, ChevronRight, Activity, Gauge, Layers } from 'lucide-vue-next'
 
 const { data, loading, error } = useGraphQLQuery<ListEdgesResult>(LIST_EDGES, undefined, 10000)
+const { data: workloadsData } = useGraphQLQuery<ListVirtualWorkloadsResult>(LIST_VIRTUAL_WORKLOADS, undefined, 10000)
 
 const edges = computed(() => data.value?.kedge_faros_sh?.v1alpha1?.Edges?.items ?? [])
+const workloads = computed(() => workloadsData.value?.kedge_faros_sh?.v1alpha1?.VirtualWorkloads?.items ?? [])
 
 const stats = computed(() => {
   const items = edges.value
@@ -21,6 +24,13 @@ const stats = computed(() => {
 const healthPct = computed(() => {
   if (stats.value.total === 0) return 0
   return Math.round((stats.value.ready / stats.value.total) * 100)
+})
+
+const workloadStats = computed(() => {
+  const total = workloads.value.length
+  const running = workloads.value.filter((w) => w.status?.phase === 'Running').length
+  const totalEdges = workloads.value.reduce((sum, w) => sum + (w.status?.edges?.length ?? 0), 0)
+  return { total, running, totalEdges }
 })
 </script>
 
@@ -123,6 +133,36 @@ const healthPct = computed(() => {
           </div>
           <span class="mt-auto text-3xl font-bold tabular-nums text-danger">{{ stats.disconnected }}</span>
         </div>
+
+        <!-- Virtual Workloads -->
+        <div
+          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-border-subtle bg-surface-raised/80 p-5 backdrop-blur"
+          style="animation-delay: 280ms"
+        >
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Workloads</span>
+            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-subtle">
+              <Layers class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
+            </div>
+          </div>
+          <div class="mt-auto flex items-end gap-2">
+            <span class="text-3xl font-bold tabular-nums text-text-primary">{{ workloadStats.total }}</span>
+            <span class="mb-0.5 text-[12px] text-success">{{ workloadStats.running }} running</span>
+          </div>
+        </div>
+
+        <!-- Workloads quick link -->
+        <router-link
+          to="/workloads"
+          class="tilt-card stagger-item flex flex-col justify-between rounded-2xl border border-accent/20 bg-accent/[0.03] p-5 backdrop-blur transition-all hover:bg-accent/[0.06]"
+          style="animation-delay: 320ms"
+        >
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-semibold uppercase tracking-[0.15em] text-accent">Virtual Workloads</span>
+            <ChevronRight class="h-4 w-4 text-accent/50" :stroke-width="1.75" />
+          </div>
+          <span class="mt-auto text-[13px] font-medium text-accent/80">Deploy across edges</span>
+        </router-link>
 
         <!-- Recent edges (wide, spans 3 cols) -->
         <div

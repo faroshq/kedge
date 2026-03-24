@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { API_PATHS } from '@/lib/constants'
-import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle } from 'lucide-vue-next'
+import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle, Sun, Moon, Monitor } from 'lucide-vue-next'
 
 const auth = useAuthStore()
+const theme = useThemeStore()
+const themeIcon = computed(() => {
+  if (theme.mode === 'light') return Sun
+  if (theme.mode === 'dark') return Moon
+  return Monitor
+})
 const router = useRouter()
 const tokenInput = ref('')
 const loginError = ref<string | null>(null)
@@ -55,6 +62,15 @@ function handleOIDCLogin() {
 
 <template>
   <div class="cross-grid relative flex min-h-screen bg-surface">
+    <!-- Theme toggle -->
+    <button
+      class="fixed right-4 top-4 z-50 flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised/80 text-text-muted backdrop-blur transition-all hover:border-accent/30 hover:text-text-secondary"
+      title="Toggle theme"
+      @click="theme.toggle()"
+    >
+      <component :is="themeIcon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+    </button>
+
     <!-- Ambient -->
     <div class="pointer-events-none fixed inset-0 overflow-hidden">
       <div class="absolute -top-40 left-1/2 h-96 w-[600px] -translate-x-1/2 rounded-full bg-accent/5 blur-[180px]" />

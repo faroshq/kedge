@@ -31,6 +31,17 @@ const routes = [
     props: true,
   },
   {
+    path: '/workloads',
+    name: 'workloads',
+    component: () => import('@/pages/WorkloadsPage.vue'),
+  },
+  {
+    path: '/workloads/:name',
+    name: 'workload-detail',
+    component: () => import('@/pages/WorkloadDetailPage.vue'),
+    props: true,
+  },
+  {
     path: '/mcp',
     name: 'mcp',
     component: () => import('@/pages/MCPPage.vue'),

@@ -2,9 +2,22 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { Hexagon, LayoutDashboard, Server, Bot, LogOut, Zap } from 'lucide-vue-next'
+import { useThemeStore } from '@/stores/theme'
+import { Hexagon, LayoutDashboard, Server, Layers, Bot, LogOut, Zap, Sun, Moon, Monitor } from 'lucide-vue-next'
 
 const auth = useAuthStore()
+const theme = useThemeStore()
+
+const themeIcon = computed(() => {
+  if (theme.mode === 'light') return Sun
+  if (theme.mode === 'dark') return Moon
+  return Monitor
+})
+const themeLabel = computed(() => {
+  if (theme.mode === 'light') return 'Light'
+  if (theme.mode === 'dark') return 'Dark'
+  return 'System'
+})
 const route = useRoute()
 const router = useRouter()
 
@@ -24,6 +37,7 @@ const timeStr = computed(() =>
 const navItems = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
   { label: 'Edges', to: '/edges', icon: Server },
+  { label: 'Workloads', to: '/workloads', icon: Layers },
   { label: 'MCP', to: '/mcp', icon: Bot },
 ]
 
@@ -74,6 +88,14 @@ function handleLogout() {
         <span v-if="auth.clusterName" class="font-mono text-[10px] tracking-wider text-text-muted">
           {{ auth.clusterName }}
         </span>
+        <button
+          class="flex items-center gap-1.5 rounded-lg border border-border-subtle px-2 py-1 text-text-muted transition-all hover:border-accent/30 hover:text-text-secondary"
+          :title="`Theme: ${themeLabel} — click to toggle`"
+          @click="theme.toggle()"
+        >
+          <component :is="themeIcon" class="h-3 w-3" :stroke-width="1.75" />
+          <span class="text-[9px] font-semibold uppercase tracking-wider">{{ themeLabel }}</span>
+        </button>
         <span class="font-mono text-[10px] tabular-nums tracking-wider text-text-muted/60">
           {{ timeStr }}
         </span>

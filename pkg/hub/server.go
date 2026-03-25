@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -183,6 +184,68 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
+
+	// 4a. Start the HTTP server early so that the liveness probe (/healthz) can
+	// succeed during the kcp bootstrap phase (which can take up to 60 s).
+	// We use a delegating handler that initially serves only the health
+	// endpoints; once full initialisation is complete the handler is swapped
+	// to the real router + optional kcp proxy.
+	delegate := &delegatingHandler{}
+	earlyMux := http.NewServeMux()
+	earlyMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"status":"ok","bootstrapping":true}`)
+	})
+	earlyMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		// Return 503 until bootstrap completes so the readiness gate works
+		// correctly, while the liveness gate remains satisfied.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, "bootstrapping")
+	})
+	delegate.set(earlyMux)
+
+	earlyHTTPServer := &http.Server{
+		Addr:              s.opts.ListenAddr,
+		Handler:           delegate,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Channel to receive HTTP server errors.
+	httpErrCh := make(chan error, 1)
+
+	// Shutdown handler - triggered by context cancellation or kcp failure.
+	// We capture earlyHTTPServer in the closure; once the server object is
+	// replaced below the same pointer is used because we never reassign it.
+	go func() {
+		select {
+		case <-ctx.Done():
+			logger.Info("Shutting down HTTP server (context cancelled)")
+		case err := <-kcpErrCh:
+			logger.Error(err, "Embedded kcp server failed, shutting down hub")
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := earlyHTTPServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error(err, "HTTP server shutdown error")
+		}
+	}()
+
+	// Start HTTP server in a goroutine.
+	go func() {
+		var err error
+		if s.opts.ServingCertFile != "" && s.opts.ServingKeyFile != "" {
+			logger.Info("Hub server starting (early/bootstrap) with TLS", "addr", s.opts.ListenAddr)
+			err = earlyHTTPServer.ListenAndServeTLS(s.opts.ServingCertFile, s.opts.ServingKeyFile)
+		} else {
+			logger.Info("Hub server starting (early/bootstrap) without TLS", "addr", s.opts.ListenAddr)
+			err = earlyHTTPServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
+			httpErrCh <- err
+		}
+		close(httpErrCh)
+	}()
 
 	// 4. kcp bootstrap (if kcp is configured - either embedded or external)
 	// userClient is a kedge client targeting the workspace where User CRDs live.
@@ -387,12 +450,13 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("Portal routes registered at /portal/")
 	}
 
-	// 8. Start HTTP server.
+	// 8. Swap the HTTP server handler from the early bootstrap mux to the full
+	// router now that initialisation is complete.
 	// Wrap the gorilla/mux router with a fallback to the kcp proxy for
 	// kubectl requests that aren't handled by explicit mux routes.
-	var handler http.Handler = router
+	var fullHandler http.Handler = router
 	if kcpProxy != nil {
-		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fullHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var match mux.RouteMatch
 			matched := router.Match(r, &match)
 			logger.Info("hub routing", "path", r.URL.Path, "matched", matched, "matchErr", match.MatchErr)
@@ -403,46 +467,8 @@ func (s *Server) Run(ctx context.Context) error {
 			kcpProxy.ServeHTTP(w, r)
 		})
 	}
-
-	httpServer := &http.Server{
-		Addr:              s.opts.ListenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	// Channel to receive HTTP server errors.
-	httpErrCh := make(chan error, 1)
-
-	// Shutdown handler - triggered by context cancellation or kcp failure.
-	go func() {
-		select {
-		case <-ctx.Done():
-			logger.Info("Shutting down HTTP server (context cancelled)")
-		case err := <-kcpErrCh:
-			logger.Error(err, "Embedded kcp server failed, shutting down hub")
-		}
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error(err, "HTTP server shutdown error")
-		}
-	}()
-
-	// Start HTTP server in a goroutine.
-	go func() {
-		var err error
-		if s.opts.ServingCertFile != "" && s.opts.ServingKeyFile != "" {
-			logger.Info("Hub server starting with TLS", "addr", s.opts.ListenAddr)
-			err = httpServer.ListenAndServeTLS(s.opts.ServingCertFile, s.opts.ServingKeyFile)
-		} else {
-			logger.Info("Hub server starting without TLS", "addr", s.opts.ListenAddr)
-			err = httpServer.ListenAndServe()
-		}
-		if err != nil && err != http.ErrServerClosed {
-			httpErrCh <- err
-		}
-		close(httpErrCh)
-	}()
+	delegate.set(fullHandler)
+	logger.Info("Full HTTP handler installed; server is ready")
 
 	// Wait for either HTTP server error, kcp error, or context cancellation.
 	select {
@@ -484,6 +510,32 @@ func (s *Server) buildRestConfig() (*rest.Config, error) {
 		return kubeConfig.ClientConfig()
 	}
 	return config, nil
+}
+
+// delegatingHandler is a thread-safe HTTP handler that delegates to an inner
+// handler. The inner handler can be swapped atomically (set) to allow the HTTP
+// server to start serving basic health probes before the full handler stack is
+// ready, and then upgrade seamlessly once initialisation completes.
+type delegatingHandler struct {
+	mu      sync.RWMutex
+	current http.Handler
+}
+
+func (d *delegatingHandler) set(h http.Handler) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.current = h
+}
+
+func (d *delegatingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	d.mu.RLock()
+	h := d.current
+	d.mu.RUnlock()
+	if h == nil {
+		http.Error(w, "server initialising", http.StatusServiceUnavailable)
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 // kubernetesGVR is the GroupVersionResource for Kubernetes MCP.

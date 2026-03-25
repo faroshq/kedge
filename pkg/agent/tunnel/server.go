@@ -178,15 +178,15 @@ func k8sHandler(config *rest.Config) http.HandlerFunc {
 			TLSClientConfig: tlsConfig,
 		}
 
-		proxy.Director = func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.URL.Path = k8sPath
-			req.Host = target.Host
+		proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = target.Scheme
+			pr.Out.URL.Host = target.Host
+			pr.Out.URL.Path = k8sPath
+			pr.Out.Host = target.Host
 
 			// Add bearer token if configured
 			if config.BearerToken != "" {
-				req.Header.Set("Authorization", "Bearer "+config.BearerToken)
+				pr.Out.Header.Set("Authorization", "Bearer "+config.BearerToken)
 			}
 		}
 

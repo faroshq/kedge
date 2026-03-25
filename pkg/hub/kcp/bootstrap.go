@@ -119,14 +119,25 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	}
 
 	// 4. Fetch tenancy.kcp.io identity hash from root workspace.
+	// The identity hash is set asynchronously by kcp after startup, so we
+	// poll until it is available rather than failing immediately.
 	logger.Info("Fetching tenancy.kcp.io identity hash from root workspace")
-	tenancyExport, err := rootDynamic.Resource(apiExportGVR).Get(ctx, "tenancy.kcp.io", metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("getting tenancy.kcp.io APIExport from root: %w", err)
-	}
-	identityHash, _, _ := unstructured.NestedString(tenancyExport.Object, "status", "identityHash")
-	if identityHash == "" {
-		return fmt.Errorf("tenancy.kcp.io APIExport has no identity hash yet")
+	var identityHash string
+	if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+		tenancyExport, getErr := rootDynamic.Resource(apiExportGVR).Get(ctx, "tenancy.kcp.io", metav1.GetOptions{})
+		if getErr != nil {
+			logger.V(4).Info("tenancy.kcp.io APIExport not yet available, retrying", "err", getErr)
+			return false, nil
+		}
+		h, _, _ := unstructured.NestedString(tenancyExport.Object, "status", "identityHash")
+		if h == "" {
+			logger.V(4).Info("tenancy.kcp.io APIExport has no identity hash yet, retrying")
+			return false, nil
+		}
+		identityHash = h
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("waiting for tenancy.kcp.io identity hash: %w", err)
 	}
 	b.workspaceIdentityHash = identityHash
 	logger.Info("Got tenancy.kcp.io identity hash", "hash", identityHash)
@@ -430,8 +441,10 @@ func configForPath(base *rest.Config, clusterPath string) *rest.Config {
 }
 
 // waitForWorkspaceReady polls until a workspace has phase "Ready".
+// Uses a 3-minute timeout to accommodate slower CI environments where kcp
+// workspaces may take longer to become ready after initial deployment.
 func waitForWorkspaceReady(ctx context.Context, client dynamic.Interface, name string) error {
-	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
 		ws, err := client.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, nil

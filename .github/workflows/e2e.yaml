@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -86,7 +86,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -144,7 +144,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -213,7 +213,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: v1.25.0
+          go-version: v1.26.1
 
       - name: Install kind
         uses: helm/kind-action@v1

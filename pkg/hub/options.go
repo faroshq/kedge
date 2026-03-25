@@ -40,11 +40,11 @@ type Options struct {
 	EmbeddedGraphQL bool
 
 	// GraphQL listener options (used when EmbeddedGraphQL is true).
-	GraphQLAPIExportSliceName           string // APIExportEndpointSlice name (default: "core.faros.sh")
-	GraphQLAPIExportLogicalCluster      string // logical cluster of that endpointslice (default: "root:kedge:providers")
-	GraphQLGRPCAddr                     string // in-process gRPC address (default: "localhost:50051")
-	GraphQLPlayground                   bool   // enable playground UI
-	GraphQLPort                         int    // port for the embedded GraphQL HTTP server; 0 = serve via hub mux only
+	GraphQLAPIExportSliceName      string // APIExportEndpointSlice name (default: "core.faros.sh")
+	GraphQLAPIExportLogicalCluster string // logical cluster of that endpointslice (default: "root:kedge:providers")
+	GraphQLGRPCAddr                string // in-process gRPC address (default: "localhost:50051")
+	GraphQLPlayground              bool   // enable playground UI
+	GraphQLPort                    int    // port for the embedded GraphQL HTTP server; 0 = serve via hub mux only
 
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server

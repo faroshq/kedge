@@ -1,3 +1,5 @@
+//go:build !portal_embed
+
 /*
 Copyright 2026 The Faros Authors.
 
@@ -13,8 +15,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
-//go:build !portal_embed
 
 package hub
 

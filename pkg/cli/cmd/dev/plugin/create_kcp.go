@@ -48,10 +48,10 @@ const (
 	kcpChartVersion = "0.14.0" // matches kcp app version v0.30.0
 
 	// kcp networking: front-proxy service port and NodePort
-	// externalPort=9443 → ClusterIP service port
+	// externalPort=8443 → the port kcp-front-proxy listens on (ClusterIP 8443)
 	// nodePort=30643   → NodePort on kind node
 	// kind extraPortMapping: containerPort=30643, hostPort=KCPHTTPSPort(7443)
-	kcpExternalPort = 9443
+	kcpExternalPort = 8443
 	kcpNodePort     = 30643
 
 	// kcp external hostname — the in-cluster DNS name of the front-proxy service.

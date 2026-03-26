@@ -444,8 +444,10 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Portal: serve embedded Vue.js SPA at /portal/.
-	if err := registerPortalRoutes(router); err != nil {
-		logger.Info("Portal not available", "reason", err.Error())
+	// registerPortalRoutes returns an error only when the portal is not embedded
+	// (built without -tags portal_embed); this is expected in most builds.
+	if portalErr := registerPortalRoutes(router); portalErr != nil { //nolint:staticcheck
+		logger.Info("Portal not available", "reason", portalErr.Error())
 	} else {
 		logger.Info("Portal routes registered at /portal/")
 	}

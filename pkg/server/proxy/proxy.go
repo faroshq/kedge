@@ -276,11 +276,11 @@ func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, toke
 			req.URL.Path = kcpPath
 			req.Host = target.Host
 
-			// Forward the original token so kcp authenticates as the static token
-			// user (e.g. kedge:static:...) rather than as the hub admin.
-			req.Header.Set("Authorization", "Bearer "+token)
+			// Remove user auth — the transport (kcp admin cert) handles authentication.
+			// kcp does not have static token auth configured; we proxy as hub admin.
+			req.Header.Del("Authorization")
 		},
-		Transport: p.passthroughTransport,
+		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error (static token)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")

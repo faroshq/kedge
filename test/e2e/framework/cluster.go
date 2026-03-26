@@ -541,7 +541,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 			"--agent-count", fmt.Sprintf("%d", DefaultAgentCount),
 			"--kind-network", DefaultKindNetwork,
 			"--chart-path", filepath.Join(workDir, DefaultChartPath),
-			"--wait-for-ready-timeout", "30m",
+			"--wait-for-ready-timeout", "45m",
 			"--with-external-kcp",
 		}
 

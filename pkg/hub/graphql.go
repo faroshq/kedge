@@ -54,8 +54,10 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 		grpcAddr = "localhost:50051"
 	}
 
-	// Write the kcp admin rest.Config to a temp kubeconfig file so the listener
-	// and kcp-provider (which expect a file path) can load it.
+	// Write a kubeconfig containing only the kcp server endpoint and CA (no
+	// credentials) so the listener and kcp-provider can locate the server.
+	// Per-request authentication uses the user's own bearer token injected via
+	// utilscontext.SetToken; admin credentials are intentionally excluded.
 	kubeconfigPath, cleanup, err := writeKubeconfigTemp(kcpConfig)
 	if err != nil {
 		return fmt.Errorf("writing temp kubeconfig for GraphQL listener: %w", err)
@@ -162,8 +164,17 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 
 // writeKubeconfigTemp serialises kcpConfig as a kubeconfig to a temporary file
 // and returns the path plus a cleanup function that removes it.
+//
+// Only the server endpoint and CA are written — no credentials. Authentication
+// is performed per-request using the user's own bearer token (from login/OIDC),
+// which is injected into each request context via utilscontext.SetToken.
+// Writing admin credentials here would silently grant every GraphQL request
+// elevated privileges regardless of the caller's identity.
 func writeKubeconfigTemp(cfg *rest.Config) (path string, cleanup func(), err error) {
 	// Build a minimal clientcmdapi.Config from the rest.Config.
+	// Intentionally omit all credentials (token, cert, key) so the listener
+	// carries no static identity. Per-request auth is handled by the token
+	// the user obtained from login/OIDC, injected via utilscontext.SetToken.
 	kubeConfig := clientcmdapi.NewConfig()
 	kubeConfig.Clusters["default"] = &clientcmdapi.Cluster{
 		Server:                   cfg.Host,
@@ -171,18 +182,7 @@ func writeKubeconfigTemp(cfg *rest.Config) (path string, cleanup func(), err err
 		CertificateAuthority:     cfg.CAFile,
 		InsecureSkipTLSVerify:    cfg.Insecure,
 	}
-	authInfo := &clientcmdapi.AuthInfo{}
-	if cfg.BearerToken != "" {
-		authInfo.Token = cfg.BearerToken
-	} else if cfg.BearerTokenFile != "" {
-		authInfo.TokenFile = cfg.BearerTokenFile
-	} else if cfg.CertFile != "" || len(cfg.CertData) > 0 {
-		authInfo.ClientCertificate = cfg.CertFile
-		authInfo.ClientCertificateData = cfg.CertData
-		authInfo.ClientKey = cfg.KeyFile
-		authInfo.ClientKeyData = cfg.KeyData
-	}
-	kubeConfig.AuthInfos["default"] = authInfo
+	kubeConfig.AuthInfos["default"] = &clientcmdapi.AuthInfo{}
 	kubeConfig.Contexts["default"] = &clientcmdapi.Context{
 		Cluster:  "default",
 		AuthInfo: "default",

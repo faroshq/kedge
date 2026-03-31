@@ -69,8 +69,10 @@ func (p *virtualWorkspaces) buildEdgesProxyHandler() http.Handler {
 		}
 
 		// 3. Delegated authorization via kcp (if configured).
-		// All tokens (static and OIDC) must pass authorizeFn equally.
-		if p.kcpConfig != nil {
+		// Static tokens bypass authorizeFn entirely — they are pre-authenticated
+		// server-side credentials that do not go through kcp SubjectAccessReview.
+		_, isStaticToken := p.staticTokens[token]
+		if !isStaticToken && p.kcpConfig != nil {
 			if err := p.authorizeFn(r.Context(), p.kcpConfig, token, cluster, "proxy", "edges", name); err != nil {
 				p.logger.Error(err, "edges proxy authorization failed",
 					"cluster", cluster, "name", name, "subresource", subresource)

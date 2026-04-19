@@ -50,7 +50,6 @@ import (
 // and forwards them to the user's dedicated kcp tenant workspace.
 type KCPProxy struct {
 	kcpTarget            *url.URL
-	transport            http.RoundTripper // built from kcp admin config; handles TLS + auth
 	passthroughTransport http.RoundTripper // TLS-only transport; no credentials injected
 	verifier             *oidc.IDTokenVerifier
 	verifyCtx            context.Context // context with HTTP client for OIDC key fetches
@@ -79,10 +78,6 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 		if len(transportConfig.CAData) == 0 && transportConfig.CAFile == "" {
 			transportConfig.Insecure = true
 		}
-	}
-	transport, err := rest.TransportFor(transportConfig)
-	if err != nil {
-		return nil, fmt.Errorf("building kcp transport: %w", err)
 	}
 
 	// Build a passthrough transport with the same TLS config but no credentials.
@@ -113,7 +108,6 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 
 	return &KCPProxy{
 		kcpTarget:            target,
-		transport:            transport,
 		passthroughTransport: passthroughTransport,
 		verifier:             verifier,
 		verifyCtx:            verifyCtx,
@@ -228,7 +222,6 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 			req.Header.Set("Impersonate-User", user.Spec.RBACIdentity)
 			req.Header.Set("Impersonate-Group", "system:authenticated")
 		},
-		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
@@ -490,7 +483,6 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 			// Keep the SA token — kcp authenticates it natively.
 			req.Header.Set("Authorization", "Bearer "+token)
 		},
-		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error (SA)", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")

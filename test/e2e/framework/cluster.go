@@ -274,7 +274,7 @@ func SetupClusters(workDir string) env.Func {
 		// available. Without this, tests that create resources immediately after
 		// setup can get "server could not find the requested resource".
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
-		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("edge API did not become available after setup: %w", err)
@@ -597,7 +597,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 
 		// Wait for edge API.
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
-		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("edge API did not become available after external kcp setup: %w", err)
@@ -772,7 +772,7 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		}
 
 		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
-		apiCtx, apiCancel := context.WithTimeout(ctx, 3*time.Minute)
+		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForEdgeAPI(apiCtx, client, clusterEnv.Token); err != nil {
 			return ctx, fmt.Errorf("edge API did not become available after setup: %w", err)

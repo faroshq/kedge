@@ -29,8 +29,8 @@ import (
 const (
 	PathPrefixAgentProxy = "/services/agent-proxy"
 	PathPrefixEdgesProxy = "/services/edges-proxy"
-	PathPrefixMCP    = "/services/mcp"
-	PathAuthCallback = "/auth/callback"
+	PathPrefixMCP        = "/services/mcp"
+	PathAuthCallback     = "/auth/callback"
 	PathAuthTokenLogin   = "/auth/token-login"
 	PathHealthz          = "/healthz"
 )

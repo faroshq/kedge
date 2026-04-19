@@ -66,6 +66,9 @@ spec:
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}
+            {{- if .Values.hub.embeddedGraphQL }}
+            - --embedded-graphql
+            {{- end }}
             - --data-dir=/data/hub
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}

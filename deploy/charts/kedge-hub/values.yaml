@@ -57,6 +57,8 @@ hub:
   hubExternalURL: ""
   listenAddr: ":9443"
   devMode: false
+  # Enable embedded GraphQL gateway (required for portal)
+  embeddedGraphQL: true
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []
   resources:

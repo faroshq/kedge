@@ -316,10 +316,10 @@ func (s *Server) Run(ctx context.Context) error {
 	router.PathPrefix(apiurl.PathPrefixAgentProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixAgentProxy, vws.EdgeAgentProxyHandler()))
 	router.PathPrefix(apiurl.PathPrefixEdgesProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixEdgesProxy, vws.EdgesProxyHandler()))
 	// Kubernetes multi-edge MCP handler:
-	//   /apis/services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
+	//   /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
 	router.PathPrefix(apiurl.PathPrefixMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCP, vws.KubernetesMCPHandler()))
 	// Per-edge MCP is served under the agent-proxy route:
-	//   /apis/services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
+	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
 	// GraphQL: either embedded (in-process) or external reverse proxy.
 	// graphqlGroup is non-nil when embedded mode is active; we wait on it after
@@ -496,7 +496,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// router now that initialisation is complete.
 	// Routing order:
 	//   1. Explicit mux routes (auth, services, graphql, healthz, assets, favicon)
-	//   2. kcpProxy for API paths (/apis/clusters/, /clusters/, /apis/, /api/)
+	//   2. kcpProxy for API paths (/clusters/, /clusters/, /apis/, /api/)
 	//   3. Portal SPA catch-all (if embedded)
 	//   4. 404
 	fullHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -507,27 +507,14 @@ func (s *Server) Run(ctx context.Context) error {
 			router.ServeHTTP(w, r)
 			return
 		}
-		// 2. kcp API paths.
-		//  - /apis/clusters/<cluster>/... → strip /apis, forward to kcp.
-		//  - /clusters/<cluster>/...       → native kcp-syntax, forward unchanged.
-		//  - /apis/<group>/... or /api/v1/... → bare kcp paths, forward unchanged
-		//    (serveServiceAccount prepends /clusters/<name> from SA token claim).
+		// 2. kcp API paths — forwarded unchanged to kcpProxy.
+		//  - /clusters/<cluster>/...          user kubeconfig / kubectl-ws
+		//  - /apis/<group>/... or /api/v1/... agent's bare kcp calls
+		//    (serveServiceAccount prepends /clusters/<name> from SA token claim)
 		if kcpProxy != nil {
-			if strings.HasPrefix(r.URL.Path, "/apis/clusters/") {
-				r2 := r.Clone(r.Context())
-				r2.URL.Path = strings.TrimPrefix(r.URL.Path, "/apis")
-				r2.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, "/apis")
-				logger.Info("hub routing to kcp proxy", "originalPath", r.URL.Path, "kcpPath", r2.URL.Path)
-				kcpProxy.ServeHTTP(w, r2)
-				return
-			}
-			if strings.HasPrefix(r.URL.Path, "/clusters/") {
-				logger.Info("hub routing to kcp proxy (kcp-syntax)", "path", r.URL.Path)
-				kcpProxy.ServeHTTP(w, r)
-				return
-			}
-			if strings.HasPrefix(r.URL.Path, "/apis/") || strings.HasPrefix(r.URL.Path, "/api/") {
-				logger.Info("hub routing to kcp proxy (bare kcp path)", "path", r.URL.Path)
+			if strings.HasPrefix(r.URL.Path, "/clusters/") ||
+				strings.HasPrefix(r.URL.Path, "/apis/") ||
+				strings.HasPrefix(r.URL.Path, "/api/") {
 				kcpProxy.ServeHTTP(w, r)
 				return
 			}

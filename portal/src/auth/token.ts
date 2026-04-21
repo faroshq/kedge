@@ -70,8 +70,8 @@ export async function refreshToken(auth: StoredAuth): Promise<StoredAuth | null>
   }
 }
 
-/** Extract cluster name from kubeconfig server URL (e.g. /apis/clusters/{name}) */
+/** Extract cluster name from kubeconfig server URL (e.g. /clusters/{name}) */
 export function parseClusterName(kubeconfig: string): string {
-  const match = kubeconfig.match(/\/apis\/clusters\/([^\s/"]+)/)
+  const match = kubeconfig.match(/\/clusters\/([^\s/"]+)/)
   return match?.[1] ?? ''
 }

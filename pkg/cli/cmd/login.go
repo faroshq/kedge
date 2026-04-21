@@ -170,7 +170,7 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 
 	// 3. Build the authorize URL — include the PKCE verifier so the hub can
 	//    exchange the auth code without a client secret.
-	authorizeURL := fmt.Sprintf("%s/apis/auth/authorize?p=%d&s=%s&v=%s",
+	authorizeURL := fmt.Sprintf("%s/auth/authorize?p=%d&s=%s&v=%s",
 		hubURL, authenticator.Port(), sessionID, codeVerifier)
 
 	// 4. Open browser.

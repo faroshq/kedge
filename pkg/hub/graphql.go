@@ -40,7 +40,7 @@ import (
 
 // startEmbeddedGraphQL starts the GraphQL listener and gateway in-process,
 // registers the GraphQL handler on the provided router under
-// /graphql/apis/clusters/{clusterName}, and launches both goroutines into g.
+// /graphql/clusters/{clusterName}, and launches both goroutines into g.
 //
 // The listener watches the kcp APIExportEndpointSlice and pushes OpenAPI schemas
 // over an in-process gRPC connection. The gateway subscribes to those schemas
@@ -117,11 +117,11 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	// ── Mount on hub router ───────────────────────────────────────────────────
 	// Gorilla mux prefix match; we extract clusterName from the URL ourselves
 	// and inject it into context for gateway.Service.ServeHTTP.
-	// External URL: /apis/graphql/{clusterName}
-	router.PathPrefix("/apis/graphql/").Handler(
+	// External URL: /graphql/{clusterName}
+	router.PathPrefix("/graphql/").Handler(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Extract cluster name from /apis/graphql/{clusterName}[/...]
-			rest := strings.TrimPrefix(r.URL.Path, "/apis/graphql/")
+			// Extract cluster name from /graphql/{clusterName}[/...]
+			rest := strings.TrimPrefix(r.URL.Path, "/graphql/")
 			clusterName, _, _ := strings.Cut(rest, "/")
 
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -131,14 +131,14 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 
 			r = r.WithContext(rctx)
 			// Gateway receives the path it needs internally.
-			r.URL.Path = "/apis/clusters/" + rest
+			r.URL.Path = "/clusters/" + rest
 
 			gatewayService.ServeHTTP(w, r)
 		}),
 	)
 
 	logger.Info("Embedded GraphQL gateway mounted",
-		"path", "/apis/graphql/{clusterName}",
+		"path", "/graphql/{clusterName}",
 		"grpcAddr", grpcAddr,
 		"playground", opts.GraphQLPlayground,
 	)

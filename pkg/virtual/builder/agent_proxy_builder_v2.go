@@ -170,7 +170,7 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		p.logger.Info("Edge agent connecting", "key", key)
 
 		conn := wsconnadapter.New(wsConn)
-		dialer := revdial.NewDialer(conn, "/apis/services/agent-proxy/proxy")
+		dialer := revdial.NewDialer(conn, "/services/agent-proxy/proxy")
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)
 
@@ -331,7 +331,7 @@ func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi
 	// correct kcp logical cluster on restart (mirrors how existing agents work).
 	serverURL := hubURL
 	if cluster != "" && cluster != "default" {
-		serverURL = strings.TrimRight(hubURL, "/") + "/apis/clusters/" + cluster
+		serverURL = strings.TrimRight(hubURL, "/") + "/clusters/" + cluster
 	}
 	contextName := "kedge-" + edgeName
 	return &clientcmdapi.Config{

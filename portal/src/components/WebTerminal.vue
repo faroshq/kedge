@@ -18,7 +18,7 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
 function buildWsUrl(cluster: string, edgeName: string, token: string): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const path = `/apis/services/edges-proxy/clusters/${cluster}/apis/kedge.faros.sh/v1alpha1/edges/${edgeName}/ssh`
+  const path = `/services/edges-proxy/clusters/${cluster}/apis/kedge.faros.sh/v1alpha1/edges/${edgeName}/ssh`
   return `${proto}//${location.host}${path}?token=${encodeURIComponent(token)}`
 }
 

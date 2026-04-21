@@ -665,7 +665,7 @@ func HubNodePortURL() string {
 
 // PodHubURLFromKubeconfig returns the hub URL reachable from inside a pod in
 // the agent kind cluster. It reads the server URL from the hub kubeconfig
-// (which contains the full /apis/clusters/<name> path), then replaces the host with
+// (which contains the full /clusters/<name> path), then replaces the host with
 // the hub node's Docker network NodePort address so that in-cluster agents can
 // connect.
 //
@@ -684,7 +684,7 @@ func PodHubURLFromKubeconfig(kubeconfigPath string) string {
 	if err != nil {
 		return ""
 	}
-	// cfg.Host is like "https://kedge.localhost:9443/apis/clusters/root:kedge:user-default"
+	// cfg.Host is like "https://kedge.localhost:9443/clusters/root:kedge:user-default"
 	parsedCluster, err := url.Parse(cfg.Host)
 	if err != nil {
 		return base
@@ -701,7 +701,7 @@ func AgentBinPath() string {
 }
 
 // ClusterNameFromKubeconfig reads the kubeconfig at path and extracts the kcp
-// cluster name from the server URL (e.g. "https://hub:9443/apis/clusters/abc123" →
+// cluster name from the server URL (e.g. "https://hub:9443/clusters/abc123" →
 // "abc123").  Returns "" when the kubeconfig cannot be read or has no cluster
 // path, so callers should skip passing --cluster in that case.
 func ClusterNameFromKubeconfig(kubeconfigPath string) string {

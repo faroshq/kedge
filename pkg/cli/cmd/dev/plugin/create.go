@@ -563,7 +563,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 	actionConfig.RegistryClient = regClient
 
 	hubExternalURL := fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort)
-	redirectURI := hubExternalURL + "/apis/auth/callback"
+	redirectURI := hubExternalURL + "/auth/callback"
 
 	dexValues := map[string]any{
 		"image": map[string]any{"tag": "v2.44.0"},

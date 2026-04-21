@@ -174,8 +174,8 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 // mcpKubernetesURLFromServerURL derives the Kubernetes MCP endpoint URL from a
 // kcp server URL and a Kubernetes MCP object name.
 //
-// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
-// Output: https://kedge.example.com/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
+// Input:  https://kedge.example.com/apis/clusters/root:kedge:user-default, "default"
+// Output: https://kedge.example.com/apis/services/mcp/root:kedge:user-default/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp
 func mcpKubernetesURLFromServerURL(serverURL, kubernetesName string) (string, error) {
 	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
 	if cluster == "default" {

@@ -49,7 +49,7 @@ const needsJoin = computed(() => {
 const hubURL = computed(() => {
   const origin = window.location.origin
   const cluster = auth.clusterName
-  return cluster ? `${origin}/clusters/${cluster}` : origin
+  return cluster ? `${origin}/apis/clusters/${cluster}` : origin
 })
 
 const edgeType = computed(() => edge.value?.spec?.type ?? 'kubernetes')

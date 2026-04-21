@@ -170,7 +170,7 @@ func (p *virtualWorkspaces) buildEdgeAgentProxyHandler() http.Handler {
 		p.logger.Info("Edge agent connecting", "key", key)
 
 		conn := wsconnadapter.New(wsConn)
-		dialer := revdial.NewDialer(conn, "/services/agent-proxy/proxy")
+		dialer := revdial.NewDialer(conn, "/apis/services/agent-proxy/proxy")
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)
 
@@ -283,7 +283,7 @@ func (p *virtualWorkspaces) buildAgentKubeconfigHeader(cluster, edgeName, _ stri
 
 	// Read the SA token from the kubeconfig secret created by the RBAC controller.
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		p.logger.Error(err, "failed to create dynamic client for SA token lookup")
@@ -331,7 +331,7 @@ func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi
 	// correct kcp logical cluster on restart (mirrors how existing agents work).
 	serverURL := hubURL
 	if cluster != "" && cluster != "default" {
-		serverURL = strings.TrimRight(hubURL, "/") + "/clusters/" + cluster
+		serverURL = strings.TrimRight(hubURL, "/") + "/apis/clusters/" + cluster
 	}
 	contextName := "kedge-" + edgeName
 	return &clientcmdapi.Config{
@@ -362,7 +362,7 @@ func (p *virtualWorkspaces) authorizeByJoinToken(ctx context.Context, token, clu
 	}
 
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = apiurl.HubServerURL(cfg.Host, cluster)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
 
 	dynClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {

@@ -26,25 +26,31 @@ import (
 )
 
 // Path prefix constants for kedge virtual-workspace services and auth endpoints.
+// All API paths live under /apis/ to separate them from the portal SPA served at /.
 const (
-	PathPrefixAgentProxy = "/services/agent-proxy"
-	PathPrefixEdgesProxy = "/services/edges-proxy"
-	PathPrefixMCP        = "/services/mcp"
-	PathAuthCallback     = "/auth/callback"
-	PathAuthTokenLogin   = "/auth/token-login"
+	PathPrefixAgentProxy = "/apis/services/agent-proxy"
+	PathPrefixEdgesProxy = "/apis/services/edges-proxy"
+	PathPrefixMCP        = "/apis/services/mcp"
+	PathAuthAuthorize    = "/apis/auth/authorize"
+	PathAuthCallback     = "/apis/auth/callback"
+	PathAuthRefresh      = "/apis/auth/refresh"
+	PathAuthTokenLogin   = "/apis/auth/token-login"
 	PathHealthz          = "/healthz"
 )
 
-// SplitBaseAndCluster splits a hub URL that may contain a /clusters/<name>
-// suffix into a base URL (scheme+host only, no trailing slash) and the kcp
-// cluster name.
+// SplitBaseAndCluster splits a hub or kcp URL that contains a cluster path
+// into a base URL (scheme+host only, no trailing slash) and the kcp cluster name.
+//
+// Accepts both external hub URLs (/apis/clusters/<name>) and internal kcp URLs
+// (/clusters/<name>).
 //
 // Examples:
 //
-//	"https://hub:9443/clusters/abc123"        → ("https://hub:9443", "abc123")
-//	"https://hub:9443/clusters/abc123/extra"  → ("https://hub:9443", "abc123")
-//	"https://hub:9443"                         → ("https://hub:9443", "default")
-//	"https://hub:9443/"                        → ("https://hub:9443", "default")
+//	"https://hub:9443/apis/clusters/abc123"       → ("https://hub:9443", "abc123")
+//	"https://hub:9443/apis/clusters/abc123/extra" → ("https://hub:9443", "abc123")
+//	"https://kcp:6443/clusters/abc123"            → ("https://kcp:6443", "abc123")
+//	"https://hub:9443"                            → ("https://hub:9443", "default")
+//	"https://hub:9443/"                           → ("https://hub:9443", "default")
 //
 // Returns (trimmed url, "default") on parse error.
 func SplitBaseAndCluster(rawURL string) (base, cluster string) {
@@ -52,8 +58,14 @@ func SplitBaseAndCluster(rawURL string) (base, cluster string) {
 	if err != nil {
 		return strings.TrimRight(rawURL, "/"), "default"
 	}
-	// Path can be empty, "/clusters/abc123", or "/clusters/abc123/extra".
-	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 3)
+	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 5)
+	// Match /apis/clusters/<name>[/...]
+	if len(parts) >= 3 && parts[0] == "apis" && parts[1] == "clusters" && parts[2] != "" {
+		u.Path = ""
+		u.RawPath = ""
+		return strings.TrimRight(u.String(), "/"), parts[2]
+	}
+	// Match /clusters/<name>[/...] (internal kcp URLs)
 	if len(parts) >= 2 && parts[0] == "clusters" && parts[1] != "" {
 		u.Path = ""
 		u.RawPath = ""
@@ -64,24 +76,49 @@ func SplitBaseAndCluster(rawURL string) (base, cluster string) {
 	return strings.TrimRight(u.String(), "/"), "default"
 }
 
-// HubServerURL returns the hub server URL with a /clusters/<cluster> suffix,
-// suitable for use in kubeconfigs and kcp client configurations.
+// HubServerURL returns the hub's external URL with a /apis/clusters/<cluster> suffix,
+// suitable for use in user-facing kubeconfigs and auth redirect URLs.
+// Requests to this URL go through the hub's HTTP router (which strips /apis).
 //
-// If hubBase already contains a /clusters/ path it is replaced.
+// For internal kcp connections (controllers, virtual workspaces) that bypass
+// the hub router, use KCPClusterURL instead.
 //
-// Example: HubServerURL("https://hub:9443", "abc123") → "https://hub:9443/clusters/abc123"
+// If hubBase already contains a /apis/clusters/ or /clusters/ path it is replaced.
+//
+// Example: HubServerURL("https://hub:9443", "abc123") → "https://hub:9443/apis/clusters/abc123"
 func HubServerURL(hubBase, cluster string) string {
-	base := strings.TrimSuffix(hubBase, "/")
-	if idx := strings.Index(base, "/clusters/"); idx != -1 {
-		base = base[:idx]
-	}
+	base := stripClusterPath(hubBase)
+	return base + "/apis/clusters/" + cluster
+}
+
+// KCPClusterURL returns a kcp server URL with a /clusters/<cluster> suffix,
+// suitable for direct kcp API connections (controllers, virtual workspaces,
+// multicluster providers). These connections go directly to kcp and do NOT
+// pass through the hub router, so the /apis prefix must be omitted.
+//
+// Example: KCPClusterURL("https://localhost:6443", "root:kedge:providers") → "https://localhost:6443/clusters/root:kedge:providers"
+func KCPClusterURL(kcpBase, cluster string) string {
+	base := stripClusterPath(kcpBase)
 	return base + "/clusters/" + cluster
+}
+
+// stripClusterPath removes any existing /apis/clusters/... or /clusters/... suffix
+// from a URL, returning just the scheme+host portion.
+func stripClusterPath(u string) string {
+	base := strings.TrimSuffix(u, "/")
+	if idx := strings.Index(base, "/apis/clusters/"); idx != -1 {
+		return base[:idx]
+	}
+	if idx := strings.Index(base, "/clusters/"); idx != -1 {
+		return base[:idx]
+	}
+	return base
 }
 
 // EdgeAgentProxyPath returns the URL path (relative to the hub base) for the
 // agent-proxy virtual workspace endpoint.
 //
-// Pattern: /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/{subresource}
+// Pattern: /apis/services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/{subresource}
 func EdgeAgentProxyPath(cluster, edgeName, subresource string) string {
 	return fmt.Sprintf("%s/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/%s",
 		PathPrefixAgentProxy, cluster, edgeName, subresource)
@@ -96,7 +133,7 @@ func EdgeAgentProxyURL(hubBase, cluster, edgeName, subresource string) string {
 // EdgeProxyPath returns the URL path (relative to the hub base) for the
 // edges-proxy virtual workspace endpoint.
 //
-// Pattern: /services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/{subresource}
+// Pattern: /apis/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/{subresource}
 func EdgeProxyPath(cluster, edgeName, subresource string) string {
 	return fmt.Sprintf("%s/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/%s",
 		PathPrefixEdgesProxy, cluster, edgeName, subresource)
@@ -110,7 +147,7 @@ func EdgeProxyURL(hubBase, cluster, edgeName, subresource string) string {
 
 // KubernetesMCPPath returns the URL path for the MCP virtual workspace endpoint.
 //
-// Pattern: /services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
+// Pattern: /apis/services/mcp/{cluster}/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/{name}/mcp
 func KubernetesMCPPath(cluster, kubernetesName string) string {
 	return fmt.Sprintf("%s/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
 		PathPrefixMCP, cluster, kubernetesName)
@@ -124,18 +161,18 @@ func KubernetesMCPURL(hubBase, cluster, kubernetesName string) string {
 // EdgeAPIPath returns the kcp API path for an Edge resource, suitable for use
 // as a client Host suffix or in kubeconfig server URLs.
 //
-// Pattern: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
+// Pattern: /apis/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}
 func EdgeAPIPath(cluster, edgeName string) string {
-	return fmt.Sprintf("/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s", cluster, edgeName)
+	return fmt.Sprintf("/apis/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s", cluster, edgeName)
 }
 
 // ExternalizeURL replaces the scheme and host in edgeURL with those from
 // hubBase, making an internal edge-proxy URL routable through the public hub.
 //
-// If edgeURL does not start with /services/ it is returned unchanged (it is
+// If edgeURL does not start with /apis/services/ it is returned unchanged (it is
 // already an absolute URL with the correct host, or is not a services path).
 func ExternalizeURL(edgeURL, hubBase string) (string, error) {
-	if !strings.HasPrefix(edgeURL, "/services/") {
+	if !strings.HasPrefix(edgeURL, "/apis/services/") {
 		return edgeURL, nil
 	}
 	hub, err := url.Parse(strings.TrimRight(hubBase, "/"))

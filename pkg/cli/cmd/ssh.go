@@ -142,7 +142,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 //
 // Edge.Status.URL for server-type edges is already the complete HTTPS URL:
 //
-//	https://<hub>/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh
+//	https://<hub>/apis/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh
 //
 // This function simply converts the scheme to WebSocket (https→wss, http→ws)
 // and optionally appends the "cmd" query parameter for non-interactive SSH exec.

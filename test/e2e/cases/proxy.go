@@ -304,7 +304,7 @@ func CrossWorkspaceEdgeIsolation() features.Feature {
 			t.Logf("User A kcp cluster name: %s", clusterNameA)
 
 			edgeProxyURLForA := clusterEnv.HubURL +
-				"/services/edges-proxy/clusters/" + clusterNameA +
+				"/apis/services/edges-proxy/clusters/" + clusterNameA +
 				"/apis/kedge.faros.sh/v1alpha1/edges/" + edgeNameA + "/k8s"
 			t.Logf("User A edge proxy URL: %s", edgeProxyURLForA)
 
@@ -352,7 +352,7 @@ func CrossWorkspaceEdgeIsolation() features.Feature {
 					clusterNameB := framework.ClusterNameFromKubeconfig(kcFileB)
 					if clusterNameB != "" {
 						edgeProxyURLForB = clusterEnv.HubURL +
-							"/services/edges-proxy/clusters/" + clusterNameB +
+							"/apis/services/edges-proxy/clusters/" + clusterNameB +
 							"/apis/kedge.faros.sh/v1alpha1/edges/" + edgeNameB + "/k8s"
 						t.Logf("User B edge proxy URL: %s", edgeProxyURLForB)
 					}

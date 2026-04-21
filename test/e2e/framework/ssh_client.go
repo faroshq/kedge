@@ -70,7 +70,7 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 	}
 
 	// Look up the edge to get the correct status.URL (includes the real cluster
-	// name, e.g. /clusters/1fsiilmnkk22io6n/...).
+	// name, e.g. /apis/clusters/1fsiilmnkk22io6n/...).
 	kedgeClient, err := kedgeclient.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating kedge client: %w", err)

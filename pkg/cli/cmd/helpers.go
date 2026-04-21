@@ -126,7 +126,7 @@ func externalizeEdgeURLFromConfig(edgeURL string, config *rest.Config) (string, 
 	}
 
 	// Only externalize if the path looks like an edges-proxy path.
-	if !strings.HasPrefix(parsed.Path, "/services/") {
+	if !strings.HasPrefix(parsed.Path, "/apis/services/") {
 		return edgeURL, nil
 	}
 
@@ -157,7 +157,7 @@ func externalizeEdgeURL(edgeURL string, rawConfig *clientcmdapi.Config) (string,
 		return edgeURL, nil //nolint:nilerr
 	}
 
-	if !strings.HasPrefix(parsed.Path, "/services/") {
+	if !strings.HasPrefix(parsed.Path, "/apis/services/") {
 		return edgeURL, nil
 	}
 

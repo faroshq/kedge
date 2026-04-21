@@ -70,6 +70,8 @@ func main() {
 	cmd.Flags().StringVar(&opts.GraphQLGRPCAddr, "graphql-grpc-addr", opts.GraphQLGRPCAddr, "In-process gRPC address for embedded GraphQL listener/gateway communication")
 	cmd.Flags().BoolVar(&opts.GraphQLPlayground, "graphql-playground", opts.GraphQLPlayground, "Enable the GraphQL playground UI")
 
+	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /console/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
+
 	// Embedded kcp flags
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")
 	cmd.Flags().StringVar(&opts.KCPRootDir, "kcp-root-dir", "", "Root directory for embedded kcp data (default: <data-dir>/kcp)")

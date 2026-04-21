@@ -29,13 +29,13 @@ func TestSplitBaseAndCluster(t *testing.T) {
 	}{
 		{
 			name:        "full URL with cluster",
-			input:       "https://hub:9443/clusters/abc123",
+			input:       "https://hub:9443/apis/clusters/abc123",
 			wantBase:    "https://hub:9443",
 			wantCluster: "abc123",
 		},
 		{
 			name:        "URL with cluster and extra path",
-			input:       "https://hub:9443/clusters/abc123/extra/path",
+			input:       "https://hub:9443/apis/clusters/abc123/extra/path",
 			wantBase:    "https://hub:9443",
 			wantCluster: "abc123",
 		},
@@ -53,27 +53,39 @@ func TestSplitBaseAndCluster(t *testing.T) {
 		},
 		{
 			name:        "URL with trailing slash and cluster",
-			input:       "https://hub:9443/clusters/abc123/",
+			input:       "https://hub:9443/apis/clusters/abc123/",
 			wantBase:    "https://hub:9443",
 			wantCluster: "abc123",
 		},
 		{
 			name:        "localhost URL with cluster",
-			input:       "https://kedge.localhost:6444/clusters/root:kedge:user-default",
+			input:       "https://kedge.localhost:6444/apis/clusters/root:kedge:user-default",
 			wantBase:    "https://kedge.localhost:6444",
 			wantCluster: "root:kedge:user-default",
 		},
 		{
 			name:        "http scheme",
-			input:       "http://hub:8080/clusters/mycluster",
+			input:       "http://hub:8080/apis/clusters/mycluster",
 			wantBase:    "http://hub:8080",
 			wantCluster: "mycluster",
 		},
 		{
-			name:        "empty cluster segment (trailing slash after /clusters/)",
-			input:       "https://hub:9443/clusters/",
+			name:        "empty cluster segment (trailing slash after /apis/clusters/)",
+			input:       "https://hub:9443/apis/clusters/",
 			wantBase:    "https://hub:9443",
 			wantCluster: "default",
+		},
+		{
+			name:        "internal kcp URL with /clusters/ (no /api prefix)",
+			input:       "https://localhost:6443/clusters/root:kedge:providers",
+			wantBase:    "https://localhost:6443",
+			wantCluster: "root:kedge:providers",
+		},
+		{
+			name:        "internal kcp URL with /clusters/ and extra path",
+			input:       "https://localhost:6443/clusters/root:kedge/api/v1",
+			wantBase:    "https://localhost:6443",
+			wantCluster: "root:kedge",
 		},
 	}
 
@@ -101,25 +113,25 @@ func TestHubServerURL(t *testing.T) {
 			name:    "plain base",
 			hubBase: "https://hub:9443",
 			cluster: "abc123",
-			want:    "https://hub:9443/clusters/abc123",
+			want:    "https://hub:9443/apis/clusters/abc123",
 		},
 		{
 			name:    "base with trailing slash",
 			hubBase: "https://hub:9443/",
 			cluster: "abc123",
-			want:    "https://hub:9443/clusters/abc123",
+			want:    "https://hub:9443/apis/clusters/abc123",
 		},
 		{
-			name:    "base already has /clusters/ — replaced",
-			hubBase: "https://hub:9443/clusters/old",
+			name:    "base already has /apis/clusters/ — replaced",
+			hubBase: "https://hub:9443/apis/clusters/old",
 			cluster: "new",
-			want:    "https://hub:9443/clusters/new",
+			want:    "https://hub:9443/apis/clusters/new",
 		},
 		{
 			name:    "kcp colon-path cluster",
 			hubBase: "https://hub:9443",
 			cluster: "root:kedge:user-default",
-			want:    "https://hub:9443/clusters/root:kedge:user-default",
+			want:    "https://hub:9443/apis/clusters/root:kedge:user-default",
 		},
 	}
 
@@ -146,14 +158,14 @@ func TestEdgeAgentProxyPath(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "/apis/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 		},
 		{
 			name:        "status subresource",
 			cluster:     "root:kedge:user-default",
 			edgeName:    "edge-1",
 			subresource: "status",
-			want:        "/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/edge-1/status",
+			want:        "/apis/services/agent-proxy/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/edge-1/status",
 		},
 	}
 
@@ -183,7 +195,7 @@ func TestEdgeAgentProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "https://hub:9443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "https://hub:9443/apis/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 		},
 		{
 			name:        "hub base with trailing slash",
@@ -191,7 +203,7 @@ func TestEdgeAgentProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "proxy",
-			want:        "https://hub:9443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:        "https://hub:9443/apis/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 		},
 	}
 
@@ -219,14 +231,14 @@ func TestEdgeProxyPath(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "/apis/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:        "ssh subresource",
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "ssh",
-			want:        "/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/ssh",
+			want:        "/apis/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/ssh",
 		},
 	}
 
@@ -256,7 +268,7 @@ func TestEdgeProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "https://hub:9443/apis/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:        "ssh URL",
@@ -264,7 +276,7 @@ func TestEdgeProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "server-1",
 			subresource: "ssh",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/server-1/ssh",
+			want:        "https://hub:9443/apis/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/server-1/ssh",
 		},
 		{
 			name:        "hub base with trailing slash",
@@ -272,7 +284,7 @@ func TestEdgeProxyURL(t *testing.T) {
 			cluster:     "abc123",
 			edgeName:    "my-edge",
 			subresource: "k8s",
-			want:        "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:        "https://hub:9443/apis/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 		},
 	}
 
@@ -298,13 +310,13 @@ func TestKubernetesMCPPath(t *testing.T) {
 			name:           "default kubernetes",
 			cluster:        "abc123",
 			kubernetesName: "default",
-			want:           "/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
+			want:           "/apis/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp",
 		},
 		{
 			name:           "named kubernetes",
 			cluster:        "abc123",
 			kubernetesName: "my-cluster",
-			want:           "/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/my-cluster/mcp",
+			want:           "/apis/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/my-cluster/mcp",
 		},
 	}
 
@@ -321,7 +333,7 @@ func TestKubernetesMCPPath(t *testing.T) {
 
 func TestKubernetesMCPURL(t *testing.T) {
 	got := KubernetesMCPURL("https://hub:9443", "abc123", "default")
-	want := "https://hub:9443/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp"
+	want := "https://hub:9443/apis/services/mcp/abc123/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/default/mcp"
 	if got != want {
 		t.Errorf("KubernetesMCPURL = %q, want %q", got, want)
 	}
@@ -338,13 +350,13 @@ func TestEdgeAPIPath(t *testing.T) {
 			name:     "standard edge",
 			cluster:  "abc123",
 			edgeName: "my-edge",
-			want:     "/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
+			want:     "/apis/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
 		},
 		{
 			name:     "kcp colon-path cluster",
 			cluster:  "root:kedge:user-default",
 			edgeName: "edge-1",
-			want:     "/clusters/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/edge-1",
+			want:     "/apis/clusters/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/edges/edge-1",
 		},
 	}
 
@@ -367,10 +379,10 @@ func TestExternalizeURL(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "services path gets externalized",
-			edgeURL: "/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			name:    "api services path gets externalized",
+			edgeURL: "/apis/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 			hubBase: "https://hub:9443",
-			want:    "https://hub:9443/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
+			want:    "https://hub:9443/apis/services/edges-proxy/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/k8s",
 		},
 		{
 			name:    "absolute URL returned unchanged",
@@ -380,15 +392,15 @@ func TestExternalizeURL(t *testing.T) {
 		},
 		{
 			name:    "non-services path returned unchanged",
-			edgeURL: "/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
+			edgeURL: "/apis/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
 			hubBase: "https://hub:9443",
-			want:    "/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
+			want:    "/apis/clusters/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge",
 		},
 		{
 			name:    "hub base with trailing slash",
-			edgeURL: "/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			edgeURL: "/apis/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 			hubBase: "https://hub:9443/",
-			want:    "https://hub:9443/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
+			want:    "https://hub:9443/apis/services/agent-proxy/abc123/apis/kedge.faros.sh/v1alpha1/edges/my-edge/proxy",
 		},
 	}
 
@@ -407,19 +419,19 @@ func TestExternalizeURL(t *testing.T) {
 }
 
 func TestConstants(t *testing.T) {
-	if PathPrefixAgentProxy != "/services/agent-proxy" {
-		t.Errorf("PathPrefixAgentProxy = %q, want %q", PathPrefixAgentProxy, "/services/agent-proxy")
+	if PathPrefixAgentProxy != "/apis/services/agent-proxy" {
+		t.Errorf("PathPrefixAgentProxy = %q, want %q", PathPrefixAgentProxy, "/apis/services/agent-proxy")
 	}
-	if PathPrefixEdgesProxy != "/services/edges-proxy" {
-		t.Errorf("PathPrefixEdgesProxy = %q, want %q", PathPrefixEdgesProxy, "/services/edges-proxy")
+	if PathPrefixEdgesProxy != "/apis/services/edges-proxy" {
+		t.Errorf("PathPrefixEdgesProxy = %q, want %q", PathPrefixEdgesProxy, "/apis/services/edges-proxy")
 	}
-	if PathPrefixMCP != "/services/mcp" {
-		t.Errorf("PathPrefixMCP = %q, want %q", PathPrefixMCP, "/services/mcp")
+	if PathPrefixMCP != "/apis/services/mcp" {
+		t.Errorf("PathPrefixMCP = %q, want %q", PathPrefixMCP, "/apis/services/mcp")
 	}
-	if PathAuthCallback != "/auth/callback" {
-		t.Errorf("PathAuthCallback = %q, want %q", PathAuthCallback, "/auth/callback")
+	if PathAuthCallback != "/apis/auth/callback" {
+		t.Errorf("PathAuthCallback = %q, want %q", PathAuthCallback, "/apis/auth/callback")
 	}
-	if PathAuthTokenLogin != "/auth/token-login" {
-		t.Errorf("PathAuthTokenLogin = %q, want %q", PathAuthTokenLogin, "/auth/token-login")
+	if PathAuthTokenLogin != "/apis/auth/token-login" {
+		t.Errorf("PathAuthTokenLogin = %q, want %q", PathAuthTokenLogin, "/apis/auth/token-login")
 	}
 }

@@ -47,7 +47,7 @@ var proxyAuthClient = &http.Client{
 // validation path. The edge name ("nonexistent") need not exist — auth is
 // checked before the edge lookup.
 func proxyEdgesURL(hubURL string) string {
-	return hubURL + "/services/edges-proxy/clusters/test/apis/kedge.faros.sh/v1alpha1/edges/nonexistent/k8s"
+	return hubURL + "/apis/services/edges-proxy/clusters/test/apis/kedge.faros.sh/v1alpha1/edges/nonexistent/k8s"
 }
 
 // doProxyRequest sends a GET to the edges-proxy with the given Authorization
@@ -101,7 +101,7 @@ func ProxyUnauthenticated() features.Feature {
 			// The handler rejects requests with an empty bearer token with 401
 			// before any path parsing or cluster lookup occurs, so the cluster
 			// and edge name here are arbitrary placeholders.
-			proxyURL := clusterEnv.HubURL + "/services/edges-proxy/clusters/test/apis/kedge.faros.sh/v1alpha1/edges/nonexistent/k8s"
+			proxyURL := clusterEnv.HubURL + "/apis/services/edges-proxy/clusters/test/apis/kedge.faros.sh/v1alpha1/edges/nonexistent/k8s"
 			code, err := framework.HTTPGet(ctx, proxyURL)
 			if err != nil {
 				t.Fatalf("HTTP GET to edges proxy failed: %v", err)
@@ -252,7 +252,7 @@ func OIDCCrossUserEdgeIsolation() features.Feature {
 			// Auth is enforced before any edge lookup, so the edge doesn't need to
 			// be connected for the 403 check to be meaningful.
 			edgeProxyURL := clusterEnv.HubURL +
-				"/services/edges-proxy/clusters/" + clusterName +
+				"/apis/services/edges-proxy/clusters/" + clusterName +
 				"/apis/kedge.faros.sh/v1alpha1/edges/" + edgeName + "/k8s"
 			t.Logf("User A edge proxy URL: %s", edgeProxyURL)
 

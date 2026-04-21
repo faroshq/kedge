@@ -30,7 +30,7 @@ const created = computed(() => joinToken.value !== null || tokenError.value !== 
 const hubURL = computed(() => {
   const origin = window.location.origin
   const cluster = auth.clusterName
-  return cluster ? `${origin}/clusters/${cluster}` : origin
+  return cluster ? `${origin}/apis/clusters/${cluster}` : origin
 })
 
 function buildHelmSnippet(token: string) {

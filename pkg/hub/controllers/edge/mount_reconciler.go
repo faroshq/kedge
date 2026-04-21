@@ -145,7 +145,7 @@ func (r *MountReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 // owned by the Edge so that the workspace is garbage-collected when the Edge is deleted.
 func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.Logger, clusterName string, edge *kedgev1alpha1.Edge) error {
 	cfg := rest.CopyConfig(r.kcpConfig)
-	cfg.Host = apiurl.HubServerURL(cfg.Host, clusterName)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterName)
 
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -194,7 +194,7 @@ func (r *MountReconciler) ensureMountWorkspace(ctx context.Context, logger klog.
 // This is called when an edge type changes from kubernetes to server.
 func (r *MountReconciler) deleteMountWorkspace(ctx context.Context, logger klog.Logger, clusterName, edgeName string) error {
 	cfg := rest.CopyConfig(r.kcpConfig)
-	cfg.Host = apiurl.HubServerURL(cfg.Host, clusterName)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterName)
 
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {

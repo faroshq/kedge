@@ -80,10 +80,10 @@ func newMCPClientWithKubernetes(hubKubeconfig, edgeName, kubernetesName string) 
 
 	var mcpURL string
 	if kubernetesName != "" {
-		mcpURL = fmt.Sprintf("%s/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
+		mcpURL = fmt.Sprintf("%s/apis/services/mcp/%s/apis/mcp.kedge.faros.sh/v1alpha1/kubernetes/%s/mcp",
 			nodePortBase, clusterName, kubernetesName)
 	} else {
-		mcpURL = fmt.Sprintf("%s/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
+		mcpURL = fmt.Sprintf("%s/apis/services/agent-proxy/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/mcp",
 			nodePortBase, clusterName, edgeName)
 	}
 
@@ -322,8 +322,8 @@ func MCPURL() features.Feature {
 			if !strings.HasPrefix(out, "https://") {
 				t.Errorf("expected URL to start with https://, got: %s", out)
 			}
-			if !strings.Contains(out, "/services/agent-proxy/") {
-				t.Errorf("expected URL to contain /services/agent-proxy/, got: %s", out)
+			if !strings.Contains(out, "/apis/services/agent-proxy/") {
+				t.Errorf("expected URL to contain /apis/services/agent-proxy/, got: %s", out)
 			}
 			if !strings.Contains(out, "/edges/"+edgeName+"/mcp") {
 				t.Errorf("expected URL to contain /edges/%s/mcp, got: %s", edgeName, out)
@@ -348,8 +348,8 @@ func MCPURL() features.Feature {
 			if !strings.HasPrefix(out, "https://") {
 				t.Errorf("expected URL to start with https://, got: %s", out)
 			}
-			if !strings.Contains(out, "/services/mcp/") {
-				t.Errorf("expected URL to contain /services/mcp/, got: %s", out)
+			if !strings.Contains(out, "/apis/services/mcp/") {
+				t.Errorf("expected URL to contain /apis/services/mcp/, got: %s", out)
 			}
 			if !strings.Contains(out, "/kubernetes/default/mcp") {
 				t.Errorf("expected URL to contain /kubernetes/default/mcp, got: %s", out)
@@ -449,7 +449,7 @@ func MCPKubernetes() features.Feature {
 
 // clusterNameFromKubeconfig extracts the kcp cluster name from the server URL
 // in the current context of the given kubeconfig file.
-// Returns the path segment after /clusters/ in the server URL.
+// Returns the path segment after /apis/clusters/ in the server URL.
 func clusterNameFromKubeconfig(kubeconfigPath string) (string, error) {
 	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
 	clientCfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
@@ -478,11 +478,11 @@ func clusterNameFromKubeconfig(kubeconfigPath string) (string, error) {
 	}
 
 	serverURL := clusterObj.Server
-	idx := strings.Index(serverURL, "/clusters/")
+	idx := strings.Index(serverURL, "/apis/clusters/")
 	if idx < 0 {
-		return "", fmt.Errorf("server URL %q does not contain /clusters/ segment", serverURL)
+		return "", fmt.Errorf("server URL %q does not contain /apis/clusters/ segment", serverURL)
 	}
-	clusterName := strings.TrimSuffix(strings.TrimPrefix(serverURL[idx:], "/clusters/"), "/")
+	clusterName := strings.TrimSuffix(strings.TrimPrefix(serverURL[idx:], "/apis/clusters/"), "/")
 	if clusterName == "" {
 		return "", fmt.Errorf("empty cluster name in server URL %q", serverURL)
 	}

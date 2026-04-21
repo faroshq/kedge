@@ -134,7 +134,7 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 	// PKCE (public client): generate a code_verifier so the hub can include
 	// the S256 code_challenge in the upstream auth URL and verify on exchange.
 	codeVerifier := oauth2.GenerateVerifier()
-	authorizeURL := fmt.Sprintf("%s/auth/authorize?p=%d&s=e2etest&v=%s", hubURL, callbackPort, url.QueryEscape(codeVerifier))
+	authorizeURL := fmt.Sprintf("%s/apis/auth/authorize?p=%d&s=e2etest&v=%s", hubURL, callbackPort, url.QueryEscape(codeVerifier))
 	dexAuthURL, err := doRedirect(ctx, client, authorizeURL)
 	if err != nil {
 		return nil, fmt.Errorf("following hub /auth/authorize: %w", err)

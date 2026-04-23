@@ -110,6 +110,67 @@ spec:
 	return nil
 }
 
+// ensureDexCertificate creates the cert-manager Certificate that issues Dex's
+// TLS cert (secret devDexTLSSecret in devDexNamespace). Issued via the
+// kedge-selfsigned ClusterIssuer. Also creates the namespace so the Certificate
+// has somewhere to land before the Dex Helm install runs.
+//
+// DNS SANs include the in-cluster service name (used by hub/kcp) plus
+// `localhost` so the test runner can hit Dex through the kind port mapping
+// (host 127.0.0.1:5554 → kind node 31554 → service 5554) without an
+// /etc/hosts hack.
+//
+// Idempotent — kubectl apply.
+func ensureDexCertificate(ctx context.Context, kubeconfigPath string) error {
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dex-tls
+  namespace: %s
+spec:
+  secretName: %s
+  duration: 8760h    # 1y
+  renewBefore: 720h  # 30d
+  commonName: dex.kedge-system.svc.cluster.local
+  dnsNames:
+    - dex.kedge-system.svc.cluster.local
+    - dex.kedge-system.svc
+    - dex.kedge-system
+    - dex
+    - localhost
+  issuerRef:
+    name: %s
+    kind: ClusterIssuer
+    group: cert-manager.io
+`, devDexNamespace, devDexNamespace, devDexTLSSecret, selfSignedClusterIssuerName)
+
+	applyCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-")
+	applyCmd.Stdin = strings.NewReader(manifest)
+	applyCmd.Stdout = os.Stdout
+	applyCmd.Stderr = os.Stderr
+	if err := applyCmd.Run(); err != nil {
+		return fmt.Errorf("applying dex Certificate: %w", err)
+	}
+
+	// Block until the secret exists so the Dex Helm install doesn't try to
+	// mount a non-existent secret.
+	waitCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath,
+		"-n", devDexNamespace,
+		"wait", "--for=condition=Ready", "certificate/dex-tls",
+		"--timeout=2m")
+	waitCmd.Stdout = os.Stdout
+	waitCmd.Stderr = os.Stderr
+	if err := waitCmd.Run(); err != nil {
+		return fmt.Errorf("waiting for dex Certificate to be Ready: %w", err)
+	}
+	return nil
+}
+
 // ensureCertManager installs cert-manager into the cluster and waits for it
 // to be ready. Idempotent — safe to call on an existing cert-manager install.
 func ensureCertManager(ctx context.Context, kubeconfigPath string) error {

@@ -186,15 +186,15 @@ func HTTPGet(ctx context.Context, url string) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// HTTPGetBody performs a GET to url using a plain (non-insecure) HTTP client
-// and returns the status code and response body as a string.
-// Use this for plain HTTP endpoints (e.g. in-cluster Dex via kind port mapping).
+// HTTPGetBody performs a GET to url and returns the status code and response
+// body. TLS verification is skipped — used for in-cluster services exposed via
+// kind port mapping with self-signed certs (Dex, hub).
 func HTTPGetBody(ctx context.Context, url string) (int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := insecureHTTPClient.Do(req)
 	if err != nil {
 		return 0, "", err
 	}

@@ -110,6 +110,13 @@ func (s *Server) Run(ctx context.Context) error {
 			TLSCertFile:      s.opts.KCPTLSCertFile,
 			TLSKeyFile:       s.opts.KCPTLSKeyFile,
 			StaticAuthTokens: s.opts.StaticAuthTokens,
+			// Wire OIDC into kcp so it can authenticate user tokens forwarded
+			// by the proxy natively. The default username mapping (sub →
+			// "kedge:<sub>") matches User.Spec.RBACIdentity issued by the auth
+			// handler, so existing workspace RBAC bindings keep working.
+			OIDCIssuerURL: s.opts.IDPIssuerURL,
+			OIDCClientID:  s.opts.IDPClientID,
+			OIDCCAFile:    s.opts.IDPCAFile,
 		})
 
 		// Start kcp in a goroutine. It will block until context is cancelled

@@ -59,6 +59,9 @@ spec:
             {{- if .Values.idp.issuerURL }}
             - --idp-issuer-url={{ .Values.idp.issuerURL }}
             - --idp-client-id={{ .Values.idp.clientID }}
+            {{- if .Values.idp.caSecretName }}
+            - --idp-ca-file=/idp-ca/{{ .Values.idp.caSecretKey }}
+            {{- end }}
             {{- end }}
             {{- range .Values.hub.staticAuthTokens }}
             - --static-auth-token={{ . }}
@@ -112,6 +115,11 @@ spec:
               mountPath: /kcp-kubeconfig
               readOnly: true
             {{- end }}
+            {{- if .Values.idp.caSecretName }}
+            - name: idp-ca
+              mountPath: /idp-ca
+              readOnly: true
+            {{- end }}
 
       volumes:
         {{- if include "kedge-hub.tlsEnabled" . }}
@@ -128,6 +136,11 @@ spec:
         - name: kcp-kubeconfig
           secret:
             secretName: {{ include "kedge-hub.kcpKubeconfigSecretName" . }}
+        {{- end }}
+        {{- if .Values.idp.caSecretName }}
+        - name: idp-ca
+          secret:
+            secretName: {{ .Values.idp.caSecretName }}
         {{- end }}
 
       {{- with .Values.nodeSelector }}

@@ -24,6 +24,10 @@ type Options struct {
 	ExternalKCPKubeconfig string
 	IDPIssuerURL          string
 	IDPClientID           string
+	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
+	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
+	// not signed by a system trust anchor (e.g. the dev Dex deployment).
+	IDPCAFile string
 	ServingCertFile       string
 	ServingKeyFile        string
 	HubExternalURL        string

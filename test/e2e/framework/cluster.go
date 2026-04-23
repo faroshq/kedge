@@ -287,8 +287,8 @@ func SetupClusters(workDir string) env.Func {
 // SetupClustersWithOIDC is like SetupClusters but also deploys Dex as an OIDC
 // provider inside the hub kind cluster (via --with-dex).
 //
-// Networking: Dex is exposed as NodePort 31556 on the hub kind node; the kind
-// cluster maps that to localhost:5556.  The test runner adds a /etc/hosts entry
+// Networking: Dex is exposed as NodePort 31554 on the hub kind node; the kind
+// cluster maps that to localhost:5554.  The test runner adds a /etc/hosts entry
 // (127.0.0.1 dex.kedge-system.svc.cluster.local) so it can reach the in-cluster
 // Dex on the same hostname that the hub pod uses via cluster DNS.
 func SetupClustersWithOIDC(workDir string) env.Func {
@@ -511,13 +511,30 @@ func TeardownClusters(workDir string) env.Func {
 // WaitForHubReady polls the hub's /healthz endpoint until it returns 200 or the
 // context deadline is exceeded.
 func WaitForHubReady(ctx context.Context, hubURL string) error {
-	return Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
-		code, err := HTTPGet(ctx, hubURL+"/healthz")
+	target := hubURL + "/healthz"
+	var lastCode int
+	var lastErr error
+	err := Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
+		code, err := HTTPGet(ctx, target)
 		if err != nil {
+			if lastErr == nil || err.Error() != lastErr.Error() {
+				fmt.Printf("WaitForHubReady: GET %s: %v\n", target, err)
+			}
+			lastErr = err
+			lastCode = 0
 			return false, nil // retry
 		}
+		if code != lastCode {
+			fmt.Printf("WaitForHubReady: GET %s → %d\n", target, code)
+		}
+		lastCode = code
+		lastErr = nil
 		return code == 200, nil
 	})
+	if err != nil {
+		return fmt.Errorf("%w (last GET %s → code=%d, err=%v)", err, target, lastCode, lastErr)
+	}
+	return nil
 }
 
 // DefaultKCPExternalKubeconfigFile is the filename written by kedge dev create

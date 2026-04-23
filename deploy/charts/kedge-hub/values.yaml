@@ -93,6 +93,14 @@ idp:
   # Client ID for the OIDC provider. Must be registered as a public client
   # (no client secret) in your IdP (e.g. Dex: public: true).
   clientID: "kedge"
+  # Optional: name of a secret in the release namespace whose `ca.crt` (or
+  # `tls.crt`) holds the PEM CA bundle for the IdP. When set, the secret is
+  # mounted into the hub pod and `--idp-ca-file` is passed so embedded kcp
+  # can verify the IdP's TLS cert. Required when issuerURL is https with a
+  # self-signed / private CA (e.g. dev Dex).
+  caSecretName: ""
+  # Key inside the caSecretName secret holding the CA bundle.
+  caSecretKey: "ca.crt"
 
 # -- kcp data PVC (used for embedded kcp data and hub state)
 persistence:

@@ -27,13 +27,13 @@ type Options struct {
 	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
 	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
 	// not signed by a system trust anchor (e.g. the dev Dex deployment).
-	IDPCAFile string
-	ServingCertFile       string
-	ServingKeyFile        string
-	HubExternalURL        string
-	HubInternalURL        string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
-	DevMode               bool
-	StaticAuthTokens      []string
+	IDPCAFile        string
+	ServingCertFile  string
+	ServingKeyFile   string
+	HubExternalURL   string
+	HubInternalURL   string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
+	DevMode          bool
+	StaticAuthTokens []string
 
 	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
 	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.

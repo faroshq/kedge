@@ -751,7 +751,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	// Static auth token is only used in token mode. In OIDC/IDP mode the hub
 	// authenticates via Dex; mixing both would be confusing and unnecessary.
 	if !withIDP {
-		hubValues["staticAuthTokens"] = []string{"dev-token"}
+		hubValues["staticAuthTokens"] = devStaticTokens
 	}
 	// IDP settings are passed via the top-level `idp` helm values (not under `hub`).
 	// See deploy/charts/kedge-hub/templates/statefulset.yaml.

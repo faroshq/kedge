@@ -130,6 +130,14 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 podAnnotations: {}
+# -- Extra /etc/hosts entries injected into the hub pod. Used in the external
+# kcp dev flow to make the short name `kcp` (from kcp's --shard-base-url)
+# resolve from kedge-system — the APIExportEndpointSlice URLs kcp advertises
+# use the bare service name.
+hostAliases: []
+# - ip: 10.96.0.42
+#   hostnames:
+#     - kcp
 podSecurityContext:
   fsGroup: 65534
 securityContext:

@@ -82,7 +82,8 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, kedgeCl
 	}
 
 	// Build a passthrough transport with the same TLS config but no credentials.
-	// Used when forwarding requests with the caller's own token (e.g. static tokens).
+	// Used when forwarding requests with the caller's own token (OIDC tokens,
+	// SA tokens, static tokens — all authenticated by kcp natively).
 	passthroughConfig := &rest.Config{
 		Host: kcpConfig.Host,
 		TLSClientConfig: rest.TLSClientConfig{

@@ -18,6 +18,8 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,6 +40,39 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
+// devStaticTokens are the static bearer tokens used by the dev setup. The
+// hub and external kcp both need to know these — the hub to accept them in
+// its proxy, kcp+front-proxy to authenticate them natively after the hub
+// forwards them. The user/uid format MUST match pkg/server/proxy/proxy.go's
+// static-token path (sha256("static-token/"+tok) → subHash[:16] →
+// user="kedge:static:<…>") and pkg/hub/kcp/embedded.go's token-auth-file
+// writer so RBAC bindings the hub bootstrapper creates line up.
+var devStaticTokens = []string{"dev-token"}
+
+// kcpTokenAuthFileName is the filename the kcp chart's built-in tokenAuth
+// block mounts under /etc/kcp/token-auth/ in both the kcp apiserver and the
+// kcp-front-proxy pods. When kcp.tokenAuth.enabled is true, the chart itself
+// creates the Secret from kcp.tokenAuth.config and wires --token-auth-file
+// into both args.
+const kcpTokenAuthFileName = "tokens.csv"
+
+// buildKCPTokenAuthFileCSV builds the CSV content for kcp's --token-auth-file.
+// Format: `token,user,uid,"groups"` per line.
+func buildKCPTokenAuthFileCSV(tokens []string) string {
+	var lines []string
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		h := sha256.Sum256([]byte("static-token/" + tok))
+		subHash := hex.EncodeToString(h[:])[:63]
+		user := fmt.Sprintf("kedge:static:%s", subHash[:16])
+		uid := subHash[:16]
+		lines = append(lines, fmt.Sprintf("%s,%s,%s,\"system:authenticated\"", tok, user, uid))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 const (
 	// kcp helm chart reference
 	kcpHelmRepo     = "kcp-dev"
@@ -47,11 +82,19 @@ const (
 	kcpNamespace    = "kcp"
 	kcpChartVersion = "0.14.0" // matches kcp app version v0.30.0
 
-	// kcp networking: front-proxy service port and NodePort
-	// externalPort=9443 → ClusterIP service port
-	// nodePort=30643   → NodePort on kind node
+	// kcp networking.
+	//
+	// The kcp-dev/kcp chart v0.14.0 hardcodes the front-proxy service on
+	// port 8443 (`port: 8443, targetPort: 8443` in front-proxy-deployment.yaml,
+	// no chart value to override). externalPort is the port kcp stamps into
+	// advertised shard URLs (LogicalCluster.status.URL, APIExportEndpointSlice,
+	// etc.) — it MUST match the actual service port, otherwise kcp's own
+	// workspace controller can't reach its own shard via the advertised URL
+	// and workspaces stay Initializing forever.
+	//
+	// nodePort=30643       → NodePort on kind node
 	// kind extraPortMapping: containerPort=30643, hostPort=KCPHTTPSPort(7443)
-	kcpExternalPort = 9443
+	kcpExternalPort = 8443
 	kcpNodePort     = 30643
 
 	// kcp external hostname — the in-cluster DNS name of the front-proxy service.
@@ -221,9 +264,21 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 	}
 	actionConfig.RegistryClient = regClient
 
+	// The chart's kcp.tokenAuth block generates the token-auth-file Secret
+	// and wires --token-auth-file into BOTH the kcp apiserver AND the
+	// kcp-front-proxy. Configuring it only on the apiserver isn't enough —
+	// the front-proxy terminates the request first and would reject bearer
+	// tokens it doesn't know about with 401.
 	kcpValues := map[string]any{
 		"externalHostname": kcpExternalHostname,
 		"externalPort":     fmt.Sprintf("%d", kcpExternalPort),
+		"kcp": map[string]any{
+			"tokenAuth": map[string]any{
+				"enabled":  true,
+				"fileName": kcpTokenAuthFileName,
+				"config":   buildKCPTokenAuthFileCSV(devStaticTokens),
+			},
+		},
 		"kcpFrontProxy": map[string]any{
 			"service": map[string]any{
 				"type":     "NodePort",
@@ -266,6 +321,47 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 		if _, err := inst.Run(chartObj, kcpValues); err != nil {
 			return fmt.Errorf("installing kcp chart: %w", err)
 		}
+	}
+
+	// Second-stage upgrade: wire hostAliases into both kcp and kcp-front-proxy
+	// pods so internal recursive calls to the externally-advertised shard URL
+	// (e.g. kcp's own workspace/LogicalCluster controllers resolving
+	// `kcp-front-proxy.kcp.svc.cluster.local`) land on the front-proxy without
+	// depending on cluster DNS semantics. The chart only exposes these values
+	// as static lists, so we look up the service's ClusterIP now (after
+	// install) and feed it back in.
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("creating clientset for kcp hostAliases lookup: %w", err)
+	}
+	frontProxySvc, err := clientset.CoreV1().Services(kcpNamespace).Get(ctx, "kcp-front-proxy", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("looking up kcp-front-proxy service: %w", err)
+	}
+	frontProxyIP := frontProxySvc.Spec.ClusterIP
+	if frontProxyIP == "" || frontProxyIP == "None" {
+		return fmt.Errorf("kcp-front-proxy service has no ClusterIP (got %q)", frontProxyIP)
+	}
+
+	hostAliasBlock := map[string]any{
+		"enabled": true,
+		"values": []map[string]any{{
+			"ip":        frontProxyIP,
+			"hostnames": []string{kcpExternalHostname},
+		}},
+	}
+	// Merge hostAliases into the existing kcp block (which already carries
+	// extraFlags/extraVolumes/extraVolumeMounts for the token-auth-file);
+	// overwriting with a fresh map would drop those.
+	kcpValues["kcp"].(map[string]any)["hostAliases"] = hostAliasBlock
+	kcpValues["kcpFrontProxy"].(map[string]any)["hostAliases"] = hostAliasBlock
+
+	upg := action.NewUpgrade(actionConfig)
+	upg.Namespace = kcpNamespace
+	upg.Wait = true
+	upg.Timeout = 8 * time.Minute
+	if _, err := upg.Run(kcpReleaseName, chartObj, kcpValues); err != nil {
+		return fmt.Errorf("upgrading kcp chart with hostAliases: %w", err)
 	}
 
 	// kcp advertises its internal APIExport endpoint URLs using the short
@@ -371,7 +467,7 @@ func (o *DevOptions) buildKCPKubeconfigs(ctx context.Context, restConfig *rest.C
 	//     via NodePort 127.0.0.1:KCPHTTPSPort.
 	//
 	// Why two certs? The kcp backend (kcp:6443) trusts kcp-client-ca, while the
-	// front-proxy (kcp-front-proxy:9443) trusts kcp-front-proxy-client-ca. They
+	// front-proxy (kcp-front-proxy:8443) trusts kcp-front-proxy-client-ca. They
 	// are separate CAs, so a single cert cannot satisfy both.
 
 	internalCertName := kcpAdminCertName + "-internal"
@@ -468,9 +564,20 @@ spec:
 	}
 
 	// --- 5. Build in-cluster kubeconfig (for hub pod) ---
-	// Points directly to the kcp backend (kcp:6443). The kcp server cert has
-	// "DNS:kcp" as a SAN and our CoreDNS rewrite resolves "kcp" to the kcp
-	// Service ClusterIP, so TLS verification succeeds without extra config.
+	// Points directly at the kcp backend (kcp:6443). We can't route through
+	// kcp-front-proxy here because kcp stamps APIExportEndpointSlice URLs
+	// using --shard-base-url=https://kcp:6443 — the hub's APIExport
+	// multicluster provider reads those URLs and connects to them directly;
+	// the front-proxy can't intercept since it is the one that'd proxy to
+	// the same shard URL (circular). So one identity must be valid for
+	// kcp:6443, and the "internal" cert (signed by kcp-client-issuer, whose
+	// CA is kcp-client-ca — the same CA kcp backend uses for --client-ca-file)
+	// is that identity.
+	//
+	// The hub pod also needs hostAliases so the short name "kcp" resolves in
+	// the kedge-system namespace (handled by the kedge-hub chart).
+	_ = externalClientCert
+	_ = externalClientKey
 	inClusterServer := "https://kcp:6443/clusters/root"
 	inClusterKubeconfig := buildKubeconfigWithCerts(inClusterServer, caCert, internalClientCert, internalClientKey, false)
 	inClusterBytes, err := clientcmd.Write(*inClusterKubeconfig)
@@ -574,6 +681,25 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 
 	hubExternalURL := fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort)
 
+	// Look up kcp's in-cluster Service ClusterIP so we can inject a host
+	// alias into the hub pod. kcp stamps APIExportEndpointSlice URLs using
+	// its --shard-base-url (https://kcp:6443), and the hub's multicluster
+	// provider dials those URLs verbatim. The short name `kcp` only resolves
+	// via cluster DNS inside the `kcp` namespace, so the hub (in
+	// `kedge-system`) needs an explicit /etc/hosts entry.
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("creating clientset for kcp service lookup: %w", err)
+	}
+	kcpSvc, err := clientset.CoreV1().Services(kcpNamespace).Get(ctx, "kcp", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("looking up kcp service: %w", err)
+	}
+	if kcpSvc.Spec.ClusterIP == "" || kcpSvc.Spec.ClusterIP == "None" {
+		return fmt.Errorf("kcp service has no ClusterIP (got %q)", kcpSvc.Spec.ClusterIP)
+	}
+	kcpIP := kcpSvc.Spec.ClusterIP
+
 	values := map[string]any{
 		"image": map[string]any{
 			"hub": map[string]any{
@@ -586,7 +712,7 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 			"hubExternalURL":   hubExternalURL,
 			"listenAddr":       fmt.Sprintf(":%d", o.HubHTTPSPort),
 			"devMode":          true,
-			"staticAuthTokens": []string{"dev-token"},
+			"staticAuthTokens": devStaticTokens,
 		},
 		"kcp": map[string]any{
 			"embedded": map[string]any{
@@ -604,6 +730,10 @@ func (o *DevOptions) installHelmChartWithExternalKCP(ctx context.Context, restCo
 				"nodePort": 31443,
 			},
 		},
+		"hostAliases": []map[string]any{{
+			"ip":        kcpIP,
+			"hostnames": []string{"kcp", "kcp.kcp", "kcp.kcp.svc", "kcp.kcp.svc.cluster.local"},
+		}},
 	}
 
 	var chartObj *chart.Chart

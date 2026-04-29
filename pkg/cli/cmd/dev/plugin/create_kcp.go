@@ -82,6 +82,16 @@ const (
 	kcpNamespace    = "kcp"
 	kcpChartVersion = "0.14.0" // matches kcp app version v0.30.0
 
+	// kcpImageTag pins the kcp container image to a specific build. The chart
+	// default (chart appVersion v0.30.0) panics on startup with:
+	//   "WorkspacesByMountReference … no matches for kind Edge in version
+	//    kedge.faros.sh/v1alpha1"
+	// when a Workspace with a kedge mount-reference exists in etcd before the
+	// kedge APIBinding is wired up. This commit (matches go.mod
+	// github.com/kcp-dev/kcp v0.31.1-0.20260429083913-36c9ef30f3f1) carries the
+	// upstream fix that tolerates a missing REST mapping in the indexer.
+	kcpImageTag = "36c9ef30f"
+
 	// kcp networking.
 	//
 	// The kcp-dev/kcp chart v0.14.0 hardcodes the front-proxy service on
@@ -273,6 +283,7 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 		"externalHostname": kcpExternalHostname,
 		"externalPort":     fmt.Sprintf("%d", kcpExternalPort),
 		"kcp": map[string]any{
+			"tag": kcpImageTag,
 			"tokenAuth": map[string]any{
 				"enabled":  true,
 				"fileName": kcpTokenAuthFileName,
@@ -280,6 +291,7 @@ func (o *DevOptions) deployKCPViaHelm(ctx context.Context, restConfig *rest.Conf
 			},
 		},
 		"kcpFrontProxy": map[string]any{
+			"tag": kcpImageTag,
 			"service": map[string]any{
 				"type":     "NodePort",
 				"nodePort": kcpNodePort,

@@ -706,7 +706,14 @@ func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenanc
 
 // HandleTokenLoginRateLimited wraps HandleTokenLogin with rate limiting.
 // This should be used when registering the route to protect against brute force attacks.
+// In devMode the limiter is bypassed: dev clusters share a single client IP
+// (localhost) across many test/CLI invocations, which trivially exhausts the
+// per-IP bucket and is not a realistic threat model for dev.
 func (p *KCPProxy) HandleTokenLoginRateLimited(w http.ResponseWriter, r *http.Request) {
+	if p.devMode {
+		p.HandleTokenLogin(w, r)
+		return
+	}
 	p.staticTokenRateLimiter.limiter.middleware(p.HandleTokenLogin)(w, r)
 }
 

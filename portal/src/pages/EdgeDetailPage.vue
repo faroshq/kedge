@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import YamlViewer from '@/components/YamlViewer.vue'
 import { useGraphQLQuery } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
@@ -366,7 +367,7 @@ kubectl krew install faros/kedge</pre>
           Loading...
         </div>
         <div v-else class="border-beam rounded-2xl">
-          <pre class="max-h-[500px] overflow-auto rounded-2xl border border-border-subtle bg-surface-overlay/60 p-5 font-mono text-[11px] leading-relaxed text-text-secondary backdrop-blur">{{ yaml }}</pre>
+          <YamlViewer :source="yaml" />
         </div>
       </div>
 

@@ -178,7 +178,7 @@ ifeq ($(TYPE),server)
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:9443 \
-		--edge-name=$(DEV_EDGE_NAME) \
+		--edge-name=$(KEDGE_EDGE_NAME) \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=server \
 		--ssh-proxy-port=2222 \
@@ -191,7 +191,7 @@ else
 		--hub-insecure-skip-tls-verify \
 		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:9443 \
-		--edge-name=$(DEV_EDGE_NAME) \
+		--edge-name=$(KEDGE_EDGE_NAME) \
 		--kubeconfig=.kubeconfig-kedge-agent \
 		--cluster=$(KEDGE_EDGE_CLUSTER) \
 		--type=kubernetes

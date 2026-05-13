@@ -7,6 +7,7 @@ import YamlViewer from '@/components/YamlViewer.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useAuthStore } from '@/stores/auth'
+import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { GET_EDGE, GET_EDGE_YAML, type GetEdgeResult, type GetEdgeYamlResult } from '@/graphql/queries/edges'
 import { DELETE_EDGE, UPDATE_EDGE } from '@/graphql/mutations'
 import { formatDateTimeWithAge } from '@/utils/time'
@@ -15,6 +16,18 @@ import { Server, Wifi, WifiOff, Clock, Hash, Activity, FileCode, ChevronDown, Ch
 const props = defineProps<{ name: string }>()
 const auth = useAuthStore()
 const router = useRouter()
+const terminalStore = useTerminalSessionsStore()
+
+function openTerminal(event: MouseEvent) {
+  const cluster = auth.clusterName
+  if (!cluster) return
+  // Shift-click opens a brand-new session even if one already exists for this edge.
+  terminalStore.openSession({
+    edgeName: props.name,
+    cluster,
+    forceNew: event.shiftKey,
+  })
+}
 
 const { data, loading, error, refetch } = useGraphQLQuery<GetEdgeResult>(
   GET_EDGE,
@@ -421,15 +434,16 @@ const details = computed(() => {
 
       <!-- Actions -->
       <div class="stagger-item mt-5 flex items-center gap-3" style="animation-delay: 200ms">
-        <!-- SSH Terminal button -->
-        <router-link
+        <!-- SSH Terminal button — opens in the bottom dock; shift-click for a new tab -->
+        <button
           v-if="canSSH"
-          :to="`/edges/${props.name}/terminal`"
           class="glow-ring flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-4 py-2 text-[12px] font-medium text-accent backdrop-blur transition-all duration-150 hover:bg-accent/20 hover:shadow-lg hover:shadow-accent/10"
+          title="Open SSH terminal (shift-click for a new session)"
+          @click="openTerminal"
         >
           <TerminalSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
           SSH Terminal
-        </router-link>
+        </button>
 
         <button
           v-if="needsJoin"

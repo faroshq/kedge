@@ -45,7 +45,7 @@ replace (
 	github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.20260504075209-315ebd35273b
 	// TODO: drop this once virtual-workspace-framework is synced from kcp staging.
-	github.com/kcp-dev/virtual-workspace-framework => /Users/mjudeikis/go/src/github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework
+	github.com/kcp-dev/virtual-workspace-framework => github.com/kcp-dev/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260515065710-c59a62d43e19
 	github.com/platform-mesh/kubernetes-graphql-gateway => github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260514114051-4f3a10182d4d
 )
 

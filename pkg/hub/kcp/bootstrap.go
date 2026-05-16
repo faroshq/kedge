@@ -236,7 +236,11 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 		return "", fmt.Errorf("creating tenants client: %w", err)
 	}
 
-	// Create workspace for the user.
+	// Create workspace for the user. The kedge-owned "tenant" WorkspaceType
+	// (bootstrapped in root:kedge) has no defaultAPIBindings, so new tenant
+	// workspaces don't get the auto-bindings (tenancy.kcp.io, topology.kcp.io)
+	// that the upstream "universal" type would add. Access to tenancy.kcp.io
+	// is granted explicitly below via the kedge APIBinding's permission claims.
 	ws := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "tenancy.kcp.io/v1alpha1",
@@ -246,8 +250,8 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 			},
 			"spec": map[string]interface{}{
 				"type": map[string]interface{}{
-					"name": "universal",
-					"path": "root",
+					"name": "tenant",
+					"path": "root:kedge",
 				},
 			},
 		},

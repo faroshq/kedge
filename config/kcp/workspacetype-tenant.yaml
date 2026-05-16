@@ -1,0 +1,10 @@
+apiVersion: tenancy.kcp.io/v1alpha1
+kind: WorkspaceType
+metadata:
+  name: tenant
+  annotations:
+    bootstrap.kcp.io/create-only: "true"
+spec:
+  defaultChildWorkspaceType:
+    name: tenant
+    path: root:kedge

@@ -5,6 +5,16 @@ metadata:
   annotations:
     bootstrap.kcp.io/create-only: "true"
 spec:
+  # Extend root:universal so tenant workspaces inherit the universal initializer.
+  # That initializer is what bootstraps the "default" namespace (see
+  # kcp/config/universal/default-namespace.yaml); without it new tenant
+  # workspaces have no "default" namespace and `kubectl apply` of any
+  # namespaced resource without an explicit namespace fails with
+  # `namespaces "default" not found`.
+  extend:
+    with:
+    - name: universal
+      path: root
   defaultChildWorkspaceType:
     name: tenant
     path: root:kedge

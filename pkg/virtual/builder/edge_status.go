@@ -34,6 +34,7 @@ import (
 
 	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/util/revdial"
 )
 
 var edgeGVR = schema.GroupVersionResource{
@@ -216,6 +217,57 @@ func (p *virtualWorkspaces) storeSSHCredentials(ctx context.Context, cfg *rest.C
 
 	p.logger.Info("SSH credentials stored for edge", "cluster", cluster, "edge", edgeName, "user", creds.User)
 	return nil
+}
+
+// runEdgeHeartbeatLoop ticks until ctx is cancelled, stamping the Edge's
+// status.lastHeartbeatTime from dialer.LastPong on each tick. Cancellation
+// happens when the agent-proxy handler observes dialer.Done(), so the loop
+// terminates within one tick of the tunnel dying.
+func (p *virtualWorkspaces) runEdgeHeartbeatLoop(ctx context.Context, cluster, name string, dialer *revdial.Dialer) {
+	// First stamp immediately so the LAST HEARTBEAT column becomes non-empty
+	// without waiting for the first tick.
+	p.stampEdgeHeartbeat(ctx, cluster, name, dialer.LastPong())
+
+	ticker := time.NewTicker(edgeHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.stampEdgeHeartbeat(ctx, cluster, name, dialer.LastPong())
+		}
+	}
+}
+
+// stampEdgeHeartbeat patches an Edge's status.lastHeartbeatTime to t.  It is
+// used by the agent-proxy-v2 handler to surface revdial-level liveness (the
+// last successful "pong" from the agent) on the Edge resource.  Agents
+// connected via join token can't write their own kcp status, so the hub does
+// it for them.
+//
+// Best-effort: errors are logged at V(4) only — heartbeat staleness is a soft
+// signal, and the LifecycleReconciler will eventually reconcile state.
+func (p *virtualWorkspaces) stampEdgeHeartbeat(ctx context.Context, cluster, name string, t time.Time) {
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
+
+	dynClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		p.logger.V(4).Info("stampEdgeHeartbeat: failed to create dynamic client",
+			"cluster", cluster, "edge", name, "err", err)
+		return
+	}
+
+	// MergePatch with RFC3339-formatted timestamp; the field is typed as
+	// metav1.Time (date-time) in the APIResourceSchema.
+	patch := []byte(`{"status":{"lastHeartbeatTime":"` + t.UTC().Format(time.RFC3339) + `"}}`)
+	_, err = dynClient.Resource(edgeGVR).Patch(ctx, name,
+		types.MergePatchType, patch, metav1.PatchOptions{}, "status")
+	if err != nil {
+		p.logger.V(4).Info("stampEdgeHeartbeat: patch failed",
+			"cluster", cluster, "edge", name, "err", err)
+	}
 }
 
 // markEdgeDisconnected patches an Edge's status to Connected=false,

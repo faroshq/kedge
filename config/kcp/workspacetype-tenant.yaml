@@ -8,3 +8,11 @@ spec:
   defaultChildWorkspaceType:
     name: tenant
     path: root:kedge
+  # Auto-bind tenancy.kcp.io so users can create child Workspaces inside their
+  # tenant workspace (the edge-mount controller does this, and so does any
+  # workload that needs sub-workspaces). Without this binding the
+  # tenancy.kcp.io/v1alpha1.Workspaces resource is not discoverable in the
+  # workspace, and POSTs to /apis/tenancy.kcp.io/v1alpha1/workspaces 404.
+  defaultAPIBindings:
+  - path: root
+    export: tenancy.kcp.io

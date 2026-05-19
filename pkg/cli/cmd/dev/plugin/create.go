@@ -337,9 +337,9 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	for _, agentName := range o.agentClusterNames() {
 		fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", agentName) // nolint:errcheck
 	}
-	fmt.Fprintf(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:%d\n", o.HubHTTPSPort) // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:%d\n", o.HubHTTPSPort)    // nolint:errcheck
 	fmt.Fprintf(o.Streams.ErrOut, "  kedge UI URL:     https://kedge.localhost:%d/ui\n", o.HubHTTPSPort) // nolint:errcheck
-	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n") // nolint:errcheck
+	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                     // nolint:errcheck
 	if hubIP != "" && o.AgentCount > 0 {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
 	}

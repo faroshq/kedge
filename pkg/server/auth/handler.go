@@ -381,7 +381,7 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 		Spec: tenancyv1alpha1.UserSpec{
 			Email:        email,
 			Name:         name,
-			RBACIdentity: fmt.Sprintf("kedge:%s", sub),
+			RBACIdentity: fmt.Sprintf("kedge:%s", email),
 			OIDCProviders: []tenancyv1alpha1.OIDCProvider{
 				{
 					Name:       "dex",

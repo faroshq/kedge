@@ -87,7 +87,7 @@ type DevOptions struct {
 }
 
 // fallbackAssetVersion is used when unable to fetch the latest version
-const fallbackAssetVersion = "0.0.1"
+const fallbackAssetVersion = "0.0.51"
 
 // Dex constants used when --with-dex is set.
 const (
@@ -123,7 +123,7 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 		HubClusterName:   "kedge-hub",
 		AgentClusterName: "kedge-agent",
 		AgentCount:       1,
-		ChartPath:        "deploy/charts/kedge-hub",
+		ChartPath:        "oci://ghcr.io/faroshq/charts/kedge-hub",
 		AgentChartPath:   "oci://ghcr.io/faroshq/charts/kedge-agent",
 		ChartVersion:     fallbackAssetVersion,
 		APIServerPort:    6443,

@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import { Terminal, X, Copy, Check, ExternalLink, Download, Package, Code2 } from 'lucide-vue-next'
 
-defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: [] }>()
+
+useEscapeKey(() => emit('close'))
 
 const auth = useAuthStore()
 

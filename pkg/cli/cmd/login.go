@@ -40,6 +40,9 @@ import (
 	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
 )
 
+// DefaultHubURL is the hosted kedge hub used when --hub-url is not specified.
+const DefaultHubURL = "https://console.faros.sh"
+
 func newLoginCommand() *cobra.Command {
 	var (
 		hubURL                string
@@ -52,7 +55,8 @@ func newLoginCommand() *cobra.Command {
 		Short: "Authenticate with the kedge hub via OIDC or static token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hubURL == "" {
-				return fmt.Errorf("--hub-url is required")
+				hubURL = DefaultHubURL
+				fmt.Printf("Using default hub: %s (override with --hub-url)\n", hubURL)
 			}
 			hubURL = normalizeHubURL(hubURL)
 			if token != "" {
@@ -72,7 +76,7 @@ func newLoginCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (required)")
+	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Hub server URL (defaults to "+DefaultHubURL+")")
 	cmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification")
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (skips OIDC browser flow)")
 

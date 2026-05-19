@@ -222,6 +222,13 @@ func mergeKubeconfig(kubeconfigBytes []byte) error {
 		return fmt.Errorf("parsing received kubeconfig: %w", err)
 	}
 
+	// The hub emits the exec credential plugin with Command="kedge", which
+	// only resolves on PATH for the curl/tar.gz install. Krew installs the
+	// binary as `kubectl-kedge` — there is no `kedge` symlink — so kubectl
+	// would fail to exec the plugin. Rewrite to the absolute path of the
+	// running binary so both install modes work.
+	rewriteKedgeExecCommand(newConfig)
+
 	// Load the existing kubeconfig.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	existingConfig, err := loadingRules.GetStartingConfig()
@@ -249,6 +256,28 @@ func mergeKubeconfig(kubeconfigBytes []byte) error {
 	}
 
 	return nil
+}
+
+// rewriteKedgeExecCommand replaces the sentinel `kedge` command in any exec
+// credential plugin with the absolute path of the currently running binary.
+// This makes the kubeconfig work regardless of how the CLI was installed —
+// curl/tar.gz (binary named `kedge`), krew (binary named `kubectl-kedge`), or
+// any custom path.
+func rewriteKedgeExecCommand(cfg *clientcmdapi.Config) {
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		// Fall back to leaving the kubeconfig untouched — better than writing
+		// an empty Command field that would silently break later.
+		return
+	}
+	for _, ai := range cfg.AuthInfos {
+		if ai == nil || ai.Exec == nil {
+			continue
+		}
+		if ai.Exec.Command == "kedge" {
+			ai.Exec.Command = exe
+		}
+	}
 }
 
 // openBrowser opens the given URL in the default browser.

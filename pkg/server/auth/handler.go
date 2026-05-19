@@ -287,7 +287,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	var clusterName string
 	if h.bootstrapper != nil {
 		var err error
-		clusterName, err = h.bootstrapper.CreateTenantWorkspace(ctx, userID, fmt.Sprintf("kedge:%s", claims.Sub))
+		clusterName, err = h.bootstrapper.CreateTenantWorkspace(ctx, userID, fmt.Sprintf("kedge:%s", claims.Email))
 		if err != nil {
 			h.logger.Error(err, "failed to create tenant workspace", "userID", userID)
 			http.Error(w, "failed to create tenant workspace", http.StatusInternalServerError)

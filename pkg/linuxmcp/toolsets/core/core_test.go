@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,9 +110,18 @@ func serveSession(ch gossh.Channel, reqs <-chan *gossh.Request) {
 		stdout, _ := c.StdoutPipe()
 		stderr, _ := c.StderrPipe()
 		_ = c.Start()
-		go io.Copy(ch, stdout)          //nolint:errcheck
-		go io.Copy(ch.Stderr(), stderr) //nolint:errcheck
+		// Sync the pipe copies before sending exit-status: c.Wait() returns
+		// as soon as the process exits, but the goroutines copying stdout/
+		// stderr to the SSH channel might not have flushed yet.  Without
+		// this WaitGroup the client may see exit-status (and channel close)
+		// before all bytes have traversed the channel, producing empty
+		// stdout/stderr — flaky and depends on scheduler timing.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = io.Copy(ch, stdout) }()
+		go func() { defer wg.Done(); _, _ = io.Copy(ch.Stderr(), stderr) }()
 		err := c.Wait()
+		wg.Wait()
 		exit := 0
 		if ee, ok := err.(*exec.ExitError); ok {
 			exit = ee.ExitCode()

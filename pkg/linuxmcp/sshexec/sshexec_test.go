@@ -24,6 +24,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,9 +123,17 @@ func runRemoteCmd(ch gossh.Channel, cmd string) {
 		sendExit(ch, 127)
 		return
 	}
-	go io.Copy(ch, stdout)          //nolint:errcheck
-	go io.Copy(ch.Stderr(), stderr) //nolint:errcheck
+	// Sync the pipe copies before sending exit-status: c.Wait() returns as
+	// soon as the process exits, but the goroutines copying stdout/stderr
+	// to the SSH channel may not have flushed yet.  Without this WaitGroup
+	// the client may see exit-status (and channel close) before all bytes
+	// have traversed the channel, producing empty stdout/stderr.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = io.Copy(ch, stdout) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(ch.Stderr(), stderr) }()
 	err := c.Wait()
+	wg.Wait()
 	exit := 0
 	if ee, ok := err.(*exec.ExitError); ok {
 		exit = ee.ExitCode()

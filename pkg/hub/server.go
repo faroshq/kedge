@@ -370,8 +370,10 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("GraphQL proxy enabled", "target", graphqlTarget.String())
 	}
 
-	// Health check — includes OIDC config when enabled so the portal can
-	// perform token refresh directly against the OIDC provider.
+	// Health check — also returns OIDC issuer+clientId so the unauthenticated
+	// portal SPA can bootstrap the login flow. Both fields are inherent OAuth
+	// client metadata and not secret; the rest of the configuration is fetched
+	// from the IdP's standard /.well-known/openid-configuration.
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -389,11 +391,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Version endpoint — used by the portal to detect when an edge agent is
 	// running an older build than the hub and to render upgrade instructions.
+	// Only the semver is exposed publicly; gitCommit/buildDate aid recon and
+	// are only available through the authenticated kcp API.
 	router.HandleFunc(apiurl.PathVersion, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, `{"version":%q,"gitCommit":%q,"buildDate":%q}`,
-			pkgversion.Version, pkgversion.GitCommit, pkgversion.BuildDate)
+		_, _ = fmt.Fprintf(w, `{"version":%q}`, pkgversion.Version)
 	})
 
 	// kcp API proxy: catch-all that forwards authenticated kubectl requests to kcp.

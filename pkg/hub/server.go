@@ -227,7 +227,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	earlyHTTPServer := &http.Server{
 		Addr:              s.opts.ListenAddr,
-		Handler:           delegate,
+		Handler:           withSecurityHeaders(delegate),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

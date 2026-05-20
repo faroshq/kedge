@@ -52,6 +52,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
 	linuxmcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/linuxmcp"
 	mcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcp"
+	mcpservercontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcpserver"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
@@ -353,6 +354,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// LinuxMCP multi-edge MCP handler (server-type edges, SSH transport):
 	//   /services/linux-mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/linuxmcps/{name}/mcp
 	router.PathPrefix(apiurl.PathPrefixLinuxMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixLinuxMCP, vws.LinuxMCPHandler()))
+	// MCPServer aggregate (kube + linux edges in one endpoint, plus list_targets):
+	//   /services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
+	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCPServer, vws.MCPServerHandler()))
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
 
@@ -494,6 +498,9 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if err := linuxmcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up linux-mcp controller: %w", err)
+		}
+		if err := mcpservercontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
+			return fmt.Errorf("setting up mcpserver controller: %w", err)
 		}
 		go func() {
 			logger.Info("Starting multicluster manager")

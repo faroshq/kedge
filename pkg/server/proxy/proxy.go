@@ -504,6 +504,9 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, token, subHash
 			if err := p.bootstrapper.EnsureDefaultLinuxMCP(ctx, user.Spec.DefaultCluster); err != nil {
 				p.logger.Error(err, "failed to ensure default LinuxMCP (non-fatal)", "user", user.Name)
 			}
+			if err := p.bootstrapper.EnsureDefaultMCPServer(ctx, user.Spec.DefaultCluster); err != nil {
+				p.logger.Error(err, "failed to ensure default MCPServer (non-fatal)", "user", user.Name)
+			}
 		}
 		return user, nil
 	}

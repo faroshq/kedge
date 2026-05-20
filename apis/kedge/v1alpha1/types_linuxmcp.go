@@ -76,6 +76,18 @@ type LinuxMCPSpec struct {
 	// +kubebuilder:validation:Minimum=1024
 	// +kubebuilder:validation:Maximum=16777216
 	MaxOutputBytes int32 `json:"maxOutputBytes,omitempty"`
+
+	// DisplayName overrides the human-readable title MCP clients show.
+	// When empty, the hub generates "Kedge Linux — <name> (tenant <cluster>)".
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	DisplayName string `json:"displayName,omitempty"`
+
+	// Instructions overrides the system-prompt blurb forwarded to the LLM
+	// on initialize.  Use to add per-environment guardrails or context.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // LinuxMCPStatus defines the observed state of LinuxMCP.

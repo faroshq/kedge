@@ -170,3 +170,44 @@ export const DELETE_LINUX_MCP = `
     }
   }
 `
+
+// --- MCPServer (aggregate kube + linux) mutations (cluster-scoped) ---
+
+export const CREATE_AGGREGATE_MCP = `
+  mutation CreateMCPServer($object: KedgeFarosShV1alpha1MCPServer_Input!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        createMCPServer(object: $object) {
+          metadata {
+            name
+            uid
+          }
+        }
+      }
+    }
+  }
+`
+
+export const UPDATE_AGGREGATE_MCP = `
+  mutation UpdateMCPServer($name: String!, $object: KedgeFarosShV1alpha1MCPServer_Input!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        updateMCPServer(name: $name, object: $object) {
+          metadata {
+            name
+          }
+        }
+      }
+    }
+  }
+`
+
+export const DELETE_AGGREGATE_MCP = `
+  mutation DeleteMCPServer($name: String!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        deleteMCPServer(name: $name)
+      }
+    }
+  }
+`

@@ -40,11 +40,11 @@ type ReadFileInput struct {
 }
 
 type ReadFileOutput struct {
-	Target      string `json:"target"`
-	Path        string `json:"path"`
-	ContentB64  string `json:"contentB64"`
-	SizeBytes   int    `json:"sizeBytes"`
-	Truncated   bool   `json:"truncated,omitempty"`
+	Target     string `json:"target"`
+	Path       string `json:"path"`
+	ContentB64 string `json:"contentB64"`
+	SizeBytes  int    `json:"sizeBytes"`
+	Truncated  bool   `json:"truncated,omitempty"`
 }
 
 func readFileHandler(p *linuxmcp.Provider) mcp.ToolHandlerFor[ReadFileInput, ReadFileOutput] {
@@ -89,9 +89,9 @@ type WriteFileInput struct {
 }
 
 type WriteFileOutput struct {
-	Target    string `json:"target"`
-	Path      string `json:"path"`
-	BytesWritten int `json:"bytesWritten"`
+	Target       string `json:"target"`
+	Path         string `json:"path"`
+	BytesWritten int    `json:"bytesWritten"`
 }
 
 func writeFileHandler(p *linuxmcp.Provider) mcp.ToolHandlerFor[WriteFileInput, WriteFileOutput] {
@@ -192,12 +192,12 @@ type StatPathOutput struct {
 	// Exists reflects whether `stat` could resolve the path.
 	Exists bool `json:"exists"`
 	// Raw `stat -c '%F|%s|%a|%U|%G|%Y'` payload, split into fields.
-	Type        string `json:"type,omitempty"`
-	SizeBytes   int64  `json:"sizeBytes,omitempty"`
-	ModeOctal   string `json:"modeOctal,omitempty"`
-	Owner       string `json:"owner,omitempty"`
-	Group       string `json:"group,omitempty"`
-	MTimeEpoch  int64  `json:"mtimeEpoch,omitempty"`
+	Type       string `json:"type,omitempty"`
+	SizeBytes  int64  `json:"sizeBytes,omitempty"`
+	ModeOctal  string `json:"modeOctal,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	Group      string `json:"group,omitempty"`
+	MTimeEpoch int64  `json:"mtimeEpoch,omitempty"`
 }
 
 func statPathHandler(p *linuxmcp.Provider) mcp.ToolHandlerFor[StatPathInput, StatPathOutput] {

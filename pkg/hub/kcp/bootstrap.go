@@ -63,6 +63,9 @@ var (
 	linuxMCPGVR = schema.GroupVersionResource{
 		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "linuxmcps",
 	}
+	mcpServerGVR = schema.GroupVersionResource{
+		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers",
+	}
 )
 
 // Bootstrapper sets up the kcp workspace hierarchy and API exports.
@@ -373,6 +376,9 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 	if err := createDefaultMCPObject(ctx, tenantClient, linuxMCPGVR, "LinuxMCP"); err != nil {
 		logger.Error(err, "Failed to create default LinuxMCP in tenant workspace (non-fatal)", "userID", userID)
 	}
+	if err := createDefaultMCPObject(ctx, tenantClient, mcpServerGVR, "MCPServer"); err != nil {
+		logger.Error(err, "Failed to create default MCPServer in tenant workspace (non-fatal)", "userID", userID)
+	}
 
 	logger.Info("Tenant workspace created", "userID", userID, "clusterName", clusterName)
 	return clusterName, nil
@@ -392,6 +398,13 @@ func (b *Bootstrapper) EnsureDefaultKubernetesMCP(ctx context.Context, clusterNa
 // Idempotent.
 func (b *Bootstrapper) EnsureDefaultLinuxMCP(ctx context.Context, clusterName string) error {
 	return b.ensureDefaultMCP(ctx, clusterName, linuxMCPGVR, "LinuxMCP")
+}
+
+// EnsureDefaultMCPServer creates the "default" MCPServer (aggregate kube +
+// linux endpoint) in the tenant workspace.  Idempotent.  Counterpart to the
+// per-kind ensures; called from the same login + backfill paths.
+func (b *Bootstrapper) EnsureDefaultMCPServer(ctx context.Context, clusterName string) error {
+	return b.ensureDefaultMCP(ctx, clusterName, mcpServerGVR, "MCPServer")
 }
 
 // ensureDefaultMCP is the shared get-or-create used by EnsureDefaultKubernetesMCP
@@ -464,6 +477,7 @@ func (b *Bootstrapper) BackfillDefaultMCPs(ctx context.Context) error {
 	kinds := []gvkPair{
 		{kubernetesMCPGVR, "KubernetesMCP"},
 		{linuxMCPGVR, "LinuxMCP"},
+		{mcpServerGVR, "MCPServer"},
 	}
 
 	for _, ws := range wsList.Items {

@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/linuxmcp"
 
 	// Side-effect imports: register LinuxMCP toolsets so they appear in the
@@ -182,7 +183,44 @@ func (p *virtualWorkspaces) buildLinuxMCPHandler() http.Handler {
 			ReadOnly:       readOnly,
 		})
 
-		linuxmcp.Handler(provider, toolsets).ServeHTTP(w, r)
+		// Per-endpoint metadata: tells AI clients which kedge tenant +
+		// LinuxMCP CR they're connected to so the model can reason about
+		// scope before issuing any tool call.  spec.displayName +
+		// spec.instructions on the CR override the auto-generated values.
+		userDisplayName, _, _ := unstructured.NestedString(lmcpObj.Object, "spec", "displayName")
+		userInstructions, _, _ := unstructured.NestedString(lmcpObj.Object, "spec", "instructions")
+		title := userDisplayName
+		if title == "" {
+			title = fmt.Sprintf("Kedge Linux — %s (tenant %s)", lmcpName, cluster)
+		}
+		instructions := userInstructions
+		if instructions == "" {
+			instructions = fmt.Sprintf(
+				"You are connected to the kedge LinuxMCP endpoint %q in tenant workspace %q. "+
+					"It runs shell-style tools over SSH against the server-type edges this CR's "+
+					"edgeSelector matches.  Use the \"target\" argument on any tool to pick a specific "+
+					"edge — omit it and the first connected edge is used.  For Kubernetes clusters, "+
+					"use the KubernetesMCP endpoint instead; for one endpoint covering both with a "+
+					"list_targets discovery tool, use the kedge aggregate MCPServer endpoint.",
+				lmcpName, cluster,
+			)
+		}
+		meta := linuxmcp.Meta{
+			Name:         "kedge-linux-mcp-" + lmcpName,
+			Title:        title,
+			Instructions: instructions,
+			About: linuxmcp.AboutDoc{
+				Role:         "linux",
+				Capabilities: []string{"linux", "ssh"},
+				Tenant:       cluster,
+				LinuxMCP:     lmcpName,
+				EndpointURL:  p.hubExternalURL + apiurl.LinuxMCPPath(cluster, lmcpName),
+				Toolsets:     toolsets,
+				ReadOnly:     readOnly,
+			},
+		}
+
+		linuxmcp.Handler(provider, toolsets, meta).ServeHTTP(w, r)
 	})
 }
 

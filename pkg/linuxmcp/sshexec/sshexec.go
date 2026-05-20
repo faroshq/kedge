@@ -109,7 +109,7 @@ func Run(ctx context.Context, p *linuxmcp.Provider, target, cmd string) (Result,
 // ShellQuote single-quotes a string for safe POSIX shell interpolation.
 //
 // Embedded single quotes are escaped using the close-quote / escaped-quote /
-// reopen-quote trick: foo'bar → 'foo'\''bar'.
+// reopen-quote trick: foo'bar → 'foo'\”bar'.
 func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

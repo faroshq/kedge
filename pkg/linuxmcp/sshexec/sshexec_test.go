@@ -122,8 +122,8 @@ func runRemoteCmd(ch gossh.Channel, cmd string) {
 		sendExit(ch, 127)
 		return
 	}
-	go io.Copy(ch, stdout)                     //nolint:errcheck
-	go io.Copy(ch.Stderr(), stderr)            //nolint:errcheck
+	go io.Copy(ch, stdout)          //nolint:errcheck
+	go io.Copy(ch.Stderr(), stderr) //nolint:errcheck
 	err := c.Wait()
 	exit := 0
 	if ee, ok := err.(*exec.ExitError); ok {

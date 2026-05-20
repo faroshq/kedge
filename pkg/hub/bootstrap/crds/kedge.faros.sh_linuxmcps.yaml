@@ -63,6 +63,12 @@ spec:
                 maximum: 600
                 minimum: 1
                 type: integer
+              displayName:
+                description: |-
+                  DisplayName overrides the human-readable title MCP clients show.
+                  When empty, the hub generates "Kedge Linux — <name> (tenant <cluster>)".
+                maxLength: 128
+                type: string
               edgeSelector:
                 description: |-
                   EdgeSelector selects which server-type edges to include in this MCP server.
@@ -112,6 +118,12 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+              instructions:
+                description: |-
+                  Instructions overrides the system-prompt blurb forwarded to the LLM
+                  on initialize.  Use to add per-environment guardrails or context.
+                maxLength: 4096
+                type: string
               maxOutputBytes:
                 description: |-
                   MaxOutputBytes caps the combined stdout+stderr returned per tool call.

@@ -19,6 +19,8 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -63,6 +65,10 @@ type Handler struct {
 	logger         klog.Logger
 	// rateLimiter protects auth endpoints against brute force attacks
 	rateLimiter *rateLimiter
+	// stateKey is an HMAC key used to sign the OAuth2 `state` parameter.
+	// Without a signature, an attacker can forge state contents (notably the
+	// post-callback RedirectURL) and harvest tokens through HandleCallback.
+	stateKey []byte
 }
 
 // NewHandler creates a new OIDC auth handler.
@@ -95,6 +101,11 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 		Scopes:      config.Scopes,
 	}
 
+	stateKey := make([]byte, 32)
+	if _, err := rand.Read(stateKey); err != nil {
+		return nil, fmt.Errorf("generate state HMAC key: %w", err)
+	}
+
 	handler := &Handler{
 		oidcProvider:   provider,
 		oauth2Config:   oauth2Config,
@@ -106,9 +117,43 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 		logger:         klog.Background().WithName("auth-handler"),
 		// Initialize rate limiter with sane defaults for auth endpoints
 		rateLimiter: newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background().WithName("auth-rate-limit")),
+		stateKey:    stateKey,
 	}
 
 	return handler, nil
+}
+
+// signState returns "<base64url(payload)>.<base64url(HMAC-SHA256(payload))>".
+// The signature is over the raw payload bytes and is verified by verifyState
+// before the payload is unmarshaled by HandleCallback.
+func (h *Handler) signState(payload []byte) string {
+	mac := hmac.New(sha256.New, h.stateKey)
+	mac.Write(payload)
+	sig := mac.Sum(nil)
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// verifyState validates the HMAC and returns the raw payload bytes. It returns
+// an error for any malformed, truncated, or tampered state value.
+func (h *Handler) verifyState(state string) ([]byte, error) {
+	dot := strings.IndexByte(state, '.')
+	if dot < 1 || dot == len(state)-1 {
+		return nil, fmt.Errorf("malformed state")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(state[:dot])
+	if err != nil {
+		return nil, fmt.Errorf("invalid state payload encoding")
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(state[dot+1:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid state signature encoding")
+	}
+	mac := hmac.New(sha256.New, h.stateKey)
+	mac.Write(payload)
+	if !hmac.Equal(sig, mac.Sum(nil)) {
+		return nil, fmt.Errorf("state signature mismatch")
+	}
+	return payload, nil
 }
 
 // HandleAuthorize redirects to the OIDC provider for authentication.
@@ -171,15 +216,65 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to encode state", http.StatusInternalServerError)
 		return
 	}
-	state := base64.URLEncoding.EncodeToString(stateJSON)
+	state := h.signState(stateJSON)
 
 	// Include S256 code_challenge derived from the verifier in the auth URL.
 	authURL := h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(codeVerifier))
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-// validateRedirectURI checks that the redirect URI shares the same origin as
-// the hub external URL or is a localhost address (for development).
+// validateCallbackRedirect re-validates the redirect URL recovered from state
+// at callback time. Even with HMAC-signed state this is defense-in-depth: a
+// future bug in state handling must not turn into token exfiltration.
+//
+// Accepted shapes:
+//   - http://127.0.0.1:<port>/callback or http://localhost:<port>/callback
+//     (CLI flow — the URL the hub itself constructed in HandleAuthorize)
+//   - any URL whose origin matches the hub external URL (portal flow)
+func (h *Handler) validateCallbackRedirect(redirectURL string) error {
+	parsed, err := url.Parse(redirectURL)
+	if err != nil {
+		return fmt.Errorf("invalid redirect URL")
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("redirect URL must be absolute")
+	}
+
+	host := parsed.Hostname()
+	if host == "127.0.0.1" || host == "localhost" {
+		if parsed.Scheme != "http" {
+			return fmt.Errorf("localhost redirect must use http scheme")
+		}
+		if parsed.Path != "/callback" {
+			return fmt.Errorf("localhost redirect must target /callback")
+		}
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("localhost redirect must specify a valid port")
+		}
+		return nil
+	}
+
+	hubParsed, err := url.Parse(h.hubExternalURL)
+	if err != nil {
+		return fmt.Errorf("invalid hub external URL configuration")
+	}
+	if parsed.Scheme != hubParsed.Scheme || parsed.Host != hubParsed.Host {
+		return fmt.Errorf("redirect origin must match hub external URL")
+	}
+	return nil
+}
+
+// validateRedirectURI is used for the portal flow (`redirect_uri=` query
+// param). It only accepts URLs whose origin matches the hub external URL.
+//
+// Localhost URLs are NOT accepted here: they are only valid via the CLI flow
+// (`p=<port>`), which builds the URL itself rather than accepting it from the
+// client. Allowing arbitrary `http://localhost:<port>/<path>` URLs lets any
+// process running on a victim's machine collect their post-auth tokens.
+//
+// In dev mode the hub external URL itself may be a localhost address, in
+// which case the matching origin check below still applies.
 func (h *Handler) validateRedirectURI(redirectURI string) error {
 	parsed, err := url.Parse(redirectURI)
 	if err != nil {
@@ -189,23 +284,13 @@ func (h *Handler) validateRedirectURI(redirectURI string) error {
 		return fmt.Errorf("redirect_uri must be an absolute URL")
 	}
 
-	// Allow localhost for development.
-	host := strings.Split(parsed.Host, ":")[0]
-	if host == "localhost" || host == "127.0.0.1" {
-		return nil
-	}
-
-	// Validate against hub external URL origin.
 	hubParsed, err := url.Parse(h.hubExternalURL)
 	if err != nil {
 		return fmt.Errorf("invalid hub external URL configuration")
 	}
-
-	hubHost := strings.Split(hubParsed.Host, ":")[0]
-	if host != hubHost {
+	if parsed.Scheme != hubParsed.Scheme || parsed.Host != hubParsed.Host {
 		return fmt.Errorf("redirect_uri origin must match hub external URL")
 	}
-
 	return nil
 }
 
@@ -221,15 +306,27 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode the state to get the CLI callback URL.
-	stateJSON, err := base64.URLEncoding.DecodeString(stateParam)
+	// Verify the HMAC over state before trusting any of its fields. An
+	// unsigned state lets an attacker forge RedirectURL and have the hub
+	// deliver the user's tokens to a URL of the attacker's choice.
+	stateJSON, err := h.verifyState(stateParam)
 	if err != nil {
+		h.logger.Info("rejecting callback with invalid state", "err", err.Error())
 		http.Error(w, "invalid state parameter", http.StatusBadRequest)
 		return
 	}
 	var authCode tenancyv1alpha1.AuthCode
 	if err := json.Unmarshal(stateJSON, &authCode); err != nil {
 		http.Error(w, "invalid state payload", http.StatusBadRequest)
+		return
+	}
+
+	// Defence in depth: re-check the redirect URL against the same allowlist
+	// HandleAuthorize would have applied. Refuses any URL that wasn't built or
+	// approved by the hub.
+	if err := h.validateCallbackRedirect(authCode.RedirectURL); err != nil {
+		h.logger.Info("rejecting callback with disallowed redirect", "err", err.Error())
+		http.Error(w, "invalid state parameter", http.StatusBadRequest)
 		return
 	}
 

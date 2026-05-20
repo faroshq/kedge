@@ -1,30 +1,50 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import { useAuthStore } from '@/stores/auth'
-import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
-import { UPDATE_MCP, DELETE_MCP } from '@/graphql/mutations'
+import {
+  GET_MCP_SERVER,
+  GET_LINUX_MCP_SERVER,
+  type GetMCPResult,
+  type GetLinuxMCPResult,
+  type MCPKind,
+} from '@/graphql/queries/mcp'
+import { UPDATE_MCP, DELETE_MCP, UPDATE_LINUX_MCP, DELETE_LINUX_MCP } from '@/graphql/mutations'
 import { formatDateTimeWithAge } from '@/utils/time'
 import {
   Bot, ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
-  FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield,
+  FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield, Terminal,
 } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
-const { data: rawData, loading, error, refetch } = useGraphQLQuery<GetMCPResult>(
-  GET_MCP_SERVER,
+// Kind comes from the ?kind= query the table appends; default to kubernetes
+// so any link minted before this page understood Linux still works.
+const kind = computed<MCPKind>(() => (route.query.kind === 'linux' ? 'linux' : 'kubernetes'))
+const isLinux = computed(() => kind.value === 'linux')
+
+const { data: rawData, loading, error, refetch } = useGraphQLQuery<GetMCPResult | GetLinuxMCPResult>(
+  isLinux.value ? GET_LINUX_MCP_SERVER : GET_MCP_SERVER,
   { name: props.name },
   10000,
 )
-const mcp = computed(() => rawData.value?.kedge_faros_sh?.v1alpha1?.KubernetesMCP ?? null)
+const mcp = computed(() => {
+  if (!rawData.value) return null
+  const v1 = rawData.value.kedge_faros_sh?.v1alpha1
+  if (!v1) return null
+  if (isLinux.value) {
+    return (v1 as GetLinuxMCPResult['kedge_faros_sh']['v1alpha1']).LinuxMCP ?? null
+  }
+  return (v1 as GetMCPResult['kedge_faros_sh']['v1alpha1']).KubernetesMCP ?? null
+})
 
 const showYaml = ref(false)
 const editing = ref(false)
@@ -132,7 +152,7 @@ async function saveEdit() {
         ),
       }
     }
-    await graphqlMutate(UPDATE_MCP, {
+    await graphqlMutate(isLinux.value ? UPDATE_LINUX_MCP : UPDATE_MCP, {
       name: props.name,
       object: { spec },
     })
@@ -153,7 +173,7 @@ async function handleDelete() {
   deleteBusy.value = true
   deleteError.value = null
   try {
-    await graphqlMutate(DELETE_MCP, { name: props.name })
+    await graphqlMutate(isLinux.value ? DELETE_LINUX_MCP : DELETE_MCP, { name: props.name })
     router.push('/mcp')
   } catch (e) {
     deleteError.value = e instanceof Error ? e.message : 'Delete failed'
@@ -205,8 +225,16 @@ async function copySnippet(builder: (token: string) => string, field: string) {
           <div class="flex items-start gap-4">
             <div class="relative flex h-14 w-14 shrink-0 items-center justify-center">
               <div class="absolute inset-0 rounded-xl bg-accent/15 blur-md" />
-              <div class="relative flex h-14 w-14 items-center justify-center rounded-xl border border-accent/20 bg-surface-overlay">
-                <Bot class="h-7 w-7 text-accent" :stroke-width="1.5" />
+              <div
+                class="relative flex h-14 w-14 items-center justify-center rounded-xl border bg-surface-overlay"
+                :class="isLinux ? 'border-warning/30' : 'border-accent/20'"
+              >
+                <component
+                  :is="isLinux ? Terminal : Bot"
+                  class="h-7 w-7"
+                  :class="isLinux ? 'text-warning' : 'text-accent'"
+                  :stroke-width="1.5"
+                />
               </div>
             </div>
             <div class="flex-1">

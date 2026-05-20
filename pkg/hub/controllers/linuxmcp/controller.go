@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package mcp reconciles Kubernetes MCP resources.
-package mcp
+// Package linuxmcp reconciles LinuxMCP resources.
+package linuxmcp
 
 import (
 	"context"
@@ -39,24 +39,22 @@ import (
 
 // ConnManager is the minimal interface the controller needs from the connection manager.
 type ConnManager interface {
-	// HasConnection returns true if there is an active tunnel for the given key.
 	HasConnection(key string) bool
 }
 
-// connKeyFn converts cluster+edge to the ConnManager key used by the agent-proxy.
-// Must match edgeConnKey in pkg/virtual/builder/agent_proxy_builder_v2.go.
+// connKeyFn must match edgeConnKey in pkg/virtual/builder/agent_proxy_builder_v2.go.
 func connKeyFn(cluster, edge string) string {
 	return "edges/" + cluster + "/" + edge
 }
 
-// Reconciler reconciles Kubernetes MCP objects.
+// Reconciler reconciles LinuxMCP objects.
 type Reconciler struct {
 	mgr            mcmanager.Manager
 	connManager    ConnManager
 	hubExternalURL string
 }
 
-// SetupWithManager registers the Kubernetes MCP controller with the multicluster manager.
+// SetupWithManager registers the LinuxMCP controller with the multicluster manager.
 func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager, hubExternalURL string) error {
 	r := &Reconciler{
 		mgr:            mgr,
@@ -64,14 +62,14 @@ func SetupWithManager(mgr mcmanager.Manager, connManager ConnManager, hubExterna
 		hubExternalURL: hubExternalURL,
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
-		Named("kubernetes-mcp").
-		For(&kedgev1alpha1.KubernetesMCP{}).
+		Named("linux-mcp").
+		For(&kedgev1alpha1.LinuxMCP{}).
 		Complete(r)
 }
 
-// Reconcile reconciles a single KubernetesMCP object.
+// Reconcile reconciles a single LinuxMCP object.
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-	logger := klog.FromContext(ctx).WithValues("kubernetesmcp", req.Name, "cluster", req.ClusterName)
+	logger := klog.FromContext(ctx).WithValues("linuxmcp", req.Name, "cluster", req.ClusterName)
 
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -79,28 +77,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	c := cl.GetClient()
 
-	var kmcp kedgev1alpha1.KubernetesMCP
-	if err := c.Get(ctx, req.NamespacedName, &kmcp); err != nil {
+	var lmcp kedgev1alpha1.LinuxMCP
+	if err := c.Get(ctx, req.NamespacedName, &lmcp); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	// Compute the endpoint URL.
-	// Format: {hubExternalURL}/services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-	endpoint := apiurl.KubernetesMCPURL(r.hubExternalURL, string(req.ClusterName), kmcp.Name)
+	endpoint := apiurl.LinuxMCPURL(r.hubExternalURL, string(req.ClusterName), lmcp.Name)
 
-	// List all edges in the cluster.
 	var edgeList kedgev1alpha1.EdgeList
 	if err := c.List(ctx, &edgeList); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing edges in cluster %s: %w", req.ClusterName, err)
 	}
 
-	// Filter edges by the selector and count connected ones.
 	var selector labels.Selector
-	if kmcp.Spec.EdgeSelector != nil {
-		selector, err = metav1.LabelSelectorAsSelector(kmcp.Spec.EdgeSelector)
+	if lmcp.Spec.EdgeSelector != nil {
+		selector, err = metav1.LabelSelectorAsSelector(lmcp.Spec.EdgeSelector)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("parsing edgeSelector: %w", err)
 		}
@@ -111,11 +105,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	connectedCount := 0
 	for i := range edgeList.Items {
 		edge := &edgeList.Items[i]
-		// KubernetesMCP only ever targets kubernetes-type edges; server edges
-		// are served by LinuxMCP.  Mirror the filter in
-		// pkg/virtual/builder/mcp_builder.go so status.connectedEdges matches
-		// what the HTTP handler will actually expose.
-		if edge.Spec.Type != kedgev1alpha1.EdgeTypeKubernetes {
+		// LinuxMCP only ever targets server-type edges; kubernetes edges are
+		// served by KubernetesMCP.
+		if edge.Spec.Type != kedgev1alpha1.EdgeTypeServer {
 			continue
 		}
 		if !selector.Matches(labels.Set(edge.Labels)) {
@@ -126,47 +118,42 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 	}
 
-	// Build the Ready condition.
 	readyCondition := metav1.Condition{
 		Type:               "Ready",
-		ObservedGeneration: kmcp.Generation,
+		ObservedGeneration: lmcp.Generation,
 		LastTransitionTime: metav1.Now(),
 	}
 	if connectedCount > 0 {
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = "EdgesConnected"
-		readyCondition.Message = fmt.Sprintf("%d edge(s) connected", connectedCount)
+		readyCondition.Message = fmt.Sprintf("%d server edge(s) connected", connectedCount)
 	} else {
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = "NoEdgesConnected"
-		readyCondition.Message = "No edges matching the selector are currently connected"
+		readyCondition.Message = "No server edges matching the selector are currently connected"
 	}
 
-	// Update status if needed.
-	patch := client.MergeFrom(kmcp.DeepCopy())
-	kmcp.Status.URL = endpoint
-	kmcp.Status.ConnectedEdges = connectedCount
+	patch := client.MergeFrom(lmcp.DeepCopy())
+	lmcp.Status.URL = endpoint
+	lmcp.Status.ConnectedEdges = connectedCount
 
-	// Merge condition.
-	existing := findCondition(kmcp.Status.Conditions, "Ready")
-	if existing == nil || existing.Status != readyCondition.Status || existing.Reason != readyCondition.Reason {
-		kmcp.Status.Conditions = setCondition(kmcp.Status.Conditions, readyCondition)
+	if existing := findCondition(lmcp.Status.Conditions, "Ready"); existing == nil ||
+		existing.Status != readyCondition.Status || existing.Reason != readyCondition.Reason {
+		lmcp.Status.Conditions = setCondition(lmcp.Status.Conditions, readyCondition)
 	}
 
-	if err := c.Status().Patch(ctx, &kmcp, patch); err != nil {
+	if err := c.Status().Patch(ctx, &lmcp, patch); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("patching KubernetesMCP status: %w", err)
+		return ctrl.Result{}, fmt.Errorf("patching LinuxMCP status: %w", err)
 	}
 
-	logger.Info("Reconciled KubernetesMCP", "URL", endpoint, "connectedEdges", connectedCount)
+	logger.Info("Reconciled LinuxMCP", "URL", endpoint, "connectedEdges", connectedCount)
 
-	// Requeue periodically so ConnectedEdges stays fresh.
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-// findCondition returns the condition with the given type, or nil.
 func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
 	for i := range conditions {
 		if conditions[i].Type == condType {
@@ -176,7 +163,6 @@ func findCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 	return nil
 }
 
-// setCondition replaces an existing condition of the same type or appends a new one.
 func setCondition(conditions []metav1.Condition, cond metav1.Condition) []metav1.Condition {
 	for i, c := range conditions {
 		if c.Type == cond.Type {

@@ -74,6 +74,11 @@ spec:
     storage:
       crd: {}
   - group: kedge.faros.sh
+    name: linuxmcps
+    schema: v260520-e404e14.linuxmcps.kedge.faros.sh
+    storage:
+      crd: {}
+  - group: kedge.faros.sh
     name: placements
     schema: v260301-c08d8fa.placements.kedge.faros.sh
     storage:

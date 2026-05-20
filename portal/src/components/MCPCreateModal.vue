@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { graphqlMutate } from '@/composables/useGraphQL'
 import { useEscapeKey } from '@/composables/useEscapeKey'
-import { CREATE_MCP } from '@/graphql/mutations'
+import { CREATE_MCP, CREATE_LINUX_MCP } from '@/graphql/mutations'
+import type { MCPKind } from '@/graphql/queries/mcp'
 import { X } from 'lucide-vue-next'
 
 const emit = defineEmits<{
@@ -12,12 +13,25 @@ const emit = defineEmits<{
 
 useEscapeKey(() => emit('close'))
 
+const kind = ref<MCPKind>('kubernetes')
 const name = ref('')
 const matchLabels = ref('')
 const toolsets = ref('')
 const readOnly = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
+
+const toolsetHint = computed(() =>
+  kind.value === 'linux'
+    ? 'Available toolsets: core, systemd, diag, net, pkg. Empty = core only.'
+    : 'Available toolsets: core, config, helm, kcp, kiali, kubevirt. Empty = all.',
+)
+
+const edgeTypeNote = computed(() =>
+  kind.value === 'linux'
+    ? 'Selector matches server-type edges only (SSH transport).'
+    : 'Selector matches kubernetes-type edges only.',
+)
 
 async function handleCreate() {
   if (!name.value.trim()) {
@@ -49,7 +63,8 @@ async function handleCreate() {
       spec.readOnly = true
     }
 
-    await graphqlMutate(CREATE_MCP, {
+    const mutation = kind.value === 'linux' ? CREATE_LINUX_MCP : CREATE_MCP
+    await graphqlMutate(mutation, {
       object: {
         metadata: { name: name.value.trim() },
         spec,
@@ -87,6 +102,33 @@ async function handleCreate() {
 
         <div class="space-y-4">
           <div>
+            <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">Kind</label>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="flex-1 rounded-lg border px-3 py-2 text-[12px] font-medium transition-all"
+                :class="kind === 'kubernetes'
+                  ? 'border-accent/50 bg-accent/10 text-accent'
+                  : 'border-border-subtle bg-surface-overlay text-text-secondary hover:bg-surface-hover'"
+                @click="kind = 'kubernetes'"
+              >
+                Kubernetes MCP
+              </button>
+              <button
+                type="button"
+                class="flex-1 rounded-lg border px-3 py-2 text-[12px] font-medium transition-all"
+                :class="kind === 'linux'
+                  ? 'border-warning/50 bg-warning/10 text-warning'
+                  : 'border-border-subtle bg-surface-overlay text-text-secondary hover:bg-surface-hover'"
+                @click="kind = 'linux'"
+              >
+                Linux MCP (SSH)
+              </button>
+            </div>
+            <p class="mt-1 text-[10px] text-text-muted">{{ edgeTypeNote }}</p>
+          </div>
+
+          <div>
             <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">Name</label>
             <input
               v-model="name"
@@ -117,7 +159,7 @@ async function handleCreate() {
               placeholder="core, config, helm (empty = all)"
               class="w-full rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 font-mono text-[12px] text-text-primary placeholder:text-text-muted/40 focus:border-accent/50 focus:outline-none"
             />
-            <p class="mt-1 text-[10px] text-text-muted">Available toolsets: core, config, helm, kcp, kiali, kubevirt. Leave empty for all.</p>
+            <p class="mt-1 text-[10px] text-text-muted">{{ toolsetHint }}</p>
           </div>
 
           <div class="flex items-center gap-2">

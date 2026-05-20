@@ -36,6 +36,42 @@ export const LIST_MCP_SERVERS = `
             }
           }
         }
+        LinuxMCPs {
+          items {
+            metadata {
+              name
+              creationTimestamp
+              uid
+              resourceVersion
+              labels
+            }
+            spec {
+              edgeSelector {
+                matchLabels
+                matchExpressions {
+                  key
+                  operator
+                  values
+                }
+              }
+              toolsets
+              readOnly
+              commandTimeoutSeconds
+              maxOutputBytes
+            }
+            status {
+              URL
+              connectedEdges
+              conditions {
+                type
+                status
+                reason
+                message
+                lastTransitionTime
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -82,6 +118,49 @@ export const GET_MCP_SERVER = `
   }
 `
 
+export const GET_LINUX_MCP_SERVER = `
+  query GetLinuxMCPServer($name: String!) {
+    kedge_faros_sh {
+      v1alpha1 {
+        LinuxMCP(name: $name) {
+          metadata {
+            name
+            creationTimestamp
+            uid
+            resourceVersion
+            labels
+          }
+          spec {
+            edgeSelector {
+              matchLabels
+              matchExpressions {
+                key
+                operator
+                values
+              }
+            }
+            toolsets
+            readOnly
+            commandTimeoutSeconds
+            maxOutputBytes
+          }
+          status {
+            URL
+            connectedEdges
+            conditions {
+              type
+              status
+              reason
+              message
+              lastTransitionTime
+            }
+          }
+        }
+      }
+    }
+  }
+`
+
 // --- Types ---
 
 export interface MCPMatchExpression {
@@ -105,6 +184,9 @@ export interface MCPItem {
     }
     toolsets?: string[]
     readOnly?: boolean
+    // LinuxMCP-only fields; present only on Linux items, omitted on kube items.
+    commandTimeoutSeconds?: number
+    maxOutputBytes?: number
   }
   status?: {
     URL?: string
@@ -119,10 +201,16 @@ export interface MCPItem {
   }
 }
 
+// MCPKind distinguishes the two CRD-backed MCP server kinds the portal lists.
+export type MCPKind = 'kubernetes' | 'linux'
+
 export interface ListMCPResult {
   kedge_faros_sh: {
     v1alpha1: {
       KubernetesMCPs: {
+        items: MCPItem[]
+      }
+      LinuxMCPs: {
         items: MCPItem[]
       }
     }
@@ -133,6 +221,14 @@ export interface GetMCPResult {
   kedge_faros_sh: {
     v1alpha1: {
       KubernetesMCP: MCPItem
+    }
+  }
+}
+
+export interface GetLinuxMCPResult {
+  kedge_faros_sh: {
+    v1alpha1: {
+      LinuxMCP: MCPItem
     }
   }
 }

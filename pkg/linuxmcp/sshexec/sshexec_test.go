@@ -20,11 +20,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"io"
 	"net"
 	"os/exec"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -116,30 +114,26 @@ func serveSession(ch gossh.Channel, reqs <-chan *gossh.Request) {
 }
 
 func runRemoteCmd(ch gossh.Channel, cmd string) {
+	// Read stdout/stderr fully into memory BEFORE writing to the SSH
+	// channel.  The goroutine + StdoutPipe approach was flaky under CI
+	// load: cmd.Wait() closes the parent's read ends of the pipes the
+	// instant the process exits, racing with the io.Copy goroutines
+	// pushing bytes into the SSH channel and dropping the tail.
+	// For a test server (small outputs) reading to memory is simpler and
+	// race-free.
 	c := exec.Command("/bin/sh", "-c", cmd)
-	stdout, _ := c.StdoutPipe()
-	stderr, _ := c.StderrPipe()
-	if err := c.Start(); err != nil {
-		sendExit(ch, 127)
-		return
-	}
-	// Sync the pipe copies before sending exit-status: c.Wait() returns as
-	// soon as the process exits, but the goroutines copying stdout/stderr
-	// to the SSH channel may not have flushed yet.  Without this WaitGroup
-	// the client may see exit-status (and channel close) before all bytes
-	// have traversed the channel, producing empty stdout/stderr.
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(ch, stdout) }()
-	go func() { defer wg.Done(); _, _ = io.Copy(ch.Stderr(), stderr) }()
-	err := c.Wait()
-	wg.Wait()
+	var outBuf, errBuf strings.Builder
+	c.Stdout = &outBuf
+	c.Stderr = &errBuf
+	err := c.Run()
 	exit := 0
 	if ee, ok := err.(*exec.ExitError); ok {
 		exit = ee.ExitCode()
 	} else if err != nil {
 		exit = 1
 	}
+	_, _ = ch.Write([]byte(outBuf.String()))
+	_, _ = ch.Stderr().Write([]byte(errBuf.String()))
 	sendExit(ch, exit)
 }
 

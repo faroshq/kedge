@@ -21,13 +21,11 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
-	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +33,26 @@ import (
 
 	"github.com/faroshq/faros-kedge/pkg/linuxmcp"
 )
+
+// runProcess runs `/bin/sh -c cmd` and returns its full stdout, stderr, and
+// exit code.  Reading to memory keeps the SSH test server simple and avoids
+// the pipe-vs-goroutine race the prior implementation hit under CI load.
+// Safe for tests where output is small; not suitable for production servers.
+func runProcess(cmd string) (stdout, stderr []byte, exitCode int) {
+	c := exec.Command("/bin/sh", "-c", cmd)
+	var outBuf, errBuf strings.Builder
+	c.Stdout = &outBuf
+	c.Stderr = &errBuf
+	err := c.Run()
+	stdout = []byte(outBuf.String())
+	stderr = []byte(errBuf.String())
+	if ee, ok := err.(*exec.ExitError); ok {
+		exitCode = ee.ExitCode()
+	} else if err != nil {
+		exitCode = 1
+	}
+	return stdout, stderr, exitCode
+}
 
 // Bring up a tiny SSH server that shells out to /bin/sh, point a Provider at
 // it, and exercise read_file end-to-end on a real file in a temp dir.
@@ -106,26 +124,17 @@ func serveSession(ch gossh.Channel, reqs <-chan *gossh.Request) {
 		}
 		cmd := string(req.Payload[4:])
 		_ = req.Reply(true, nil)
-		c := exec.Command("/bin/sh", "-c", cmd)
-		stdout, _ := c.StdoutPipe()
-		stderr, _ := c.StderrPipe()
-		_ = c.Start()
-		// Sync the pipe copies before sending exit-status: c.Wait() returns
-		// as soon as the process exits, but the goroutines copying stdout/
-		// stderr to the SSH channel might not have flushed yet.  Without
-		// this WaitGroup the client may see exit-status (and channel close)
-		// before all bytes have traversed the channel, producing empty
-		// stdout/stderr — flaky and depends on scheduler timing.
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); _, _ = io.Copy(ch, stdout) }()
-		go func() { defer wg.Done(); _, _ = io.Copy(ch.Stderr(), stderr) }()
-		err := c.Wait()
-		wg.Wait()
-		exit := 0
-		if ee, ok := err.(*exec.ExitError); ok {
-			exit = ee.ExitCode()
-		}
+		// Read stdout/stderr into memory FIRST (before c.Wait), then
+		// write to the SSH channel synchronously.  The previous
+		// goroutine-based io.Copy was flaky under CI: cmd.Wait() closes
+		// the parent's read ends of the pipes the moment the process
+		// exits, which on a loaded scheduler can race the io.Copy
+		// goroutines and leave the SSH channel buffer empty.  Reading
+		// everything up front is safe for a test server (commands have
+		// trivial output) and removes the race entirely.
+		outBytes, errBytes, exit := runProcess(cmd)
+		_, _ = ch.Write(outBytes)
+		_, _ = ch.Stderr().Write(errBytes)
 		_, _ = ch.SendRequest("exit-status", false, gossh.Marshal(struct{ Code uint32 }{uint32(exit)}))
 		return
 	}

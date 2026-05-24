@@ -25,16 +25,17 @@ the how):
 
 | # | Decision | Rationale |
 |---|---|---|
+| 0 | API group = **`providers.kedge.faros.sh`** (separate from `kedge.faros.sh`) | Catalog entries and bindings are platform-owner-only. Excluding them from the `core.faros.sh` merged APIExport keeps them out of tenant workspaces. Tenants interact via portal/hub mediation, not raw CR access |
 | 1 | Terminology = **provider** (not "addon") | `root:kedge:providers` already exists; first-party kedge `APIExport`s already live there |
 | 2 | UI embedding = **iframe via hub proxy** | Same-origin → no CORS. Any frontend stack. Module Federation rejected (Vue lock-in + build coupling) |
-| 3 | Provider workspace = `root:kedge:providers:{name}`, **auto-created by hub** on `ProviderCatalogEntry` admission | Chart needs no kcp credentials |
+| 3 | Provider workspace = `root:kedge:providers:{name}`, **auto-created by hub** on `CatalogEntry` admission | Chart needs no kcp credentials |
 | 4 | Distribution = **one Helm chart per provider**, targets *host cluster only* | All kcp work owned by hub catalog controller |
-| 5 | Registration = **hybrid**: chart creates `ProviderCatalogEntry` shell; provider pod heartbeats every 30s (`POST /api/providers/{name}/heartbeat`, TTL 90s) | Declarative install + runtime liveness |
+| 5 | Registration = **hybrid**: chart creates `CatalogEntry` shell; provider pod heartbeats every 30s (`POST /api/providers/{name}/heartbeat`, TTL 90s) | Declarative install + runtime liveness |
 | 6 | VW = **APIExport-only by default**; `spec.virtualWorkspace.url` is an opt-in escape hatch under `/services/providers/{name}/vw/*` | Most providers won't need a VW; lowers bar |
 | 7 | Provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `kedge-provider-kubeconfig` in the provider's host namespace; **24h token rotation** | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go` |
-| 8 | Schema delivery = **inline** in `ProviderCatalogEntry.spec.apiExport.schemas[].body`; hub parses + applies | Solves chicken-and-egg of "chart can't apply to workspace that doesn't exist yet" |
-| 9 | PermissionClaim acceptance = **auto-accept-all** at Enable time, but ONLY for claims marked `tenantScoped: true`. Non-tenant-scoped claims refused unless admin sets `kedge.faros.sh/accept-untrusted-claims=true` on the `ProviderCatalogEntry` | Simplest safe default; per-claim toggles deferred to v2 |
-| 10 | Binding upgrade gate = `ProviderBinding.spec.acceptedClaimsHash`; chart upgrade adding new claims marks binding NotReady until user re-confirms | Prevents silent privilege escalation via chart upgrade |
+| 8 | Schema delivery = **inline** in `CatalogEntry.spec.apiExport.schemas[].body`; hub parses + applies | Solves chicken-and-egg of "chart can't apply to workspace that doesn't exist yet" |
+| 9 | PermissionClaim acceptance = **auto-accept-all** at Enable time, but ONLY for claims marked `tenantScoped: true`. Non-tenant-scoped claims refused unless admin sets `kedge.faros.sh/accept-untrusted-claims=true` on the `CatalogEntry` | Simplest safe default; per-claim toggles deferred to v2 |
+| 10 | Tenant Enable = **direct kcp `APIBinding` in the tenant workspace**. No `ProviderBinding` CRD — kcp-native. Catalog controller grants tenants `bind` verb on each provider's APIExport once the provider is Ready. Permission-claim safety enforced by `MaximalPermissionPolicy` on the APIExport (kcp). | Simpler, kcp-native; fewer moving parts. Audit/inventory queries fan out across tenant workspaces (acceptable). |
 
 **Deferred (do NOT block phase 1):**
 
@@ -49,7 +50,17 @@ the how):
 - Per-permission-claim UI toggles — v2.
 
 **Next concrete step:** implement phase 1. See §"Phase 1 implementation
-plan" near the bottom for the file-by-file checklist.
+plan" for the backend file-by-file checklist; phase 2 (portal wiring) is
+detailed under §"Portal changes" + §"Phase 2 implementation plan".
+
+**Portal integration anchors** (referenced throughout):
+
+- Layout + side nav: [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) — hardcoded `navItems` at lines 48-53 becomes computed
+- Bootstrap point: [portal/src/App.vue](../portal/src/App.vue) — auth detect + load providers store before render
+- Static routes: [portal/src/router/index.ts](../portal/src/router/index.ts)
+- GraphQL queries: [portal/src/graphql/queries/](../portal/src/graphql/queries/) (new `providers.ts`)
+- Dev proxy: [portal/vite.config.ts](../portal/vite.config.ts)
+- CSP injection point: [pkg/hub/portal.go](../pkg/hub/portal.go) — middleware around the embedded SPA handler
 
 ---
 
@@ -113,16 +124,17 @@ top-level workspace, no new vocabulary.
 │  /clusters/*, /services/agent-proxy, /services/mcp ... (unchanged)    │
 │  /api/providers/{p}/heartbeat (POST, provider-SA-authed)              │
 │                                                                       │
-│  Catalog controller: watches ProviderCatalogEntry                     │
+│  Catalog controller: watches CatalogEntry                     │
 │    - auto-creates root:kedge:providers:{p} sub-workspace              │
 │    - creates `provider` ServiceAccount in that workspace              │
 │    - writes kedge-provider-kubeconfig Secret to provider's namespace  │
 │    - applies inline bootstrap (APIResourceSchema, APIExport)          │
 │    - rebuilds proxy routing table; tracks heartbeats                  │
 │                                                                       │
-│  Binding controller: watches ProviderBinding in tenant workspaces     │
-│    - creates APIBinding pointing at provider's APIExport              │
-│    - auto-accepts permissionClaims (tenant-scoped only)               │
+│  Tenants APIBind to provider APIExports DIRECTLY in their workspace   │
+│    - Portal calls kcp as the user to create the APIBinding            │
+│    - Catalog controller pre-grants tenants `bind` verb cluster-wide   │
+│    - Permission safety = MaximalPermissionPolicy on the APIExport     │
 └──────────────────────────────────────────────────────────────────────┘
         │ kcp                              │ HTTP (in-cluster Service)
         ▼                                  ▼
@@ -157,15 +169,15 @@ provider's own custom HTTP backend (REST/GraphQL/WS), not for CR traffic.
 Two new CRDs, both in the kedge API group, both first-party (added to the
 existing `kedge.faros.sh` `APIExport`).
 
-### `ProviderCatalogEntry` (cluster-scoped, in `root:kedge:providers`)
+### `CatalogEntry` (cluster-scoped, in `root:kedge:providers`)
 
 Installed by an administrator via the provider's Helm chart, which targets
 the host Kubernetes cluster API. The hub's catalog controller projects it
 into kcp.
 
 ```yaml
-apiVersion: kedge.faros.sh/v1alpha1
-kind: ProviderCatalogEntry
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
 metadata:
   name: cost-insights
 spec:
@@ -243,35 +255,50 @@ status:
     - type: Ready
 ```
 
-### `ProviderBinding` (namespaced, in a user's tenant workspace)
+### Tenant Enable = direct kcp `APIBinding` (no second CRD)
 
-Created when a user clicks **Enable** in the portal.
+We deliberately do NOT ship a `ProviderBinding` CRD. Tenants enable a
+provider by creating a vanilla kcp `APIBinding` in their own workspace,
+pointing at the provider's `APIExport`. This is the kcp-native pattern;
+adding a second CRD would only re-wrap what `APIBinding` already does.
 
 ```yaml
-apiVersion: kedge.faros.sh/v1alpha1
-kind: ProviderBinding
+# Created in the tenant's workspace (e.g. root:kedge:tenants:alice)
+# by the portal, calling kcp as the user when they click Enable.
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIBinding
 metadata:
   name: cost-insights
-  namespace: default
 spec:
-  providerRef:
-    name: cost-insights        # → ProviderCatalogEntry name
-  # User has implicitly accepted all tenantScoped permissionClaims by
-  # creating this resource. If a future chart upgrade adds new claims,
-  # the binding becomes NotReady until the user re-confirms via the UI
-  # (which bumps spec.acceptedClaimsHash).
-  acceptedClaimsHash: "sha256:..."
-status:
-  apiBindingRef:
-    name: cost.faros.sh
-  ready: true
-  conditions:
-    - type: APIBindingReady
-    - type: ClaimsAccepted
+  reference:
+    export:
+      path: "root:kedge:providers:cost-insights"
+      name: "cost.faros.sh"
+  permissionClaims:
+    - resource: configmaps
+      verbs: [get, list, watch]
+      state: Accepted
 ```
 
-`ProviderBinding` owns its `APIBinding` via `ownerReferences`; deleting
-the `ProviderBinding` removes the binding.
+**Why this works safely:**
+
+- **Tenants need `bind` verb on the provider's `APIExport`.** kcp doesn't
+  grant it by default. The hub's catalog controller pre-grants
+  `bind` cluster-wide for each provider once its `CatalogEntry`
+  reaches Ready (via a `ClusterRole` aggregated to the tenant identity).
+  Without this grant, the tenant's `APIBinding` create fails with 403.
+- **Permission claims are gated by kcp's `MaximalPermissionPolicy`** on
+  each provider's `APIExport`. A tenant cannot accept a claim outside
+  their workspace because the export's `MaximalPermissionPolicy` refuses.
+  The provider chart declares the maximum claim set; users pick from it.
+- **Audit and inventory** ("who enabled X?") = list `APIBindings` across
+  tenant workspaces filtered by `reference.export.path`. Acceptable at
+  current scale; revisit if it ever isn't.
+- **Uninstall** (admin deletes `CatalogEntry`) leaves orphan
+  `APIBindings` in tenant workspaces — kcp flips them NotReady (broken
+  reference). The catalog controller's deletion hook walks tenant
+  workspaces and removes them.
+- **Disable** = tenant deletes their own `APIBinding`. No special API.
 
 ---
 
@@ -279,7 +306,7 @@ the `ProviderBinding` removes the binding.
 
 ### 1. Catalog controller (`pkg/hub/controllers/providercatalog/`)
 
-Watches `ProviderCatalogEntry` in `root:kedge:providers`. On each
+Watches `CatalogEntry` in `root:kedge:providers`. On each
 reconcile:
 
 1. **Sub-workspace**: ensure `root:kedge:providers:{name}` exists. Use
@@ -325,7 +352,7 @@ func (r *Registry) Upsert(p *Provider)
 func (r *Registry) Delete(name string)
 ```
 
-Pure in-memory; rebuilt on hub restart from the `ProviderCatalogEntry`
+Pure in-memory; rebuilt on hub restart from the `CatalogEntry`
 list. No external store.
 
 ### 3. Heartbeat endpoint
@@ -340,7 +367,7 @@ Content-Type: application/json
 
 - Authenticates the bearer token against the SA in
   `root:kedge:providers:{name}`. Rejects any other identity.
-- Updates `ProviderCatalogEntry.status.lastHeartbeat` and
+- Updates `CatalogEntry.status.lastHeartbeat` and
   `reportedVersion`.
 - TTL: 90 seconds. Catalog controller flips `Ready=false` if no heartbeat
   within TTL.
@@ -378,102 +405,302 @@ Note: if `spec.virtualWorkspace.url` is set, the backend proxy also
 recognizes a `/services/providers/{name}/vw/*` sub-path and routes it to
 the VW URL instead. This is the opt-in advanced path.
 
-### 5. Binding controller (`pkg/hub/controllers/providerbinding/`)
+### 5. Catalog controller's RBAC + enable plumbing
 
-Watches `ProviderBinding` across all tenant workspaces. On reconcile:
+When the catalog controller (`pkg/hub/controllers/providercatalog/`)
+reconciles a `CatalogEntry`, it additionally:
 
-1. Look up `ProviderCatalogEntry` by `spec.providerRef.name`. If missing
-   or not Ready → set `ClaimsAccepted=False`, requeue.
-2. **Claim safety check**: iterate `permissionClaims`. If any is **not**
-   `tenantScoped`, refuse and emit a `PermissionClaimRejected` event with
-   the offending claim. The user cannot complete enable until either the
-   provider chart is fixed or an admin overrides via annotation
-   `kedge.faros.sh/accept-untrusted-claims=true` on the
-   `ProviderCatalogEntry`.
-3. Create/update `APIBinding` in the binding's workspace pointing at
-   `status.apiExportRef`, with `permissionClaims` auto-accepted.
-4. Set `ownerReference` on the `APIBinding` → `ProviderBinding`.
-5. Watch the `APIBinding` and mirror its `Bound` condition to
-   `ProviderBinding.status.conditions`.
+1. **Grants tenants `bind` verb on the provider's `APIExport`.**
+   The controller creates / updates a `ClusterRole` named
+   `kedge:providers:bind:{name}` in the provider's workspace with rules
+   `[apiGroups: ["apis.kcp.io"], resources: ["apiexports"], verbs: ["bind"], resourceNames: ["{name}"]]`,
+   and a `ClusterRoleBinding` aggregating that role to the tenant-identity
+   group (`system:authenticated` is too broad — we use the same identity
+   subject used by the existing tenant `APIBinding` to `core.faros.sh`).
+2. **Sets `MaximalPermissionPolicy` on the provider's `APIExport`** to
+   the union of claims declared in
+   `CatalogEntry.spec.apiExport.permissionClaims` that are marked
+   `tenantScoped`. This is the kcp-enforced safety wall: tenants cannot
+   accept a claim that escapes their workspace.
+3. **Cleanup on delete.** When the `CatalogEntry` is deleted, the
+   controller walks tenant workspaces, lists `APIBindings` whose
+   `reference.export.path` matches this provider's workspace, and deletes
+   them. Best-effort; orphans flip NotReady on their own anyway.
 
-On delete: cascade via owner references.
+There is no separate "binding reconciler" — the tenant's `APIBinding`
+itself is the reconciled state, and kcp handles its lifecycle.
 
 ### 6. Bootstrap
 
 The kcp bootstrap in [pkg/hub/bootstrap](../pkg/hub/bootstrap) already
 creates `root:kedge:providers`. We add:
 
-- `APIResourceSchema` for `ProviderCatalogEntry` and `ProviderBinding`,
-  added to the existing `kedge.faros.sh` `APIExport` (first-party).
+- `APIResourceSchema` and `APIExport` for `CatalogEntry` in the
+  `providers.kedge.faros.sh` group (admin-only — bound only in
+  `root:kedge:providers`, never in tenant workspaces, hence excluded from
+  the merged `core.faros.sh` APIExport).
 - New embed paths for these schemas in
   [config/kcp/embed.go](../config/kcp/embed.go).
 
 No new workspaces in bootstrap; provider sub-workspaces are created
-lazily on `ProviderCatalogEntry` admission.
+lazily on `CatalogEntry` admission.
 
 ---
 
 ## Portal changes
 
-### 1. Dynamic route registration
+The portal is Vue 3 + Pinia + urql + Vite, with a single shared layout
+([portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue))
+that every page wraps. Routes are static today
+([portal/src/router/index.ts](../portal/src/router/index.ts)) and the side
+nav reads a hardcoded `navItems` const at
+[portal/src/components/AppLayout.vue:48-53](../portal/src/components/AppLayout.vue#L48-L53).
+Both become provider-aware.
 
-[portal/src/router/index.ts](../portal/src/router/index.ts) currently has a
-static array. After auth resolves:
+### Files to create
+
+| Path | Purpose |
+|---|---|
+| `portal/src/stores/providers.ts` | Pinia store: catalog list, current user's bindings, derived nav items, route registration |
+| `portal/src/router/providers.ts` | `registerProviderRoutes(bindings)` — idempotent `router.addRoute()` calls |
+| `portal/src/graphql/queries/providers.ts` | `LIST_PROVIDER_CATALOG_ENTRIES`, `LIST_PROVIDER_BINDINGS`, plus result types |
+| `portal/src/pages/ProvidersPage.vue` | The `/providers` catalog view (grid of cards, Enable/Disable) |
+| `portal/src/pages/ProviderFrame.vue` | Per-provider iframe host; handles postMessage handshake, loading state, theme propagation |
+| `portal/src/components/ProviderEnableDialog.vue` | Modal listing `permissionClaims` (read from `CatalogEntry.spec.apiExport.permissionClaims` via `/api/providers`); on confirm, the portal POSTs an `APIBinding` directly to kcp in the user's workspace with the claims marked `Accepted` |
+| `portal/sdk/index.ts` (new package `@kedge/provider-sdk`) | `useKedge()` composable for providers' UIs: token, user, tenant, theme, `onNavigate` |
+| `portal/sdk/package.json`, `tsconfig.json`, `README.md` | SDK packaging — publish to npm or include as workspace |
+
+### Files to edit
+
+| Path | Edit |
+|---|---|
+| [portal/src/App.vue](../portal/src/App.vue) | After `auth.detectAuthMode()`, if authenticated, `await providersStore.load()` before rendering `<router-view />`. Show loading spinner during. This guarantees dynamic routes exist *before* Vue tries to match a deep link like `/providers/cost/foo`. |
+| [portal/src/router/index.ts](../portal/src/router/index.ts) | Add static catalog route `{ path: '/providers', name: 'providers', component: () => import('@/pages/ProvidersPage.vue') }` **before** the `:pathMatch(.*)*` not-found route at line 62. Provider sub-routes added dynamically by the store. |
+| [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | Replace the static `navItems` array (lines 48-53) with a `computed` that merges static items with `providersStore.enabledNavItems`. Add a static "Providers" entry (catalog browser) before the dynamic block. Render dynamic items with `<img :src="iconURL">` instead of `<component :is="icon">` so providers can use their own icons. |
+| [portal/src/graphql/mutations.ts](../portal/src/graphql/mutations.ts) | Add `CREATE_PROVIDER_BINDING`, `DELETE_PROVIDER_BINDING` |
+| [portal/vite.config.ts](../portal/vite.config.ts) | Add proxy entries so dev-mode shell on `:3000` forwards `/services` and `/ui/providers/*` to the hub at `:9443`. The `/ui/providers/*` rule must take precedence over Vite's own `/ui/` static serving (use `bypass: () => undefined` only for that prefix). |
+| [pkg/hub/portal.go](../pkg/hub/portal.go) | Add `Content-Security-Policy` header to portal HTML responses: `default-src 'self'; frame-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'`. `frame-src 'self'` permits provider iframes (proxied = same-origin). |
+
+### Reactive providers store
+
+The current implementation lives at
+[portal/src/stores/providers.ts](../portal/src/stores/providers.ts). It
+holds a single `items: ProviderDTO[]` array loaded from the hub's
+admin-mediated `/api/providers`. Today every authenticated user sees every
+installed provider in the nav.
+
+**Phase 3 change** (when direct-APIBinding Enable lands): split into two
+sources:
+
+- `catalog: ProviderDTO[]` — what's installed on the platform (hub
+  `/api/providers`, unchanged).
+- `enabled: APIBinding[]` — what the *current user* has bound, queried
+  via kcp's APIBinding list in the user's workspace, filtered by
+  `reference.export.path` starting with `root:kedge:providers:`.
+
+`enabledNavItems` becomes `enabled.filter(ready).map(...)`. The catalog
+page shows union with status badges (Available / Enabled / Pending).
+
+### Route registration (sketch)
 
 ```ts
-const { data } = await urql.query(LIST_PROVIDER_BINDINGS).toPromise()
-for (const binding of data.providerBindings) {
-  router.addRoute({
-    path: `/providers/${binding.name}/:rest(.*)*`,
-    name: `provider-${binding.name}`,
-    component: () => import('@/pages/ProviderFrame.vue'),
-    props: route => ({
-      providerName: binding.name,
-      subPath: route.params.rest ?? '',
-    }),
-  })
+// portal/src/router/providers.ts
+import { router } from './index'
+
+const registered = new Set<string>()
+
+export function registerProviderRoutes(names: string[]) {
+  for (const name of names) {
+    if (registered.has(name)) continue
+    router.addRoute({
+      path: `/providers/${name}/:rest(.*)*`,
+      name: `provider-${name}`,
+      component: () => import('@/pages/ProviderFrame.vue'),
+      props: route => ({
+        providerName: name,
+        subPath: route.params.rest ?? '',
+      }),
+    })
+    registered.add(name)
+  }
 }
 ```
 
-### 2. `ProviderFrame.vue`
+### `ProviderFrame.vue` (concrete)
 
 ```vue
+<script setup lang="ts">
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import AppLayout from '@/components/AppLayout.vue'
+import { useProvidersStore } from '@/stores/providers'
+import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
+import { useRouter } from 'vue-router'
+
+const props = defineProps<{ providerName: string; subPath: string }>()
+const providers = useProvidersStore()
+const auth = useAuthStore()
+const theme = useThemeStore()
+const router = useRouter()
+const iframe = ref<HTMLIFrameElement | null>(null)
+
+const entry = computed(() =>
+  providers.catalog.find(c => c.metadata.name === props.providerName)
+)
+
+// Cache-bust on version change so a provider chart upgrade doesn't show
+// stale assets.
+const src = computed(() => {
+  const v = entry.value?.status?.reportedVersion ?? '0'
+  return `/ui/providers/${props.providerName}/${props.subPath}?v=${v}`
+})
+
+// postMessage handshake. Only respond to messages whose source is OUR
+// iframe; only post back to that iframe's contentWindow.
+function onMessage(e: MessageEvent) {
+  if (e.source !== iframe.value?.contentWindow) return
+  if (e.data?.type === 'kedge.ready') {
+    iframe.value?.contentWindow?.postMessage({
+      type: 'kedge.context',
+      token: auth.token,
+      user: auth.user,
+      tenant: auth.clusterName,
+      theme: theme.mode,
+      basePath: `/ui/providers/${props.providerName}`,
+    }, window.location.origin)
+  } else if (e.data?.type === 'kedge.navigate') {
+    // Provider wants to update browser URL (e.g. /providers/cost/foo)
+    router.push(`/providers/${props.providerName}/${e.data.path}`)
+  }
+}
+
+onMounted(() => window.addEventListener('message', onMessage))
+onUnmounted(() => window.removeEventListener('message', onMessage))
+</script>
+
 <template>
-  <iframe
-    :src="`/ui/providers/${providerName}/${subPath}?v=${version}`"
-    class="w-full h-full border-0"
-    sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-  />
+  <AppLayout>
+    <div v-if="!entry?.status?.ready" class="loading-state">
+      Provider starting…
+    </div>
+    <iframe
+      v-else
+      ref="iframe"
+      :src="src"
+      class="w-full h-full border-0"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+      :title="entry.spec.displayName"
+    />
+  </AppLayout>
 </template>
 ```
 
-`version` comes from `ProviderCatalogEntry.status.reportedVersion` — used
-as a cache-bust query param when providers upgrade.
-
-### 3. Provider SDK (`@kedge/provider-sdk`)
-
-Tiny TypeScript package (published from `portal/sdk/`) provider authors
-import:
+### Provider SDK (`@kedge/provider-sdk`) — concrete
 
 ```ts
-import { useKedge } from '@kedge/provider-sdk'
+// portal/sdk/index.ts
+import { ref, onMounted, onUnmounted } from 'vue'
 
-const { token, user, tenant, onNavigate } = useKedge()
+export interface KedgeContext {
+  token: string
+  user: { email: string; userId: string }
+  tenant: string         // logical cluster name
+  theme: 'light' | 'dark' | 'system'
+  basePath: string       // e.g. /ui/providers/cost
+}
+
+export function useKedge() {
+  const ctx = ref<KedgeContext | null>(null)
+
+  function onMessage(e: MessageEvent) {
+    if (e.source !== window.parent) return
+    if (e.data?.type === 'kedge.context') ctx.value = e.data
+  }
+
+  onMounted(() => {
+    window.addEventListener('message', onMessage)
+    // Tell the shell we're ready to receive context
+    window.parent.postMessage({ type: 'kedge.ready' }, '*')
+  })
+  onUnmounted(() => window.removeEventListener('message', onMessage))
+
+  function navigate(path: string) {
+    window.parent.postMessage({ type: 'kedge.navigate', path }, '*')
+  }
+
+  return { ctx, navigate }
+}
 ```
 
-`postMessage` handshake with the portal shell. Optional — provider UIs
-work without it; they just won't share state with the shell.
+Optional — a provider's UI works without the SDK; it just won't share
+state (no token, no theme, no synced URL).
 
-### 4. Providers page
+### Deep-link behavior
 
-New route `/providers` showing the catalog:
+User pastes `https://kedge.example.com/ui/#/providers/cost/forecasts`
+into a fresh browser. Sequence:
 
-- Lists all `ProviderCatalogEntry` (read via GraphQL).
-- For each, shows whether the current user has a `ProviderBinding`.
-- **Enable** opens a dialog listing `permissionClaims`; confirm →
-  creates `ProviderBinding` with `acceptedClaimsHash` set.
-- **Disable** deletes the binding.
-- Once `status.ready`, the provider's UI route appears in the side nav.
+1. Vue boots, `App.vue` `onMounted` calls `auth.detectAuthMode()`.
+2. If not authenticated → `router.beforeEach` redirects to `/login` (no
+   change from today).
+3. If authenticated → `await providersStore.load()`. This populates the
+   store AND calls `registerProviderRoutes(...)` *before* the first
+   `<router-view />` render.
+4. Vue Router resolves `/providers/cost/forecasts` → `ProviderFrame.vue`
+   with `providerName=cost`, `subPath=forecasts`. Iframe loads
+   `/ui/providers/cost/forecasts`.
+
+The key is awaiting the store load in `App.vue` before rendering. Without
+that, the not-found route swallows the deep link.
+
+### Dev-mode wiring
+
+Vite dev server serves `/ui/*` as Vue assets and proxies `/apis`,
+`/healthz` to the hub today. We add:
+
+```ts
+// vite.config.ts (excerpt)
+server: {
+  port: 3000,
+  proxy: {
+    '/apis':     { target: 'https://localhost:9443', changeOrigin: true, secure: false, ws: true },
+    '/healthz':  { target: 'https://localhost:9443', changeOrigin: true, secure: false },
+    // NEW:
+    '/services': { target: 'https://localhost:9443', changeOrigin: true, secure: false, ws: true },
+    // /ui/providers/{name}/* MUST go to hub, NOT vite's static dir.
+    // Vite proxy matches first; rewrite-strip not needed because hub
+    // expects the full path.
+    '/ui/providers': { target: 'https://localhost:9443', changeOrigin: true, secure: false },
+  },
+},
+```
+
+In production the hub already proxies these routes directly — no Vite in
+the picture.
+
+### Providers catalog page
+
+`/providers` (`ProvidersPage.vue`) — grid of cards from
+`providersStore.catalog`. Each card shows:
+
+- Icon (`<img>` from `entry.spec.iconURL` — proxied via hub).
+- Display name, vendor, version, description.
+- Status badge: Available / Enabled (= an `APIBinding` exists in your
+  workspace) / Pending (provider not Ready).
+- Primary button:
+  - **Enable** when not bound → opens `ProviderEnableDialog.vue` listing
+    `permissionClaims`; on confirm, the portal POSTs the `APIBinding`
+    directly to kcp in the user's workspace.
+  - **Disable** when bound → confirm + delete the user's `APIBinding`.
+  - **Re-accept** when the catalog's `permissionClaims` no longer match
+    what the user's `APIBinding` has accepted → re-shows the dialog with
+    the new claims highlighted; user confirm = patch the `APIBinding`.
+
+`ProviderEnableDialog.vue` lists `permissionClaims` from the
+`CatalogEntry`, distinguishes `tenantScoped` vs non
+(non-tenant-scoped claims show a red warning explaining the admin
+override needed). Confirm → calls the mutation, sets
+`acceptedClaimsHash` to a SHA256 of the sorted claims list.
 
 ---
 
@@ -492,7 +719,7 @@ provider-cost-insights/
     ├── serviceaccount.yaml
     ├── deployment.yaml          # provider pod (controllers + UI + backend)
     ├── service.yaml             # ClusterIP services for UI and backend
-    └── catalogentry.yaml        # ProviderCatalogEntry (with inline schemas)
+    └── catalogentry.yaml        # CatalogEntry (with inline schemas)
 ```
 
 `helm install cost-insights ./chart` →
@@ -500,7 +727,7 @@ provider-cost-insights/
 1. Provider Deployment starts. Reads
    `/var/run/secrets/kedge/kedge-provider-kubeconfig` (mounted from the
    Secret the hub will write).
-2. `ProviderCatalogEntry` is applied to the host cluster API.
+2. `CatalogEntry` is applied to the host cluster API.
 3. Hub catalog controller picks it up:
    a. Creates `root:kedge:providers:cost-insights` workspace.
    b. Creates `provider` SA in that workspace.
@@ -547,7 +774,7 @@ A provider's UI MUST:
 - **Permission claim gate**: the binding controller refuses any claim not
   marked `tenantScoped`. An override exists
   (`kedge.faros.sh/accept-untrusted-claims=true`) but is admin-only
-  (host-cluster RBAC on the `ProviderCatalogEntry` resource).
+  (host-cluster RBAC on the `CatalogEntry` resource).
 - **iframe sandboxing**: `sandbox` attribute set; no
   `allow-top-navigation`.
 - **CSP**: hub portal CSP allows `frame-src 'self'` only.
@@ -562,11 +789,11 @@ A provider's UI MUST:
 
 | Phase | Scope | Verifiable outcome |
 |---|---|---|
-| 1 | `ProviderCatalogEntry` CRD + catalog controller (workspace + SA + Secret + schema apply) + registry + heartbeat endpoint + backend proxy | An example provider's chart installs, hub provisions everything, provider pod heartbeats, `/services/providers/example/*` reaches the backend |
-| 2 | UI proxy + `ProviderFrame.vue` + dynamic routes | Static "hello" provider UI loads inside the portal |
-| 3 | `ProviderBinding` CRD + binding controller (with claim-safety check) + Providers page (Enable/Disable + claim dialog) | Users can enable/disable; `APIBinding` created; provider CRs visible in tenant workspace |
+| 1 | `CatalogEntry` CRD + catalog controller (workspace + SA + Secret + schema apply) + registry + heartbeat endpoint + backend proxy | An example provider's chart installs, hub provisions everything, provider pod heartbeats, `/services/providers/example/*` reaches the backend |
+| 2 | UI proxy + `ProviderFrame.vue` + dynamic routes + providers store + AppLayout nav integration + CSP + dev proxy | A static "hello" provider UI loads inside the portal at `/providers/hello`, side nav shows it, theme + token propagate via postMessage |
+| 3 | Catalog controller adds RBAC grant (`ClusterRole` + binding for tenant identity) + `MaximalPermissionPolicy` apply on the provider's APIExport. Portal: EnableDialog + direct `APIBinding` create against kcp + nav filter to user's APIBindings + GraphQL validation of bound CRs. | Users can enable/disable from the portal; an `APIBinding` lands in their workspace; provider CRs visible AND queryable via embedded GraphQL gateway. |
 | 4 | Provider SDK + example chart in `examples/provider-hello/` | Third party can copy the example and ship a working provider end-to-end |
-| 5 | Hardening: CSP, RBAC fuzz, cache-bust, e2e tests, optional `virtualWorkspace` opt-in | Ready to declare stable |
+| 5 | Hardening: RBAC fuzz, cache-bust verification, e2e tests, optional `virtualWorkspace` opt-in, claim re-acceptance flow on chart upgrade | Ready to declare stable |
 
 ## Deferred items
 
@@ -594,37 +821,35 @@ Phase 1 = the full backend skeleton, no portal changes yet. Verifiable by
 installing a stub provider chart and curling
 `/services/providers/example/healthz` through the hub.
 
-### Files to create
+### What landed (current tree)
+
+Use these as the authoritative source — the Phase 1A skeleton is in
+place. The list below is descriptive, not prescriptive.
 
 | Path | Purpose |
 |---|---|
-| `apis/kedge/v1alpha1/types_providercatalogentry.go` | Go types for `ProviderCatalogEntry` |
-| `apis/kedge/v1alpha1/types_providerbinding.go` | Go types for `ProviderBinding` (used in phase 3 but ship the type now) |
-| `apis/kedge/v1alpha1/zz_generated.deepcopy.go` | Regenerated via `make codegen` |
-| `config/crds/kedge.faros.sh_providercatalogentries.yaml` | CRD manifest (used outside kcp / dev) |
-| `config/crds/kedge.faros.sh_providerbindings.yaml` | CRD manifest |
-| `config/kcp/apiresourceschema-providercatalogentries.kedge.faros.sh.yaml` | kcp APIResourceSchema |
-| `config/kcp/apiresourceschema-providerbindings.kedge.faros.sh.yaml` | kcp APIResourceSchema |
-| `pkg/hub/providers/registry.go` | In-memory `Registry` + `Provider` types |
-| `pkg/hub/providers/proxy.go` | `NewUIProxy`, `NewBackendProxy` reverse proxies |
-| `pkg/hub/providers/proxy_test.go` | Table-driven test for path parsing + lookup |
-| `pkg/hub/providers/heartbeat.go` | `POST /api/providers/{name}/heartbeat` HTTP handler |
-| `pkg/hub/providers/kubeconfig.go` | Mint exec-credential kubeconfig for the provider SA, idempotent Secret writer |
-| `pkg/hub/controllers/providercatalog/controller.go` | Reconciler: workspace + SA + Secret + schema/APIExport apply + registry upsert + TTL eviction |
-| `pkg/hub/controllers/providercatalog/controller_test.go` | Reconcile-loop unit tests with fake kcp client |
-
-### Files to edit
-
-| Path | Edit |
-|---|---|
-| [pkg/api/url/paths.go](../pkg/api/url/paths.go) (or wherever existing path constants live — `apiurl` package) | Add `PathPrefixProvidersUI = "/ui/providers"`, `PathPrefixProvidersBackend = "/services/providers"`, `PathProviderHeartbeat = "/api/providers/{name}/heartbeat"` |
-| [pkg/hub/server.go](../pkg/hub/server.go) — currently registers routes at lines 307-359 | Construct `Registry`, mount UI/backend proxies and heartbeat handler, start catalog controller |
-| [pkg/hub/scheme.go](../pkg/hub/scheme.go) | Register new types with the scheme |
-| [apis/kedge/v1alpha1/groupversion_info.go](../apis/kedge/v1alpha1/groupversion_info.go) | Register new types via `SchemeBuilder.Register(...)` |
-| [config/kcp/apiexport-kedge.faros.sh.yaml](../config/kcp/apiexport-kedge.faros.sh.yaml) | Add `providercatalogentries` and `providerbindings` resources |
-| [config/kcp/embed.go](../config/kcp/embed.go) | Update `ProvidersFS` embed glob (already matches `apiresourceschema-*.yaml` and `apiexport-*.yaml`, should pick up automatically) |
-| [pkg/hub/bootstrap](../pkg/hub/bootstrap) (whichever file applies the APIExport) | No structural change expected; verify the new schemas are applied |
-| `Makefile` | Confirm `make codegen` regenerates deepcopy for new types |
+| [apis/providers/v1alpha1/types_catalogentry.go](../apis/providers/v1alpha1/types_catalogentry.go) | `CatalogEntry` Go type (admin-only group `providers.kedge.faros.sh`) |
+| [apis/providers/v1alpha1/groupversion_info.go](../apis/providers/v1alpha1/groupversion_info.go) | Scheme registration for the new group |
+| [config/crds/providers.kedge.faros.sh_catalogentries.yaml](../config/crds/providers.kedge.faros.sh_catalogentries.yaml) | Host-cluster CRD (codegen) |
+| [config/kcp/apiresourceschema-catalogentries.providers.kedge.faros.sh.yaml](../config/kcp/apiresourceschema-catalogentries.providers.kedge.faros.sh.yaml) | kcp APIResourceSchema (codegen) |
+| [config/kcp/apiexport-providers.kedge.faros.sh.yaml](../config/kcp/apiexport-providers.kedge.faros.sh.yaml) | Admin-only APIExport (excluded from `core.faros.sh` merge) |
+| [hack/gen-core-apiexport/main.go](../hack/gen-core-apiexport/main.go) | Excludes `apiexport-providers.kedge.faros.sh.yaml` from the merged tenant-facing core export |
+| [pkg/hub/providers/registry.go](../pkg/hub/providers/registry.go) | In-memory routing table |
+| [pkg/hub/providers/proxy.go](../pkg/hub/providers/proxy.go) | `NewUIProxy`, `NewBackendProxy` reverse proxies |
+| [pkg/hub/providers/controller.go](../pkg/hub/providers/controller.go) | Catalog reconciler (Phase 1A: URL parse → registry upsert + Ready condition). Phase 1B will add workspace/SA/Secret/schema apply; Phase 3 will add the RBAC `bind`-verb grant + `MaximalPermissionPolicy` apply. |
+| [pkg/hub/providers/api.go](../pkg/hub/providers/api.go) | `GET /api/providers` admin-mediated list endpoint backing the portal |
+| [pkg/hub/portal_security.go](../pkg/hub/portal_security.go) | `WithPortalSecurityHeaders` middleware (CSP) — applied to both embedded SPA and `--portal-dev-url` proxy |
+| [pkg/apiurl/urls.go](../pkg/apiurl/urls.go) | `PathPrefixProvidersUI`, `PathPrefixProvidersProxy` constants |
+| [pkg/hub/server.go](../pkg/hub/server.go) | Route registration; second multicluster manager bound to `providers.kedge.faros.sh` for the catalog controller |
+| [pkg/hub/scheme.go](../pkg/hub/scheme.go) | Registers the new providers group |
+| [pkg/hub/kcp/bootstrap.go](../pkg/hub/kcp/bootstrap.go) | `ensureProvidersSelfBinding` — APIBinding in `root:kedge:providers` so catalog entries can live there |
+| [providers/quickstart/](../providers/quickstart/) | Reference provider — Go binary, Dockerfile, `manifest.yaml`, README |
+| [portal/src/stores/providers.ts](../portal/src/stores/providers.ts) | Pinia store fetching `/api/providers` |
+| [portal/src/router/providers.ts](../portal/src/router/providers.ts) | Dynamic `/providers/:name/:rest(.*)*` route registration |
+| [portal/src/pages/ProvidersPage.vue](../portal/src/pages/ProvidersPage.vue) | Catalog grid |
+| [portal/src/pages/ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue) | Iframe host + postMessage handshake |
+| [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | `navItems` computed, merges static + provider entries; renders icon URLs |
+| [portal/vite.config.ts](../portal/vite.config.ts) | Dev proxy entries for `/api/providers`, `/services/providers`, `/ui/providers` |
 
 ### Key code anchors (from current tree)
 
@@ -646,10 +871,10 @@ installing a stub provider chart and curling
 1. `make codegen && make build` — clean build.
 2. Start the hub against an embedded kcp:
    `./bin/kedge-hub --embedded-kcp --static-auth-tokens=test:user-default`.
-3. Apply a stub `ProviderCatalogEntry`:
+3. Apply a stub `CatalogEntry`:
    ```yaml
    apiVersion: kedge.faros.sh/v1alpha1
-   kind: ProviderCatalogEntry
+   kind: CatalogEntry
    metadata: { name: hello }
    spec:
      displayName: Hello
@@ -680,18 +905,77 @@ installing a stub provider chart and curling
    stub backend (matches the body it serves).
 6. POST a heartbeat with the SA token from the Secret →
    `status.lastHeartbeat` updates.
-7. Delete the `ProviderCatalogEntry` → registry entry removed, Secret
+7. Delete the `CatalogEntry` → registry entry removed, Secret
    cleaned up. (Workspace deletion is a v2 concern — leave it for now,
    note in code as TODO.)
 
 ### What phase 1 deliberately does NOT do
 
 - No portal changes.
-- No `ProviderBinding` reconciliation (the CRD ships but the controller
-  arrives in phase 3).
+- No tenant Enable/Disable flow yet — every authenticated user sees every
+  installed provider. Phase 3 adds the per-tenant `APIBinding` create from
+  the portal and filters the nav.
 - No GraphQL validation.
 - No Helm example chart yet (phase 4).
 - No `virtualWorkspace` opt-in path (phase 5).
+
+---
+
+## Phase 2 implementation plan (portal)
+
+Phase 2 = the full portal wiring. Verifiable by serving a static "hello"
+provider UI and seeing it load inside the portal frame.
+
+See §"Portal changes" above for the file create/edit lists. Order of
+operations:
+
+1. **CSP first** ([pkg/hub/portal.go](../pkg/hub/portal.go)) — without
+   `frame-src 'self'` the iframe is blocked. Add a small middleware that
+   sets the header on portal HTML responses only.
+2. **UI proxy** — `pkg/hub/providers/proxy.go` (already created in phase
+   1) gets the `NewUIProxy` handler wired into the router. Existing
+   backend proxy stays.
+3. **GraphQL queries** + **Pinia store** + **route registration helper** —
+   landed together; nothing depends on order between them.
+4. **App.vue** — await `providersStore.load()` before mounting
+   `<router-view />`. Critical for deep-link bootstrapping.
+5. **AppLayout.vue** — replace static `navItems` with computed.
+6. **ProvidersPage.vue + ProviderFrame.vue** — render the catalog and
+   frame.
+7. **EnableDialog.vue** — wired only enough to display the claims; the
+   actual mutation lands in phase 3 (binding controller).
+8. **Provider SDK** — published as workspace package; consumed by the
+   example provider in phase 4.
+
+### Phase 2 verification recipe
+
+1. With phase 1 deployed, install a stub `CatalogEntry` with a
+   simple HTTP server behind `spec.ui.url` that serves an
+   `index.html` containing `<h1>hello provider</h1>` and a small script
+   that calls `useKedge()` (or just `postMessage({ type: 'kedge.ready' })`
+   directly).
+2. Open the portal in a browser. Side nav and `/providers` show the new
+   provider immediately — Phase 1A/2 do not gate visibility per tenant.
+   Phase 3 adds the Enable/Disable flow and the nav filter.
+4. Click it. URL becomes `/providers/hello`. Iframe loads.
+5. Open browser devtools → confirm:
+   - `POST` request from iframe arrived with auth token (visible in
+     iframe's console if the stub echoes it).
+   - No CSP violations.
+   - No CORS errors.
+6. Toggle theme in the shell — if the stub iframe handles `kedge.context`
+   re-broadcasts, its background flips. (Optional check.)
+7. Reload the deep link `https://kedge.example.com/ui/#/providers/hello`
+   in a fresh tab → still works (proves the store loads before route
+   resolution).
+
+### What phase 2 deliberately does NOT do
+
+- Catalog Enable/Disable buttons (UI present, mutation is phase 3).
+- Per-claim consent toggles (phase 3 ships only the all-or-nothing
+  dialog).
+- WebSocket support in the backend proxy (add in phase 5 if needed).
+- Example provider chart (phase 4).
 
 ---
 

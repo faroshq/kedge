@@ -30,11 +30,13 @@ import (
 // kcp's native /clusters, /apis/<group>, /api/v1 paths, which are forwarded
 // straight to kcp.
 const (
-	PathPrefixAgentProxy = "/services/agent-proxy"
-	PathPrefixEdgesProxy = "/services/edges-proxy"
-	PathPrefixMCP        = "/services/mcp"
-	PathPrefixLinuxMCP   = "/services/linux-mcp"
-	PathPrefixMCPServer  = "/services/mcpserver"
+	PathPrefixAgentProxy     = "/services/agent-proxy"
+	PathPrefixEdgesProxy     = "/services/edges-proxy"
+	PathPrefixMCP            = "/services/mcp"
+	PathPrefixLinuxMCP       = "/services/linux-mcp"
+	PathPrefixMCPServer      = "/services/mcpserver"
+	PathPrefixProvidersUI    = "/ui/providers"
+	PathPrefixProvidersProxy = "/services/providers"
 	PathAuthAuthorize    = "/auth/authorize"
 	PathAuthCallback     = "/auth/callback"
 	PathAuthRefresh      = "/auth/refresh"

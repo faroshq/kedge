@@ -37,12 +37,12 @@ const (
 	PathPrefixMCPServer      = "/services/mcpserver"
 	PathPrefixProvidersUI    = "/ui/providers"
 	PathPrefixProvidersProxy = "/services/providers"
-	PathAuthAuthorize    = "/auth/authorize"
-	PathAuthCallback     = "/auth/callback"
-	PathAuthRefresh      = "/auth/refresh"
-	PathAuthTokenLogin   = "/auth/token-login"
-	PathHealthz          = "/healthz"
-	PathVersion          = "/version"
+	PathAuthAuthorize        = "/auth/authorize"
+	PathAuthCallback         = "/auth/callback"
+	PathAuthRefresh          = "/auth/refresh"
+	PathAuthTokenLogin       = "/auth/token-login"
+	PathHealthz              = "/healthz"
+	PathVersion              = "/version"
 )
 
 // SplitBaseAndCluster splits a URL that contains a /clusters/<name> path into

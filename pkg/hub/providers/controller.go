@@ -287,4 +287,3 @@ func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
 	}
 	*conds = append(*conds, c)
 }
-

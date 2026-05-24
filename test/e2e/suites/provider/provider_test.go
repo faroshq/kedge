@@ -282,7 +282,7 @@ func TestDUIProxyMainJS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET main.js: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -301,7 +301,7 @@ func TestEUIProxyIcon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET icon.svg: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -436,7 +436,7 @@ func TestHHeartbeatEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("heartbeat POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -449,7 +449,7 @@ func TestHHeartbeatEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("heartbeat unknown POST: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != 404 {
 		t.Fatalf("expected 404 for unknown provider, got %d", resp2.StatusCode)
 	}
@@ -468,7 +468,7 @@ func httpGetJSON(t *testing.T, url, token string) map[string]any {
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		t.Fatalf("%s: status %d body=%s", url, resp.StatusCode, string(b))
@@ -491,7 +491,7 @@ func loginStaticTokenAndGetCluster(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("token-login: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		t.Fatalf("token-login: status %d body=%s", resp.StatusCode, string(b))

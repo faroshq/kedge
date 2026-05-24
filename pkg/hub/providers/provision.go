@@ -298,15 +298,18 @@ func (p *provisioner) ApplyAPIExport(ctx context.Context, providerName, exportNa
 		"spec": map[string]any{
 			"resources":        resources,
 			"permissionClaims": pcList,
-			// Defense in depth: kcp checks the export's subjects'
-			// (apis.kcp.io:binding:* prefixed) RBAC in the export's own
-			// workspace, capping what the provider's controllers can do
-			// in tenant workspaces even if a tenant accepts everything.
-			// The actual policy is whatever ClusterRole(Binding)s exist
-			// in this sub-workspace for those prefixed subjects.
-			"maximalPermissionPolicy": map[string]any{
-				"local": map[string]any{},
-			},
+			// MaximalPermissionPolicy is intentionally NOT set. With
+			// Local{}, kcp gates tenant access to bound resources on RBAC
+			// in *this* workspace for apis.kcp.io:binding:<user> subjects
+			// — i.e. it caps the tenant too, not just the provider's
+			// controllers. Without prefixed-subject ClusterRoles minted
+			// here, that policy effectively denies tenants access to
+			// their own bound CRs. The right way to scope provider
+			// controller reach is via the permissionClaims list above
+			// (which kcp enforces) plus the bind grant (ClusterRole +
+			// CRB) ApplyBindGrant creates. If a future provider model
+			// genuinely needs a maximal-permission policy, plumb in the
+			// required apis.kcp.io:binding:* RBAC at the same time.
 		},
 	}}
 

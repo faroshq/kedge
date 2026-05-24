@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart e2e-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -404,6 +404,17 @@ install-provider-quickstart: ## Apply quickstart CatalogEntry into root:kedge:pr
 		--server=https://localhost:6443/clusters/root:kedge:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(QUICKSTART_MANIFEST)
+
+## Run provider e2e suite (embedded kcp + quickstart-provider subprocess).
+## Lightweight — no kind/Helm, just two host binaries the suite drives over
+## HTTP + kcp dynamic clients. KEDGE_E2E_KEEP_DATA=true preserves logs/data.
+E2E_PROVIDER_TIMEOUT ?= 10m
+e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
+	@test -z "$$(lsof -ti :19443 :16443 :18081 :2380 2>/dev/null)" || { \
+		echo "ports 19443/16443/18081/2380 are in use; stop any running kedge-hub/quickstart-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry

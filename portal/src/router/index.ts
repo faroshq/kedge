@@ -23,6 +23,13 @@ const routes = [
     path: '/edges',
     name: 'edges',
     component: () => import('@/pages/EdgesPage.vue'),
+    props: { kind: 'kubernetes' },
+  },
+  {
+    path: '/servers',
+    name: 'servers',
+    component: () => import('@/pages/EdgesPage.vue'),
+    props: { kind: 'server' },
   },
   {
     path: '/edges/:name',

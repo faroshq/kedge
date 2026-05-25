@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart e2e-provider
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -74,7 +74,10 @@ build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcomman
 # the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
 build-agent: build-kedge
 
-build-quickstart-provider: ## Build the quickstart reference provider binary
+build-quickstart-provider-portal: ## Build the quickstart provider's micro-frontend (Vite + TS → portal/dist)
+	cd providers/quickstart/portal && npm install --no-audit --no-fund && npm run build
+
+build-quickstart-provider: build-quickstart-provider-portal ## Build the quickstart reference provider binary (portal embedded)
 	cd providers/quickstart && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/quickstart-provider .
 
 test:
@@ -415,6 +418,21 @@ e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 		exit 1; \
 	}
 	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Run --providers flag mechanics suite (dep validation, unknown name,
+## filtered enable). Each test spawns its own hub on the standard
+## 19443/16443/2380 ports, so this MUST NOT run concurrently with
+## `e2e-provider` — the Makefile checks the port up-front.
+E2E_PROVIDER_FLAGS_TIMEOUT ?= 10m
+e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
+	@test -z "$$(lsof -ti :19443 :16443 :2380 2>/dev/null)" || { \
+		echo "ports 19443/16443/2380 are in use; stop any running kedge-hub first (e.g. pkill kedge-hub)"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Run both provider suites back-to-back (sequential — they share port 2380).
+e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-flags suites sequentially
 
 ## Delete the quickstart CatalogEntry. Useful while iterating on the manifest.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry

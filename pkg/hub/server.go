@@ -87,6 +87,13 @@ func (s *Server) Run(ctx context.Context) error {
 		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
 
+	// Validate --providers BEFORE any expensive init (embedded kcp takes
+	// ~60s to bootstrap). A typo or dep violation should error in
+	// milliseconds, not after the user watches kcp boot.
+	if err := kcp.ValidateProviders(s.opts.Providers); err != nil {
+		return err
+	}
+
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
 	var embeddedKCP *kcp.EmbeddedKCP
@@ -279,7 +286,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Defaults to the base kedgeClient; overridden to root:kedge:users when kcp is configured.
 	userClient := kedgeClient
 	if kcpConfig != nil {
-		bootstrapper = kcp.NewBootstrapper(kcpConfig)
+		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
 		if err := bootstrapper.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("bootstrapping kcp: %w", err)
 		}
@@ -366,7 +373,13 @@ func (s *Server) Run(ctx context.Context) error {
 	// (wired below alongside other multicluster controllers) keeps in sync
 	// with ProviderCatalogEntry resources.
 	providerRegistry := providers.NewRegistry()
-	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(providers.NewUIProxy(providerRegistry, logger))
+	// Keep the UI proxy reference around so we can install the portal SPA as
+	// its fallback once the portal handler is built later in this function.
+	// Without that fallback, a hard refresh of /ui/providers/{name} would
+	// hit this proxy and serve the provider's raw HTML, losing the portal
+	// chrome (nav, header, etc.).
+	uiProxy := providers.NewUIProxy(providerRegistry, logger)
+	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(uiProxy)
 	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(providers.NewBackendProxy(providerRegistry, logger))
 	router.Handle(providers.PathListProviders, providers.NewListHandler(providerRegistry)).Methods("GET")
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
@@ -595,6 +608,10 @@ func (s *Server) Run(ctx context.Context) error {
 		router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})
+		// Now that the portal handler exists, wire it into the UI proxy so
+		// hard refreshes of /ui/providers/{name}/<spa-route> fall through to
+		// the SPA instead of being served by the provider's raw HTTP server.
+		uiProxy.SetFallback(portalSPA)
 	}
 
 	// 8. Swap the HTTP server handler from the early bootstrap mux to the full

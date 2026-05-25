@@ -131,6 +131,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		Name:        entry.Name,
 		DisplayName: entry.Spec.DisplayName,
 		IconURL:     entry.Spec.IconURL,
+		Category:    entry.Spec.Category,
 		Version:     entry.Spec.Version,
 	}
 	if entry.Spec.APIExport != nil {
@@ -146,8 +147,21 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 	}
 
-	var parseErrs []string
+	// Builtin (first-party) providers declare spec.ui.builtinRoute instead
+	// of a URL. The portal renders the named Vue route in-tree, so there's
+	// no proxy target and no /main.js bundle to load — UIURL stays nil.
 	if entry.Spec.UI != nil {
+		prov.BuiltinRoute = entry.Spec.UI.BuiltinRoute
+		for _, c := range entry.Spec.UI.Children {
+			prov.Children = append(prov.Children, NavChild{
+				DisplayName:  c.DisplayName,
+				BuiltinRoute: c.BuiltinRoute,
+			})
+		}
+	}
+
+	var parseErrs []string
+	if entry.Spec.UI != nil && entry.Spec.UI.URL != "" {
 		u, err := ParseURL(entry.Spec.UI.URL)
 		if err != nil {
 			parseErrs = append(parseErrs, "ui.url: "+err.Error())
@@ -164,10 +178,11 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 	}
 
-	// EndpointsValid covers spec parse health and "at least one endpoint
-	// declared". Heartbeat-driven readiness is layered on by the sweeper
-	// goroutine (see Provider.Ready()).
-	prov.EndpointsValid = len(parseErrs) == 0 && (prov.UIURL != nil || prov.BackendURL != nil)
+	// EndpointsValid covers spec parse health and "the provider has
+	// somewhere to render": a URL endpoint OR a builtin Vue route OR a
+	// backend proxy target. Heartbeat-driven readiness is layered on by
+	// the sweeper goroutine (see Provider.Ready()).
+	prov.EndpointsValid = len(parseErrs) == 0 && (prov.UIURL != nil || prov.BackendURL != nil || prov.BuiltinRoute != "")
 
 	r.reg.Upsert(prov)
 	logger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", prov.UIURL, "backend", prov.BackendURL)

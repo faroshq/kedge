@@ -8,6 +8,11 @@ import { GET_EDGE } from '@/graphql/queries/edges'
 import { createGraphQLClient } from '@/graphql/client'
 import { X, Copy, Check } from 'lucide-vue-next'
 
+// When fixedType is set the dialog hides the type selector and uses that
+// value. EdgesPage passes its scoped kind so the Kubernetes page can't
+// create a server edge (and vice versa).
+const props = defineProps<{ fixedType?: 'kubernetes' | 'server' }>()
+
 const emit = defineEmits<{
   close: []
   created: []
@@ -16,7 +21,7 @@ const emit = defineEmits<{
 useEscapeKey(() => emit('close'))
 
 const name = ref('')
-const edgeType = ref('kubernetes')
+const edgeType = ref<string>(props.fixedType ?? 'kubernetes')
 const labels = ref('')
 const saving = ref(false)
 const error = ref<string | null>(null)
@@ -164,7 +169,7 @@ async function handleCreate() {
               />
             </div>
 
-            <div>
+            <div v-if="!fixedType">
               <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">Type</label>
               <select
                 v-model="edgeType"

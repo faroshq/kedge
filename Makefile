@@ -89,7 +89,13 @@ build-server-edges-provider-portal: portal-provider-symlinks build-kubernetes-ed
 # files in providers/{name}/portal/src/ live outside portal/node_modules'
 # default Node lookup path, so without the symlink Vite/Rollup fail to
 # resolve `vue-router` etc. Symlinks are gitignored and idempotent.
+# Installs portal/node_modules first if missing — fresh CI checkouts
+# otherwise symlink into a nonexistent dir and `npx vite build` fails.
 portal-provider-symlinks:
+	@if [ ! -d portal/node_modules ]; then \
+		echo "  → installing portal dependencies"; \
+		(cd portal && npm ci); \
+	fi
 	@for d in providers/mcp/portal providers/kubernetesedges/portal providers/serveredges/portal; do \
 		if [ ! -L "$$d/node_modules" ]; then \
 			ln -sfn ../../../portal/node_modules "$$d/node_modules" && \

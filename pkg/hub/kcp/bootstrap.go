@@ -59,12 +59,9 @@ var (
 	apiBindingGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
-	kubernetesMCPGVR = schema.GroupVersionResource{
-		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesmcps",
-	}
-	linuxMCPGVR = schema.GroupVersionResource{
-		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "linuxmcps",
-	}
+	// KubernetesMCP + LinuxMCP per-kind CRDs were removed in favor of
+	// the MCPServer aggregate. Their GVRs and per-tenant default-
+	// creation helpers used to live here.
 	mcpServerGVR = schema.GroupVersionResource{
 		Group: "kedge.faros.sh", Version: "v1alpha1", Resource: "mcpservers",
 	}
@@ -398,16 +395,10 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 		}
 	}
 
-	// Ensure "default" KubernetesMCP and LinuxMCP objects exist in the tenant
-	// workspace.  Both are best-effort — the per-login proxy.go path will
-	// re-attempt them on the next sign-in, and the user can always create
-	// these by hand from the portal.
-	if err := createDefaultMCPObject(ctx, tenantClient, kubernetesMCPGVR, "KubernetesMCP"); err != nil {
-		logger.Error(err, "Failed to create default KubernetesMCP in tenant workspace (non-fatal)", "userID", userID)
-	}
-	if err := createDefaultMCPObject(ctx, tenantClient, linuxMCPGVR, "LinuxMCP"); err != nil {
-		logger.Error(err, "Failed to create default LinuxMCP in tenant workspace (non-fatal)", "userID", userID)
-	}
+	// Ensure the default MCPServer aggregate exists in the tenant
+	// workspace. Per-kind defaults (KubernetesMCP, LinuxMCP) used to be
+	// seeded alongside; both CRDs have been removed in favor of this
+	// single aggregate that exposes kube + linux tools at one endpoint.
 	if err := createDefaultMCPObject(ctx, tenantClient, mcpServerGVR, "MCPServer"); err != nil {
 		logger.Error(err, "Failed to create default MCPServer in tenant workspace (non-fatal)", "userID", userID)
 	}
@@ -416,32 +407,18 @@ func (b *Bootstrapper) CreateTenantWorkspace(ctx context.Context, userID, rbacId
 	return clusterName, nil
 }
 
-// EnsureDefaultKubernetesMCP creates the "default" KubernetesMCP object in the
-// tenant workspace identified by clusterName if it doesn't already exist.
-// Idempotent — safe to call on every login.
-func (b *Bootstrapper) EnsureDefaultKubernetesMCP(ctx context.Context, clusterName string) error {
-	return b.ensureDefaultMCP(ctx, clusterName, kubernetesMCPGVR, "KubernetesMCP")
-}
-
-// EnsureDefaultLinuxMCP creates the "default" LinuxMCP object in the tenant
-// workspace identified by clusterName if it doesn't already exist.  This is
-// the SSH/server-edge counterpart to EnsureDefaultKubernetesMCP and is invoked
-// from the same login path so both MCP servers show up automatically.
-// Idempotent.
-func (b *Bootstrapper) EnsureDefaultLinuxMCP(ctx context.Context, clusterName string) error {
-	return b.ensureDefaultMCP(ctx, clusterName, linuxMCPGVR, "LinuxMCP")
-}
-
-// EnsureDefaultMCPServer creates the "default" MCPServer (aggregate kube +
-// linux endpoint) in the tenant workspace.  Idempotent.  Counterpart to the
-// per-kind ensures; called from the same login + backfill paths.
+// EnsureDefaultMCPServer creates the "default" MCPServer (the aggregate
+// kube + linux endpoint) in the tenant workspace identified by
+// clusterName if it doesn't already exist. Idempotent — safe to call
+// on every login. Sister per-kind ensures (KubernetesMCP, LinuxMCP)
+// were removed in the MCP collapse refactor; this is now the only
+// per-tenant MCP CR.
 func (b *Bootstrapper) EnsureDefaultMCPServer(ctx context.Context, clusterName string) error {
 	return b.ensureDefaultMCP(ctx, clusterName, mcpServerGVR, "MCPServer")
 }
 
-// ensureDefaultMCP is the shared get-or-create used by EnsureDefaultKubernetesMCP
-// and EnsureDefaultLinuxMCP. An empty spec means an empty edgeSelector, which
-// matches all connected edges of the corresponding type.
+// ensureDefaultMCP is the shared get-or-create helper. An empty spec
+// means an empty edgeSelector, which matches all connected edges.
 func (b *Bootstrapper) ensureDefaultMCP(ctx context.Context, clusterName string, gvr schema.GroupVersionResource, kind string) error {
 	if clusterName == "" {
 		return nil
@@ -507,8 +484,9 @@ func (b *Bootstrapper) BackfillDefaultMCPs(ctx context.Context) error {
 		kind string
 	}
 	kinds := []gvkPair{
-		{kubernetesMCPGVR, "KubernetesMCP"},
-		{linuxMCPGVR, "LinuxMCP"},
+		// KubernetesMCP + LinuxMCP per-kind CRDs were removed; the
+		// MCPServer aggregate is the only per-tenant MCP default the
+		// backfill needs to seed.
 		{mcpServerGVR, "MCPServer"},
 	}
 

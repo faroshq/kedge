@@ -1,85 +1,43 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import StatusBadge from '@/components/StatusBadge.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useGraphQLQuery, graphqlMutate } from '@/composables/useGraphQL'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import { useAuthStore } from '@/stores/auth'
-import {
-  GET_MCP_SERVER,
-  GET_LINUX_MCP_SERVER,
-  GET_AGGREGATE_MCP_SERVER,
-  type GetMCPResult,
-  type GetLinuxMCPResult,
-  type GetAggregateMCPResult,
-  type MCPKind,
-} from '@/graphql/queries/mcp'
-import {
-  UPDATE_MCP, DELETE_MCP,
-  UPDATE_LINUX_MCP, DELETE_LINUX_MCP,
-  UPDATE_AGGREGATE_MCP, DELETE_AGGREGATE_MCP,
-} from '@/graphql/mutations'
+import { GET_MCP_SERVER, type GetMCPResult } from '@/graphql/queries/mcp'
+import { UPDATE_AGGREGATE_MCP, DELETE_AGGREGATE_MCP } from '@/graphql/mutations'
 import { formatDateTimeWithAge } from '@/utils/time'
 import {
-  Bot, ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
-  FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield, Terminal, Layers,
+  ArrowLeft, Wifi, WifiOff, Server, Hash, Clock, Copy, Check,
+  FileCode, ChevronDown, ChevronUp, Pencil, Trash2, Shield, Layers,
 } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 const router = useRouter()
-const route = useRoute()
 const auth = useAuthStore()
 
-// Kind comes from the ?kind= query the table appends; default to kubernetes
-// so any link minted before this page understood Linux/aggregate still works.
-const kind = computed<MCPKind>(() => {
-  switch (route.query.kind) {
-    case 'linux':
-      return 'linux'
-    case 'aggregate':
-      return 'aggregate'
-    default:
-      return 'kubernetes'
-  }
-})
-const isLinux = computed(() => kind.value === 'linux')
-const isAggregate = computed(() => kind.value === 'aggregate')
+// MCPServer is now the only MCP CRD; KubernetesMCP / LinuxMCP were
+// removed. Their tools live behind this aggregate via the in-binary
+// ToolFamily registry. The legacy ?kind= query param is ignored —
+// any saved link still works because we just fetch the aggregate.
+const { data: rawData, loading, error, refetch } = useGraphQLQuery<GetMCPResult>(
+  GET_MCP_SERVER,
+  { name: props.name },
+  10000,
+)
 
-// Pick the right GET query for this kind.  All three return the same MCPItem
-// shape (with optional aggregate-specific fields populated only for aggregate).
-const query = computed(() => {
-  switch (kind.value) {
-    case 'linux':
-      return GET_LINUX_MCP_SERVER
-    case 'aggregate':
-      return GET_AGGREGATE_MCP_SERVER
-    default:
-      return GET_MCP_SERVER
-  }
-})
-
-const { data: rawData, loading, error, refetch } = useGraphQLQuery<
-  GetMCPResult | GetLinuxMCPResult | GetAggregateMCPResult
->(query.value, { name: props.name }, 10000)
-
-const mcp = computed(() => {
-  if (!rawData.value) return null
-  const v1 = rawData.value.kedge_faros_sh?.v1alpha1
-  if (!v1) return null
-  switch (kind.value) {
-    case 'linux':
-      return (v1 as GetLinuxMCPResult['kedge_faros_sh']['v1alpha1']).LinuxMCP ?? null
-    case 'aggregate':
-      return (v1 as GetAggregateMCPResult['kedge_faros_sh']['v1alpha1']).MCPServer ?? null
-    default:
-      return (v1 as GetMCPResult['kedge_faros_sh']['v1alpha1']).KubernetesMCP ?? null
-  }
-})
+const mcp = computed(() => rawData.value?.kedge_faros_sh?.v1alpha1?.MCPServer ?? null)
 
 const showYaml = ref(false)
 const editing = ref(false)
-const editToolsets = ref('')
+// MCPServer carries two toolset lists (kube + linux) since each family
+// installs its tools onto the aggregate via the in-binary ToolFamily
+// registry. The single editToolsets field was used by the deleted
+// per-kind CRDs.
+const editKubeToolsets = ref('')
+const editLinuxToolsets = ref('')
 const editReadOnly = ref(false)
 const editMatchLabels = ref('')
 const editDisplayName = ref('')
@@ -97,29 +55,16 @@ const readyCond = computed(() => mcp.value?.status?.conditions?.find((c) => c.ty
 const details = computed(() => {
   if (!mcp.value) return []
   const m = mcp.value
-  // Aggregate splits counts + toolsets across the two edge kinds; per-kind
-  // CRDs report a single total/list.
-  if (isAggregate.value) {
-    const kubeCount = m.status?.kubernetesEdges ?? 0
-    const linuxCount = m.status?.linuxEdges ?? 0
-    const kubeTs = m.spec?.kubernetesToolsets?.length ? m.spec.kubernetesToolsets.join(', ') : 'defaults'
-    const linuxTs = m.spec?.linuxToolsets?.length ? m.spec.linuxToolsets.join(', ') : 'core'
-    return [
-      { label: 'Endpoint URL', value: m.status?.URL || 'Pending...', icon: Server, mono: true },
-      { label: 'Display Name', value: m.spec?.displayName || '(auto-generated)', icon: Hash },
-      { label: 'Connected Edges', value: `${kubeCount} kube · ${linuxCount} linux`, icon: Wifi },
-      { label: 'Kubernetes Toolsets', value: kubeTs, icon: Hash },
-      { label: 'Linux Toolsets', value: linuxTs, icon: Hash },
-      { label: 'Read Only', value: m.spec?.readOnly ? 'Yes' : 'No', icon: Shield },
-      { label: 'Created', value: formatDateTimeWithAge(m.metadata?.creationTimestamp), icon: Clock },
-      { label: 'UID', value: m.metadata?.uid ?? '-', icon: Hash, mono: true },
-    ]
-  }
+  const kubeCount = m.status?.kubernetesEdges ?? 0
+  const linuxCount = m.status?.linuxEdges ?? 0
+  const kubeTs = m.spec?.kubernetesToolsets?.length ? m.spec.kubernetesToolsets.join(', ') : 'defaults'
+  const linuxTs = m.spec?.linuxToolsets?.length ? m.spec.linuxToolsets.join(', ') : 'core'
   return [
     { label: 'Endpoint URL', value: m.status?.URL || 'Pending...', icon: Server, mono: true },
     { label: 'Display Name', value: m.spec?.displayName || '(auto-generated)', icon: Hash },
-    { label: 'Connected Edges', value: String(m.status?.connectedEdges ?? 0), icon: Wifi },
-    { label: 'Toolsets', value: m.spec?.toolsets?.length ? m.spec.toolsets.join(', ') : 'all', icon: Hash },
+    { label: 'Connected Edges', value: `${kubeCount} kube · ${linuxCount} linux`, icon: Wifi },
+    { label: 'Kubernetes Toolsets', value: kubeTs, icon: Hash },
+    { label: 'Linux Toolsets', value: linuxTs, icon: Hash },
     { label: 'Read Only', value: m.spec?.readOnly ? 'Yes' : 'No', icon: Shield },
     { label: 'Created', value: formatDateTimeWithAge(m.metadata?.creationTimestamp), icon: Clock },
     { label: 'UID', value: m.metadata?.uid ?? '-', icon: Hash, mono: true },
@@ -133,15 +78,11 @@ const details = computed(() => {
 const instructionsDisplay = computed(() => mcp.value?.spec?.instructions ?? '')
 
 // connectedTotal collapses the aggregate's two counters into one number for
-// the page-header "X edges connected" pill so the existing template doesn't
-// need to branch.
+// the page-header "X edges connected" pill.
 const connectedTotal = computed(() => {
   const m = mcp.value
   if (!m) return 0
-  if (isAggregate.value) {
-    return (m.status?.kubernetesEdges ?? 0) + (m.status?.linuxEdges ?? 0)
-  }
-  return m.status?.connectedEdges ?? 0
+  return (m.status?.kubernetesEdges ?? 0) + (m.status?.linuxEdges ?? 0)
 })
 
 const edgeSelectorDisplay = computed(() => {
@@ -166,20 +107,8 @@ const yamlContent = computed(() => {
 const maskedToken = '••••••••••••••••'
 
 // claudeServerName mirrors the CLI's mcpServerName / portal MCPPage.serverNameFor.
-// Detail page is single-MCP so the name is fixed once kind+name are known:
-//   aggregate   -> kedge-<name>
-//   kubernetes  -> kedge-kubernetes-clusters-<name>
-//   linux       -> kedge-servers-<name>
-const claudeServerName = computed(() => {
-  switch (kind.value) {
-    case 'aggregate':
-      return `kedge-${props.name}`
-    case 'linux':
-      return `kedge-servers-${props.name}`
-    default:
-      return `kedge-kubernetes-clusters-${props.name}`
-  }
-})
+// MCPServer is now the only kind — prefix is always "kedge-<name>".
+const claudeServerName = computed(() => `kedge-${props.name}`)
 
 function buildClaudeCodeSnippet(token: string) {
   const url = mcp.value?.status?.URL ?? '<MCP_URL>'
@@ -208,7 +137,8 @@ const claudeDesktopSnippet = computed(() => buildClaudeDesktopSnippet(maskedToke
 
 function startEdit() {
   if (!mcp.value) return
-  editToolsets.value = mcp.value.spec?.toolsets?.join(', ') ?? ''
+  editKubeToolsets.value = mcp.value.spec?.kubernetesToolsets?.join(', ') ?? ''
+  editLinuxToolsets.value = mcp.value.spec?.linuxToolsets?.join(', ') ?? ''
   editReadOnly.value = mcp.value.spec?.readOnly ?? false
   editDisplayName.value = mcp.value.spec?.displayName ?? ''
   editInstructions.value = mcp.value.spec?.instructions ?? ''
@@ -228,8 +158,11 @@ async function saveEdit() {
     const spec: Record<string, unknown> = {
       readOnly: editReadOnly.value,
     }
-    if (editToolsets.value.trim()) {
-      spec.toolsets = editToolsets.value.split(',').map((s) => s.trim()).filter(Boolean)
+    if (editKubeToolsets.value.trim()) {
+      spec.kubernetesToolsets = editKubeToolsets.value.split(',').map((s) => s.trim()).filter(Boolean)
+    }
+    if (editLinuxToolsets.value.trim()) {
+      spec.linuxToolsets = editLinuxToolsets.value.split(',').map((s) => s.trim()).filter(Boolean)
     }
     if (editDisplayName.value.trim()) {
       spec.displayName = editDisplayName.value.trim()
@@ -247,12 +180,7 @@ async function saveEdit() {
         ),
       }
     }
-    const updateMutation = isAggregate.value
-      ? UPDATE_AGGREGATE_MCP
-      : isLinux.value
-      ? UPDATE_LINUX_MCP
-      : UPDATE_MCP
-    await graphqlMutate(updateMutation, {
+    await graphqlMutate(UPDATE_AGGREGATE_MCP, {
       name: props.name,
       object: { spec },
     })
@@ -273,12 +201,7 @@ async function handleDelete() {
   deleteBusy.value = true
   deleteError.value = null
   try {
-    const deleteMutation = isAggregate.value
-      ? DELETE_AGGREGATE_MCP
-      : isLinux.value
-      ? DELETE_LINUX_MCP
-      : DELETE_MCP
-    await graphqlMutate(deleteMutation, { name: props.name })
+    await graphqlMutate(DELETE_AGGREGATE_MCP, { name: props.name })
     router.push('/')
   } catch (e) {
     deleteError.value = e instanceof Error ? e.message : 'Delete failed'
@@ -330,14 +253,10 @@ async function copySnippet(builder: (token: string) => string, field: string) {
           <div class="flex items-start gap-4">
             <div class="relative flex h-14 w-14 shrink-0 items-center justify-center">
               <div class="absolute inset-0 rounded-xl bg-accent/15 blur-md" />
-              <div
-                class="relative flex h-14 w-14 items-center justify-center rounded-xl border bg-surface-overlay"
-                :class="isAggregate ? 'border-success/30' : isLinux ? 'border-warning/30' : 'border-accent/20'"
-              >
+              <div class="relative flex h-14 w-14 items-center justify-center rounded-xl border border-success/30 bg-surface-overlay">
                 <component
-                  :is="isAggregate ? Layers : isLinux ? Terminal : Bot"
-                  class="h-7 w-7"
-                  :class="isAggregate ? 'text-success' : isLinux ? 'text-warning' : 'text-accent'"
+                  :is="Layers"
+                  class="h-7 w-7 text-success"
                   :stroke-width="1.5"
                 />
               </div>
@@ -518,14 +437,25 @@ async function copySnippet(builder: (token: string) => string, field: string) {
               </div>
 
               <div>
-                <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">Toolsets</label>
+                <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">Kubernetes Toolsets</label>
                 <input
-                  v-model="editToolsets"
+                  v-model="editKubeToolsets"
                   type="text"
-                  placeholder="core, config, helm (empty = all)"
+                  placeholder="core, config, helm (empty = upstream defaults)"
                   class="w-full rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 font-mono text-[12px] text-text-primary placeholder:text-text-muted/40 focus:border-accent/50 focus:outline-none"
                 />
-                <p class="mt-1 text-[10px] text-text-muted">Available: core, config, helm, kcp, kiali, kubevirt. Leave empty for all.</p>
+                <p class="mt-1 text-[10px] text-text-muted">Available: core, config, helm, kcp, kiali, kubevirt.</p>
+              </div>
+
+              <div>
+                <label class="block text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1">Linux Toolsets</label>
+                <input
+                  v-model="editLinuxToolsets"
+                  type="text"
+                  placeholder="core, systemd, diag (empty = core only)"
+                  class="w-full rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 font-mono text-[12px] text-text-primary placeholder:text-text-muted/40 focus:border-accent/50 focus:outline-none"
+                />
+                <p class="mt-1 text-[10px] text-text-muted">Available: core, systemd, diag, net, pkg.</p>
               </div>
 
               <div class="flex items-center gap-2">

@@ -34,10 +34,6 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -59,9 +55,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
-	mcpcontroller "github.com/faroshq/faros-kedge/providers/kubernetesedges/controllers"
 	mcpservercontroller "github.com/faroshq/faros-kedge/providers/mcp/controllers"
-	linuxmcpcontroller "github.com/faroshq/faros-kedge/providers/serveredges/controllers"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -206,16 +200,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("creating dynamic client: %w", err)
 	}
 
-	// Create the default KubernetesMCP object (all-edges MCP server).
-	if err := ensureDefaultKubernetesMCP(ctx, dynamicClient); err != nil {
-		// Non-fatal: the controller will keep retrying, and in kcp-mode the CRD
-		// may not be globally accessible from the base config.
-		logger.Error(err, "Failed to create default KubernetesMCP (non-fatal)")
-	}
-	// Create the default LinuxMCP object (all-server-edges SSH MCP server).
-	if err := ensureDefaultLinuxMCP(ctx, dynamicClient); err != nil {
-		logger.Error(err, "Failed to create default LinuxMCP (non-fatal)")
-	}
+	// Default KubernetesMCP/LinuxMCP objects used to be created here; both
+	// CRDs have been removed in favor of the aggregate MCPServer endpoint.
+	// kcp bootstrap creates the per-tenant default MCPServer instead (see
+	// pkg/hub/kcp/bootstrap.go EnsureDefaultMCPServer).
 
 	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
 
@@ -527,12 +515,10 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := edge.SetupTokenWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up edge token controller: %w", err)
 		}
-		if err := mcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up kubernetes-mcp controller: %w", err)
-		}
-		if err := linuxmcpcontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
-			return fmt.Errorf("setting up linux-mcp controller: %w", err)
-		}
+		// KubernetesMCP + LinuxMCP per-kind controllers were removed in
+		// the MCP collapse refactor — both surfaces now live behind the
+		// single MCPServer aggregate via the ToolFamily registry in
+		// providers/mcp/aggregate.
 		if err := mcpservercontroller.SetupWithManager(mgr, vws.EdgeConnManager(), s.opts.HubExternalURL); err != nil {
 			return fmt.Errorf("setting up mcpserver controller: %w", err)
 		}
@@ -726,57 +712,7 @@ func (d *delegatingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.ServeHTTP(w, r)
 }
 
-// kubernetesMCPGVR is the GroupVersionResource for KubernetesMCP.
-var kubernetesMCPGVR = schema.GroupVersionResource{
-	Group:    "kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "kubernetesmcps",
-}
-
-// linuxMCPGVR is the GroupVersionResource for LinuxMCP.
-var linuxMCPGVR = schema.GroupVersionResource{
-	Group:    "kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "linuxmcps",
-}
-
-// ensureDefaultKubernetesMCP creates a default KubernetesMCP object named "default"
-// (with an empty edge selector — matches all edges) if it doesn't exist.
-func ensureDefaultKubernetesMCP(ctx context.Context, dynClient dynamic.Interface) error {
-	return ensureDefaultMCP(ctx, dynClient, kubernetesMCPGVR, "KubernetesMCP")
-}
-
-// ensureDefaultLinuxMCP creates a default LinuxMCP object named "default"
-// (with an empty edge selector — matches all server-type edges) if it doesn't
-// already exist.
-func ensureDefaultLinuxMCP(ctx context.Context, dynClient dynamic.Interface) error {
-	return ensureDefaultMCP(ctx, dynClient, linuxMCPGVR, "LinuxMCP")
-}
-
-// ensureDefaultMCP is the shared get-or-create helper used by both MCP CRDs.
-func ensureDefaultMCP(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, kind string) error {
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "kedge.faros.sh/v1alpha1",
-			"kind":       kind,
-			"metadata": map[string]interface{}{
-				"name": "default",
-			},
-			"spec": map[string]interface{}{},
-		},
-	}
-
-	_, err := dynClient.Resource(gvr).Get(ctx, "default", metav1.GetOptions{})
-	if err == nil {
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("checking for default %s: %w", kind, err)
-	}
-
-	_, err = dynClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating default %s: %w", kind, err)
-	}
-	return nil
-}
+// KubernetesMCP + LinuxMCP default-creation helpers were removed when
+// the dedicated per-kind CRDs were collapsed into the MCPServer
+// aggregate. Per-tenant default MCPServer creation lives in
+// pkg/hub/kcp/bootstrap.go (EnsureDefaultMCPServer).

@@ -21,15 +21,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 
-	mcpapi "github.com/containers/kubernetes-mcp-server/pkg/api"
-	mcpconfig "github.com/containers/kubernetes-mcp-server/pkg/config"
-	mcpkubernetes "github.com/containers/kubernetes-mcp-server/pkg/kubernetes"
-	kubemcp "github.com/containers/kubernetes-mcp-server/pkg/mcp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros-kedge/providers/serveredges/linuxmcp"
+	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 )
 
 // defaultImpl is the fallback MCP Implementation advertised on `initialize`
@@ -118,25 +113,60 @@ type TargetInfo struct {
 // rather than a snapshot taken when the MCP session opened.
 type TargetEnumerator func(ctx context.Context) (kube, linux []TargetInfo, err error)
 
-// Config wires everything the aggregate handler needs.  All edge resolution
-// + filtering happens before this struct is constructed (matches the
-// per-kind MCP handlers); the aggregator just fuses already-resolved
-// providers into one mcp.Server.
+// Config wires the per-request inputs the aggregate handler needs to
+// build a fresh mcp.Server. Edge resolution + selector filtering
+// happens BEFORE this struct is constructed (the caller — see
+// providers/mcp/virtual/builder.go — owns CR fetch + edgeSelector
+// evaluation); the aggregator partitions the resolved edges by family
+// EdgeType, builds a FamilyContext per registered ToolFamily, and
+// invokes each family's Register callback on the shared mcp.Server.
+//
+// Adding a new edge kind (e.g. windows-edges, ESXi-edges, …) requires
+// only a new RegisterToolFamily call from that provider's init() —
+// this Config doesn't grow per-kind fields.
 type Config struct {
-	// KubeProvider drives the upstream kubernetes-mcp-server toolsets.
-	// May be nil if no kube edges are in scope (kube tools then absent).
-	KubeProvider mcpkubernetes.Provider
+	// Cluster is the kcp logical cluster name (tenant workspace path
+	// segment) the MCPServer CR was fetched from. Forwarded to family
+	// contexts; tools use it to scope edges-proxy / kcp calls.
+	Cluster string
 
-	// KubeStaticConfig is the upstream static config the kube Server is
-	// built with.  Honor ReadOnly / Toolsets / EnabledTools etc. here.
-	KubeStaticConfig *mcpconfig.StaticConfig
+	// EdgesByType is the resolved edge inventory partitioned by
+	// Edge.spec.type. Only includes edges that match the MCPServer's
+	// edgeSelector AND have a live tunnel. Keys correspond to
+	// ToolFamily.EdgeType values; families with no matching edges get
+	// an empty slice (still invoked so their tools register).
+	EdgesByType map[string][]string
 
-	// LinuxProvider drives our in-tree linuxmcp toolsets.  May be nil if
-	// no server edges are in scope (linux tools then absent).
-	LinuxProvider *linuxmcp.Provider
+	// ToolsetsByFamily is the per-family toolset selection from the CR
+	// (MCPServer.spec.kubernetesToolsets, .linuxToolsets, etc.). Keyed
+	// by family Name. Empty = family defaults.
+	ToolsetsByFamily map[string][]string
 
-	// LinuxToolsets selects which linux toolsets to enable.  Empty = ["core"].
-	LinuxToolsets []string
+	// ExtrasByFamily lets the CR carry family-specific extension knobs
+	// (e.g. linux's commandTimeoutSeconds, maxOutputBytes) without the
+	// aggregator needing to know about them. Family Register pulls out
+	// what it understands; unknown keys are ignored.
+	ExtrasByFamily map[string]map[string]any
+
+	// BearerToken is the caller's auth. Forwarded to family contexts.
+	BearerToken string
+
+	// HubBaseURL is the URL families use for callback URLs (kube tools
+	// looping back to edges-proxy, for example). Trimmed of trailing
+	// slash, no /services prefix.
+	HubBaseURL string
+
+	// ReadOnly mirrors MCPServer.spec.readOnly. Threaded into every
+	// FamilyContext; families that honor it skip / hide mutating tools.
+	ReadOnly bool
+
+	// Deps is the framework dependency bundle. Forwarded so families
+	// can open SSH sessions, fetch credentials, etc.
+	Deps *builder.Deps
+
+	// CallerIdentity is the resolved RBAC identity (e.g. "kedge:<sub>")
+	// for the bearer token. Used by linux family for SSHUserMapping=identity.
+	CallerIdentity string
 
 	// Enumerate is invoked on every list_targets call.  Must not be nil.
 	Enumerate TargetEnumerator
@@ -226,19 +256,43 @@ func Handler(cfg Config) (http.Handler, error) {
 	), nil
 }
 
-// newServer constructs a fresh aggregate mcp.Server with kube + linux tools
-// and the list_targets tool registered.  The server's Implementation +
-// Instructions come from cfg.Metadata so AI clients see kedge-specific
-// branding and usage guidance the moment they connect.
+// newServer constructs a fresh aggregate mcp.Server with every
+// registered ToolFamily's tools + list_targets + the kedge://about
+// resource. Tool families live in their respective providers and
+// register themselves at init() time (see RegisterToolFamily); the
+// aggregator only knows about Names and EdgeTypes here.
+//
+// The server's Implementation + Instructions come from cfg.Metadata
+// so AI clients see kedge-specific branding the moment they connect.
 func newServer(cfg Config) *mcp.Server {
 	srv := mcp.NewServer(cfg.Metadata.implementation(), &mcp.ServerOptions{
 		Instructions: cfg.Metadata.instructions(),
 	})
-	registerKubeTools(srv, cfg)
-	registerLinuxTools(srv, cfg)
+	for _, fam := range RegisteredFamilies() {
+		fctx := familyContextFor(cfg, fam)
+		fam.Register(srv, fctx)
+	}
 	registerListTargets(srv, cfg)
 	registerAboutResource(srv, cfg)
 	return srv
+}
+
+// familyContextFor builds the per-request FamilyContext threaded into
+// a ToolFamily.Register call. Edges are pre-filtered to the family's
+// EdgeType (the per-request caller does the heavy resolution in
+// cfg.EdgesByType); extras and toolsets are looked up by family Name.
+func familyContextFor(cfg Config, fam ToolFamily) FamilyContext {
+	return FamilyContext{
+		Cluster:        cfg.Cluster,
+		EdgeNames:      cfg.EdgesByType[fam.EdgeType],
+		BearerToken:    cfg.BearerToken,
+		HubBaseURL:     cfg.HubBaseURL,
+		ReadOnly:       cfg.ReadOnly,
+		Toolsets:       cfg.ToolsetsByFamily[fam.Name],
+		Deps:           cfg.Deps,
+		CallerIdentity: cfg.CallerIdentity,
+		Extras:         cfg.ExtrasByFamily[fam.Name],
+	}
 }
 
 // aboutResourceURI is the canonical URI AI clients pass to `resources/read`
@@ -290,14 +344,16 @@ func buildAboutSnapshot(ctx context.Context, cfg Config) AboutDoc {
 	if out.DiscoveryTool == "" {
 		out.DiscoveryTool = "list_targets"
 	}
-	if cfg.KubeStaticConfig != nil {
-		out.ReadOnly = out.ReadOnly || cfg.KubeStaticConfig.ReadOnly
-		if len(out.Toolsets.Kubernetes) == 0 {
-			out.Toolsets.Kubernetes = cfg.KubeStaticConfig.Toolsets
-		}
+	out.ReadOnly = out.ReadOnly || cfg.ReadOnly
+	// Surface per-family toolset selections via the structured fields
+	// AboutToolsets exposes for known families. New families' selections
+	// land in the generic map further down so AI clients can still see
+	// what's enabled without an aggregator change.
+	if len(out.Toolsets.Kubernetes) == 0 {
+		out.Toolsets.Kubernetes = cfg.ToolsetsByFamily["kubernetes"]
 	}
 	if len(out.Toolsets.Linux) == 0 {
-		out.Toolsets.Linux = cfg.LinuxToolsets
+		out.Toolsets.Linux = cfg.ToolsetsByFamily["linux"]
 	}
 	if cfg.Enumerate != nil {
 		kube, linux, err := cfg.Enumerate(ctx)
@@ -327,93 +383,6 @@ func buildAboutSnapshot(ctx context.Context, cfg Config) AboutDoc {
 			"See https://kedge.faros.sh for project documentation."
 	}
 	return out
-}
-
-// ─── kube tool registration ─────────────────────────────────────────────────
-
-// registerKubeTools converts every applicable upstream kubernetes-mcp-server
-// tool into a go-sdk tool and registers it on `srv`.  The upstream Server is
-// built purely as a tool factory — its own ServeHTTP() is never called.
-func registerKubeTools(srv *mcp.Server, cfg Config) {
-	if cfg.KubeProvider == nil {
-		return
-	}
-
-	staticCfg := cfg.KubeStaticConfig
-	if staticCfg == nil {
-		staticCfg = mcpconfig.Default()
-	}
-	upstreamCfg := kubemcp.Configuration{StaticConfig: staticCfg}
-
-	// We build the upstream Server because ServerToolToGoSdkTool needs a
-	// *Server reference for its handler closure (it captures provider +
-	// configuration).  The Server's own toolset registration on its
-	// internal mcp.Server is harmless and unused.
-	kubeSrv, err := kubemcp.NewServer(upstreamCfg, cfg.KubeProvider)
-	if err != nil {
-		// Surface as a single error-returning tool so tools/list still
-		// renders the linux side and list_targets, instead of failing the
-		// whole MCP server.
-		mcp.AddTool(srv, &mcp.Tool{
-			Name:        "kube_tools_unavailable",
-			Description: "Kubernetes toolset failed to initialize. See server logs.",
-		}, func(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			return nil, nil, fmt.Errorf("kubernetes-mcp-server initialization failed: %w", err)
-		})
-		return
-	}
-
-	for _, toolset := range upstreamCfg.Toolsets() {
-		if toolset == nil {
-			continue
-		}
-		for _, tool := range toolset.GetTools(cfg.KubeProvider) {
-			if !isKubeToolApplicable(staticCfg, tool) {
-				continue
-			}
-			gsTool, gsHandler, err := kubemcp.ServerToolToGoSdkTool(kubeSrv, tool)
-			if err != nil {
-				// Skip just this tool — leaving the rest intact is
-				// preferable to dropping the whole tools/list.
-				continue
-			}
-			srv.AddTool(gsTool, gsHandler)
-		}
-	}
-}
-
-// isKubeToolApplicable is a local copy of the upstream's unexported
-// Configuration.isToolApplicable.  Mirrors the same fields (ReadOnly,
-// DisableDestructive, EnabledTools, DisabledTools) so the aggregate server
-// surfaces the same tool set the upstream Server would have.
-func isKubeToolApplicable(cfg *mcpconfig.StaticConfig, tool mcpapi.ServerTool) bool {
-	if cfg.ReadOnly {
-		// Tools with no explicit ReadOnlyHint are assumed mutating.
-		if tool.Tool.Annotations.ReadOnlyHint == nil || !*tool.Tool.Annotations.ReadOnlyHint {
-			return false
-		}
-	}
-	if cfg.DisableDestructive {
-		if tool.Tool.Annotations.DestructiveHint != nil && *tool.Tool.Annotations.DestructiveHint {
-			return false
-		}
-	}
-	if len(cfg.EnabledTools) > 0 && !slices.Contains(cfg.EnabledTools, tool.Tool.Name) {
-		return false
-	}
-	if len(cfg.DisabledTools) > 0 && slices.Contains(cfg.DisabledTools, tool.Tool.Name) {
-		return false
-	}
-	return true
-}
-
-// ─── linux tool registration ────────────────────────────────────────────────
-
-func registerLinuxTools(srv *mcp.Server, cfg Config) {
-	if cfg.LinuxProvider == nil {
-		return
-	}
-	linuxmcp.RegisterTo(srv, cfg.LinuxProvider, cfg.LinuxToolsets)
 }
 
 // ─── list_targets ───────────────────────────────────────────────────────────

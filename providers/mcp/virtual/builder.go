@@ -37,10 +37,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
-	mcpconfig "github.com/containers/kubernetes-mcp-server/pkg/config"
-	gossh "golang.org/x/crypto/ssh"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -51,7 +48,6 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 	aggregatemcp "github.com/faroshq/faros-kedge/providers/mcp/aggregate"
-	"github.com/faroshq/faros-kedge/providers/serveredges/linuxmcp"
 )
 
 // mcpServerGVR is the GVR for the aggregate MCPServer CRD this builder
@@ -112,15 +108,12 @@ func Build(deps *builder.Deps) http.Handler {
 		readOnly, _, _ := unstructured.NestedBool(obj.Object, "spec", "readOnly")
 		kubeToolsets := unstructuredStringSlice(specRaw["kubernetesToolsets"])
 		linuxToolsets := unstructuredStringSlice(specRaw["linuxToolsets"])
-		var cmdTimeout time.Duration
-		if v, ok := specRaw["commandTimeoutSeconds"].(int64); ok && v > 0 {
-			cmdTimeout = time.Duration(v) * time.Second
-		}
-		var maxOut int
-		if v, ok := specRaw["maxOutputBytes"].(int64); ok && v > 0 {
-			maxOut = int(v)
-		}
 
+		// Edge resolution is still here (per-request, scoped to the CR's
+		// selector and live tunnel state) but tool registration has
+		// moved into each edge-kind provider's mcp/ subpackage. They
+		// read FamilyContext.EdgeNames + Toolsets + Extras and install
+		// their tools onto the shared mcp.Server.
 		kubeEdges, linuxEdges, err := resolveEdges(ctx, deps, dynClient, cluster, edgeSelector)
 		if err != nil {
 			logger.Error(err, "failed to resolve edges", "cluster", cluster)
@@ -129,26 +122,7 @@ func Build(deps *builder.Deps) http.Handler {
 		}
 		logger.Info("MCPServer resolved", "cluster", cluster, "kube", len(kubeEdges), "linux", len(linuxEdges))
 
-		hubBase := deps.HubBaseURL()
-
-		kubeProvider := builder.NewMultiEdgeKedgeEdgeProvider(cluster, kubeEdges, deps.EdgeConnManager, hubBase, token)
-
 		callerIdentity := builder.ResolveCallerIdentity(ctx, deps.KCPConfig, token, deps.Logger)
-		linuxProvider := linuxmcp.NewProvider(linuxmcp.Config{
-			Cluster:        cluster,
-			EdgeNames:      linuxEdges,
-			OpenSession:    openLinuxSession(deps, cluster, callerIdentity),
-			CommandTimeout: cmdTimeout,
-			MaxOutputBytes: maxOut,
-			ReadOnly:       readOnly,
-		})
-
-		kubeStaticCfg := mcpconfig.Default()
-		kubeStaticCfg.Stateless = true
-		kubeStaticCfg.ReadOnly = readOnly
-		if len(kubeToolsets) > 0 {
-			kubeStaticCfg.Toolsets = kubeToolsets
-		}
 
 		// MCP metadata advertised on `initialize` — derived from the CR so
 		// each tenant's endpoint is self-describing. `Title` and the per-
@@ -195,14 +169,42 @@ func Build(deps *builder.Deps) http.Handler {
 			},
 		}
 
+		// Collect commandTimeoutSeconds / maxOutputBytes off the CR as
+		// Extras for the linux family — typed slots on the aggregator
+		// would couple it to every family's knob set, so we pass the
+		// raw values through and let serveredges/mcp pull them out.
+		linuxExtras := map[string]any{}
+		if v, ok := specRaw["commandTimeoutSeconds"]; ok {
+			linuxExtras["commandTimeoutSeconds"] = v
+		}
+		if v, ok := specRaw["maxOutputBytes"]; ok {
+			linuxExtras["maxOutputBytes"] = v
+		}
+
 		handler, err := aggregatemcp.Handler(aggregatemcp.Config{
-			KubeProvider:     kubeProvider,
-			KubeStaticConfig: kubeStaticCfg,
-			LinuxProvider:    linuxProvider,
-			LinuxToolsets:    linuxToolsets,
-			Enumerate:        enumerator(deps, cluster, dynClient, edgeSelector),
-			Metadata:         meta,
-			About:            about,
+			Cluster:        cluster,
+			BearerToken:    token,
+			HubBaseURL:     deps.HubBaseURL(),
+			ReadOnly:       readOnly,
+			Deps:           deps,
+			CallerIdentity: callerIdentity,
+			// Edge subsets keyed by Edge.spec.type. Family registrations
+			// declare their EdgeType ("kubernetes" / "server"); the
+			// aggregator's familyContextFor picks the matching slice.
+			EdgesByType: map[string][]string{
+				"kubernetes": kubeEdges,
+				"server":     linuxEdges,
+			},
+			ToolsetsByFamily: map[string][]string{
+				"kubernetes": kubeToolsets,
+				"linux":      linuxToolsets,
+			},
+			ExtrasByFamily: map[string]map[string]any{
+				"linux": linuxExtras,
+			},
+			Enumerate: enumerator(deps, cluster, dynClient, edgeSelector),
+			Metadata:  meta,
+			About:     about,
 		})
 		if err != nil {
 			logger.Error(err, "failed to build aggregate MCP handler")
@@ -211,18 +213,6 @@ func Build(deps *builder.Deps) http.Handler {
 		}
 		handler.ServeHTTP(w, r)
 	})
-}
-
-// openLinuxSession returns the linuxmcp.OpenSessionFunc bound to a single
-// request's (cluster, callerIdentity). Delegates the actual SSH dance to
-// the framework's Deps.OpenSSHSession helper so we don't reimplement the
-// credential-fetch + tunnel-open path here.
-func openLinuxSession(deps *builder.Deps, cluster, callerIdentity string) linuxmcp.OpenSessionFunc {
-	return func(ctx context.Context, edgeName string) (*gossh.Client, error) {
-		logger := klog.FromContext(ctx).WithName("linux-mcp-open-session").
-			WithValues("cluster", cluster, "edge", edgeName)
-		return deps.OpenSSHSession(ctx, cluster, edgeName, callerIdentity, logger)
-	}
 }
 
 // resolveEdges lists every Edge in the tenant workspace, applies the

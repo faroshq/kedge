@@ -15,19 +15,28 @@ limitations under the License.
 */
 
 // Package kubernetesedges is the first-party provider that surfaces
-// connected Kubernetes cluster edges as a portal tab. Bootstraps a
-// CatalogEntry into root:kedge:providers via init(); the actual edge
-// controllers + Vue pages live in pkg/hub/controllers/edge and
-// portal/src/pages/EdgesPage.vue respectively.
+// connected Kubernetes cluster edges in the portal and contributes a
+// "kubernetes" MCP tool family to the aggregate MCPServer endpoint.
 //
-// Imported for its side effect (RegisterBuiltin) from
-// cmd/kedge-hub/main.go.
+// The provider used to ship its own dedicated /services/mcp/.../
+// kubernetesmcps/{name}/mcp endpoint (with KubernetesMCP CRD +
+// reconciler + virtual-workspace handler); that surface has been
+// collapsed into the single MCPServer aggregator. The kube tools are
+// now registered via the providers/mcp/aggregate registry by the
+// blank-imported kubernetesedges/mcp subpackage at init().
+//
+// Imported for its side effects (RegisterBuiltin + ToolFamily
+// registration) from cmd/kedge-hub/main.go.
 package kubernetesedges
 
 import (
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	keVirtual "github.com/faroshq/faros-kedge/providers/kubernetesedges/virtual"
+
+	// Side-effect import: kubernetesedges/mcp registers the kubernetes
+	// ToolFamily with providers/mcp/aggregate at init() so the MCP
+	// aggregator picks up this provider's kube tools without explicit
+	// wiring in server.go.
+	_ "github.com/faroshq/faros-kedge/providers/kubernetesedges/mcp"
 )
 
 func init() {
@@ -52,8 +61,9 @@ func init() {
 			{DisplayName: "Workloads", BuiltinRoute: "workloads"},
 		},
 
-		VirtualWorkspaceMount:   apiurl.PathPrefixMCP,
-		VirtualWorkspaceHandler: keVirtual.Build,
+		// No VirtualWorkspaceMount — the dedicated KubernetesMCP endpoint
+		// was removed. Kube MCP tools live on the aggregate MCPServer
+		// endpoint, contributed by the side-effect import above.
 
 		// Embedded Vite-built micro-frontend served under
 		// /ui/providers/kubernetes-edges/* by the hub's UI proxy.

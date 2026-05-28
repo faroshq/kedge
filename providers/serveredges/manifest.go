@@ -15,21 +15,27 @@ limitations under the License.
 */
 
 // Package serveredges is the first-party provider that surfaces Linux
-// server edges connected over SSH as a portal tab. Bootstraps a
-// CatalogEntry into root:kedge:providers via init(); the actual SSH
-// controllers live in pkg/hub/controllers/linuxmcp and related
-// packages. The portal route /servers reuses EdgesPage.vue with a
-// kind=server prop so the list filters down to server edges and the
-// Create dialog locks the type to server.
+// server edges connected over SSH in the portal and contributes a
+// "linux" MCP tool family to the aggregate MCPServer endpoint.
 //
-// Imported for its side effect (RegisterBuiltin) from
-// cmd/kedge-hub/main.go.
+// The provider used to ship its own dedicated /services/linux-mcp/
+// .../linuxmcps/{name}/mcp endpoint (with LinuxMCP CRD + reconciler +
+// virtual-workspace handler); that surface has been collapsed into
+// the single MCPServer aggregator. The linux tools (core, diag, net,
+// pkg, systemd) are now registered via the providers/mcp/aggregate
+// registry by the blank-imported serveredges/mcp subpackage at init().
+//
+// Imported for its side effects (RegisterBuiltin + ToolFamily
+// registration) from cmd/kedge-hub/main.go.
 package serveredges
 
 import (
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	seVirtual "github.com/faroshq/faros-kedge/providers/serveredges/virtual"
+
+	// Side-effect import: serveredges/mcp registers the linux ToolFamily
+	// with providers/mcp/aggregate at init() so the MCP aggregator picks
+	// up linuxmcp tools without explicit wiring in server.go.
+	_ "github.com/faroshq/faros-kedge/providers/serveredges/mcp"
 )
 
 func init() {
@@ -43,8 +49,9 @@ func init() {
 		// The script defines <kedge-provider-server-edges>; rendered
 		// inline by the host portal in light DOM.
 
-		VirtualWorkspaceMount:   apiurl.PathPrefixLinuxMCP,
-		VirtualWorkspaceHandler: seVirtual.Build,
+		// No VirtualWorkspaceMount — the dedicated LinuxMCP endpoint was
+		// removed. Linux MCP tools live on the aggregate MCPServer
+		// endpoint, contributed by the side-effect import above.
 
 		LocalUIAssets: localUIAssets(),
 	})

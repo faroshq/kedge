@@ -18,8 +18,12 @@ package providers
 
 import (
 	"fmt"
+	"io/fs"
+	"net/http"
 	"sort"
 	"sync"
+
+	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
 )
 
 // BuiltinSpec describes a first-party provider the hub bootstraps into
@@ -62,6 +66,28 @@ type BuiltinSpec struct {
 	// of its requirements — e.g. mcp.Requires = [kubernetes-edges,
 	// server-edges].
 	Requires []string
+
+	// VirtualWorkspaceMount is the URL prefix the hub mounts this
+	// provider's virtual-workspace handler under (e.g. /services/mcpserver).
+	// Empty means the provider has no virtual-workspace HTTP surface.
+	VirtualWorkspaceMount string
+
+	// VirtualWorkspaceHandler builds the http.Handler given the framework's
+	// shared dependency bundle. The hub calls this once at startup after
+	// the virtual-workspace framework is initialized. The returned handler
+	// is mounted with http.StripPrefix(VirtualWorkspaceMount, ...).
+	VirtualWorkspaceHandler func(*builder.Deps) http.Handler
+
+	// LocalUIAssets, when non-nil, is the pre-built micro-frontend bundle
+	// (Vite dist/) the hub serves under /ui/providers/{Name}/* instead of
+	// reverse-proxying to spec.ui.url. Built-in providers `go:embed` their
+	// own portal/dist into this FS so the hub binary ships their UI inline;
+	// third-party providers leave this nil and run their own HTTP server.
+	//
+	// When set, the FS root must contain at minimum main.js (the custom
+	// element bundle the portal's ProviderFrame loads) and index.html (the
+	// fallback page for direct browser visits). icon.svg is recommended.
+	LocalUIAssets fs.FS
 }
 
 // BuiltinChild is a single sub-navigation item. Renders indented under

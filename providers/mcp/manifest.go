@@ -14,29 +14,48 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package mcp is the first-party MCP aggregator provider. Bootstraps a
-// CatalogEntry into root:kedge:providers via init(); the underlying
-// KubernetesMCP/LinuxMCP/MCPServer controllers live in
-// pkg/hub/controllers/mcp, pkg/hub/controllers/linuxmcp,
-// pkg/hub/controllers/mcpserver respectively, and the aggregator runtime
-// is in pkg/aggregatemcp.
+// Package mcp is the first-party MCP aggregator provider. The init()
+// below registers it with the hub's builtin registry: it declares both
+// the catalog entry (display name, category, dependencies) and the
+// virtual-workspace HTTP handler the hub mounts at /services/mcpserver/.
 //
-// Imported for its side effect (RegisterBuiltin) from
-// cmd/kedge-hub/main.go.
+// The actual code lives in this provider's subpackages:
+//   - controllers/  MCPServer reconciler (Edge-type-agnostic)
+//   - virtual/      /services/mcpserver/ HTTP handler builder
+//   - aggregate/    runtime fusing kubernetes-mcp-server + linuxmcp toolsets
+//
+// Imported for its side effect (RegisterBuiltin) from cmd/kedge-hub/main.go.
 package mcp
 
-import "github.com/faroshq/faros-kedge/pkg/hub/providers"
+import (
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	mcpvirtual "github.com/faroshq/faros-kedge/providers/mcp/virtual"
+)
 
 func init() {
 	providers.RegisterBuiltin(providers.BuiltinSpec{
-		Name:         "mcp",
-		DisplayName:  "MCP",
-		Description:  "Aggregated Model Context Protocol endpoints exposed by connected edges.",
-		Category:     "AI",
-		BuiltinRoute: "mcp",
+		Name:        "mcp",
+		DisplayName: "MCP",
+		Description: "Aggregated Model Context Protocol endpoints exposed by connected edges.",
+		Category:    "AI",
+		// No BuiltinRoute — the portal loads this provider through
+		// ProviderFrame (the third-party path) which fetches
+		// /ui/providers/mcp/main.js. That script defines a
+		// <kedge-provider-mcp> custom element rendered inline; assets
+		// are served from the embedded portal/dist below.
+		//
 		// mcp aggregates the per-edge-type MCP feeds shipped by both
 		// kubernetes-edges and server-edges. An aggregator with no source
 		// providers is empty by construction, so we hard-require both.
 		Requires: []string{"kubernetes-edges", "server-edges"},
+
+		VirtualWorkspaceMount:   apiurl.PathPrefixMCPServer,
+		VirtualWorkspaceHandler: mcpvirtual.Build,
+
+		// Embedded Vite-built micro-frontend; served by the hub's UI
+		// proxy under /ui/providers/mcp/* (see pkg/hub/providers/proxy.go
+		// LocalUIAssets branch).
+		LocalUIAssets: localUIAssets(),
 	})
 }

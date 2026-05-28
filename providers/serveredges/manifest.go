@@ -26,14 +26,26 @@ limitations under the License.
 // cmd/kedge-hub/main.go.
 package serveredges
 
-import "github.com/faroshq/faros-kedge/pkg/hub/providers"
+import (
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	seVirtual "github.com/faroshq/faros-kedge/providers/serveredges/virtual"
+)
 
 func init() {
 	providers.RegisterBuiltin(providers.BuiltinSpec{
-		Name:         "server-edges",
-		DisplayName:  "Servers",
-		Description:  "Manage Linux server edges connected over SSH.",
-		Category:     "Edges",
-		BuiltinRoute: "servers",
+		Name:        "server-edges",
+		DisplayName: "Servers",
+		Description: "Manage Linux server edges connected over SSH.",
+		Category:    "Edges",
+		// No BuiltinRoute — the portal loads this provider through
+		// ProviderFrame which fetches /ui/providers/server-edges/main.js.
+		// The script defines <kedge-provider-server-edges>; rendered
+		// inline by the host portal in light DOM.
+
+		VirtualWorkspaceMount:   apiurl.PathPrefixLinuxMCP,
+		VirtualWorkspaceHandler: seVirtual.Build,
+
+		LocalUIAssets: localUIAssets(),
 	})
 }

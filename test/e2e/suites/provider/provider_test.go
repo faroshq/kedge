@@ -273,12 +273,15 @@ func TestBAPIProvidersDTO(t *testing.T) {
 	})
 
 	t.Run("all 3 first-party builtins bootstrapped by default with categories", func(t *testing.T) {
+		// All three first-party providers have migrated to custom-element
+		// micro-frontends loaded via ProviderFrame, so their DTOs have
+		// empty builtinRoute but builtin=true.
 		for _, want := range []struct {
 			name, route, displayName, category string
 		}{
-			{"mcp", "mcp", "MCP", "AI"},
-			{"kubernetes-edges", "edges", "Kubernetes", "Edges"},
-			{"server-edges", "servers", "Servers", "Edges"},
+			{"mcp", "", "MCP", "AI"},
+			{"kubernetes-edges", "", "Kubernetes", "Edges"},
+			{"server-edges", "", "Servers", "Edges"},
 		} {
 			b := byName[want.name]
 			if b == nil {
@@ -288,8 +291,9 @@ func TestBAPIProvidersDTO(t *testing.T) {
 			if b["ready"] != true {
 				t.Errorf("%s: expected ready=true, got %v", want.name, b["ready"])
 			}
-			if b["builtinRoute"] != want.route {
-				t.Errorf("%s: builtinRoute = %v, want %s", want.name, b["builtinRoute"], want.route)
+			gotRoute, _ := b["builtinRoute"].(string)
+			if gotRoute != want.route {
+				t.Errorf("%s: builtinRoute = %q, want %q", want.name, gotRoute, want.route)
 			}
 			if b["displayName"] != want.displayName {
 				t.Errorf("%s: displayName = %v, want %s", want.name, b["displayName"], want.displayName)
@@ -300,6 +304,38 @@ func TestBAPIProvidersDTO(t *testing.T) {
 			if path, _ := b["apiExportPath"].(string); path != "" {
 				t.Errorf("%s: builtin should not have apiExportPath, got %s", want.name, path)
 			}
+			// All three flip the new builtin=true flag so the portal's
+			// side-nav skips the APIBinding-required gate.
+			if b["builtin"] != true {
+				t.Errorf("%s: expected builtin=true in DTO, got %v", want.name, b["builtin"])
+			}
+		}
+	})
+
+	t.Run("mcp surfaces hasUI=true via embedded LocalUIAssets", func(t *testing.T) {
+		m := byName["mcp"]
+		if m == nil {
+			t.Fatalf("mcp missing from DTO; saw %v", keysOf(byName))
+		}
+		if m["hasUI"] != true {
+			t.Errorf("mcp hasUI = %v, want true (provider embeds its UI in the hub binary)", m["hasUI"])
+		}
+	})
+
+	t.Run("mcp UI proxy serves embedded main.js", func(t *testing.T) {
+		// Direct hit on the hub's /ui/providers/mcp/main.js — should be
+		// the embedded IIFE bundle, not a redirect or proxy to anywhere.
+		resp, err := http.Get(hubURL + "/ui/providers/mcp/main.js")
+		if err != nil {
+			t.Fatalf("GET main.js: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != 200 {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		if !bytes.Contains(b, []byte("kedge-provider-mcp")) {
+			t.Error("mcp main.js does not contain the custom-element tag name")
 		}
 	})
 

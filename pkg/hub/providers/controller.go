@@ -178,14 +178,23 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 	}
 
+	// If this CatalogEntry name matches a first-party provider that
+	// registered LocalUIAssets via BuiltinSpec, plumb the embedded FS into
+	// the registry record so the UI proxy serves /ui/providers/{name}/*
+	// from the hub binary instead of forwarding to an external URL.
+	if spec, ok := BuiltinByName(entry.Name); ok && spec.LocalUIAssets != nil {
+		prov.LocalUIAssets = spec.LocalUIAssets
+	}
+
 	// EndpointsValid covers spec parse health and "the provider has
 	// somewhere to render": a URL endpoint OR a builtin Vue route OR a
-	// backend proxy target. Heartbeat-driven readiness is layered on by
-	// the sweeper goroutine (see Provider.Ready()).
-	prov.EndpointsValid = len(parseErrs) == 0 && (prov.UIURL != nil || prov.BackendURL != nil || prov.BuiltinRoute != "")
+	// backend proxy target OR embedded UI assets. Heartbeat-driven
+	// readiness is layered on by the sweeper (see Provider.Ready()).
+	prov.EndpointsValid = len(parseErrs) == 0 &&
+		(prov.UIURL != nil || prov.BackendURL != nil || prov.BuiltinRoute != "" || prov.LocalUIAssets != nil)
 
 	r.reg.Upsert(prov)
-	logger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", prov.UIURL, "backend", prov.BackendURL)
+	logger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", prov.UIURL, "backend", prov.BackendURL, "localUI", prov.LocalUIAssets != nil)
 
 	// Phase 1B: provision the per-provider kcp sub-workspace, schemas, and
 	// APIExport. Skipped when spec.apiExport is omitted (UI/backend-only

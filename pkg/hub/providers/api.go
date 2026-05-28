@@ -61,6 +61,12 @@ type providerDTO struct {
 	// what the provider's controllers will be able to access in their
 	// workspace before they accept.
 	PermissionClaims []permissionClaimDTO `json:"permissionClaims,omitempty"`
+	// Builtin is true for first-party providers (those that registered via
+	// providers.RegisterBuiltin) regardless of how they surface their UI
+	// (legacy BuiltinRoute or new LocalUIAssets custom element). The portal
+	// uses this flag to skip the "Enable" / APIBinding gate that third-
+	// party providers require before appearing in the side nav.
+	Builtin bool `json:"builtin,omitempty"`
 }
 
 type permissionClaimDTO struct {
@@ -132,12 +138,13 @@ func NewListHandler(reg *Registry) http.Handler {
 			for _, c := range p.Children {
 				children = append(children, navChildDTO(c))
 			}
+			_, isBuiltin := BuiltinByName(p.Name)
 			items = append(items, providerDTO{
 				Name:             p.Name,
 				DisplayName:      displayName,
 				Version:          p.Version,
 				Ready:            p.Ready(),
-				HasUI:            p.UIURL != nil || p.BuiltinRoute != "",
+				HasUI:            p.UIURL != nil || p.BuiltinRoute != "" || p.LocalUIAssets != nil,
 				HasBackend:       p.BackendURL != nil,
 				IconURL:          iconURL,
 				BuiltinRoute:     p.BuiltinRoute,
@@ -146,6 +153,7 @@ func NewListHandler(reg *Registry) http.Handler {
 				APIExportPath:    p.APIExportPath,
 				APIExportName:    p.APIExportName,
 				PermissionClaims: claims,
+				Builtin:          isBuiltin,
 			})
 		}
 

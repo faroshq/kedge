@@ -17,9 +17,14 @@ limitations under the License.
 package providers
 
 import (
+	"errors"
+	"io"
+	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -136,13 +141,24 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider not found: "+name, http.StatusNotFound)
 		return
 	}
+	if !prov.Ready() {
+		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
+		return
+	}
+
+	// First-party providers ship their pre-built micro-frontend embedded
+	// into the hub binary; serve those assets directly from the in-memory
+	// FS rather than reverse-proxying anywhere. Only applies to the UI
+	// proxy (fallbackForSPA implies p is the UI proxy); the backend proxy
+	// keeps its existing UIURL/BackendURL semantics.
+	if p.fallbackForSPA && prov.LocalUIAssets != nil {
+		serveLocalAsset(w, r, prov.LocalUIAssets, rest, p.log)
+		return
+	}
+
 	target := p.pick(prov)
 	if target == nil {
 		http.Error(w, "provider has no endpoint for this route: "+name, http.StatusNotFound)
-		return
-	}
-	if !prov.Ready() {
-		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -166,6 +182,38 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// serveLocalAsset writes the file at rest from the provider's embedded
+// LocalUIAssets FS to w. rest is the path after /ui/providers/{name} (so
+// "/main.js", "/icon.svg", "/assets/foo-abc.js"). 404s when the file
+// isn't present — the SPA-fallback branch upstream of this function
+// already handled non-asset paths, so 404 here is the right behavior:
+// the provider's bundle is missing an asset the portal asked for.
+func serveLocalAsset(w http.ResponseWriter, _ *http.Request, assets fs.FS, rest string, log logr.Logger) {
+	name := strings.TrimPrefix(rest, "/")
+	if name == "" {
+		name = "index.html"
+	}
+	f, err := assets.Open(name)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Error(err, "open local asset", "name", name)
+		}
+		http.NotFound(w, nil)
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	ct := mime.TypeByExtension(path.Ext(name))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "no-cache")
+	if _, err := io.Copy(w, f); err != nil {
+		log.Error(err, "write local asset", "name", name)
+	}
 }
 
 // splitProviderPath parses "/ui/providers/foo/bar" given prefix

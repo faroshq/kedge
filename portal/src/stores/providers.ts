@@ -31,6 +31,11 @@ export interface ProviderDTO {
   apiExportPath?: string
   apiExportName?: string
   permissionClaims?: PermissionClaim[]
+  // Builtin = true for first-party providers shipped with the hub
+  // binary, regardless of how they surface UI (legacy builtinRoute or
+  // new custom-element via embedded assets). Side-nav skips the
+  // APIBinding-required gate for these.
+  builtin?: boolean
 }
 
 // CategoryDTO mirrors pkg/hub/providers.Category — the hub publishes its
@@ -116,22 +121,35 @@ export const useProvidersStore = defineStore('providers', () => {
     items.value
       .filter((p) => {
         if (!p.ready || !p.hasUI) return false
-        if (p.builtinRoute) return true
+        // Legacy in-tree route OR new-style first-party provider:
+        // always shown, no binding required.
+        if (p.builtinRoute || p.builtin) return true
         return !!bindingNamesByProvider.value[p.name]
       })
-      .map((p) => ({
-        name: p.name,
-        label: p.displayName,
-        to: p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`,
-        iconURL: p.iconURL ?? null,
-        version: p.version ?? '',
-        builtin: !!p.builtinRoute,
-        category: p.category ?? '',
-        children: (p.children ?? []).map((c) => ({
-          label: c.displayName,
-          to: `/${c.builtinRoute}`,
-        })),
-      })),
+      .map((p) => {
+        // builtinRoute → in-tree SPA route (legacy).
+        // builtin (no route) → ProviderFrame at /providers/{name}.
+        // third-party → ProviderFrame at /providers/{name}.
+        const parentTo = p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`
+        return {
+          name: p.name,
+          label: p.displayName,
+          to: parentTo,
+          iconURL: p.iconURL ?? null,
+          version: p.version ?? '',
+          builtin: !!p.builtinRoute || !!p.builtin,
+          category: p.category ?? '',
+          // Child routes nest UNDER the parent for new-style providers
+          // (so kubernetes-edges' Workloads child lands at
+          // /providers/kubernetes-edges/workloads), while legacy
+          // builtinRoute providers keep their top-level child URLs
+          // (/workloads).
+          children: (p.children ?? []).map((c) => ({
+            label: c.displayName,
+            to: p.builtinRoute ? `/${c.builtinRoute}` : `${parentTo}/${c.builtinRoute}`,
+          })),
+        }
+      }),
   )
 
   // categorizedNavItems groups enabledNavItems by category for the

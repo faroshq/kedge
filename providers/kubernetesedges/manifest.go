@@ -24,20 +24,39 @@ limitations under the License.
 // cmd/kedge-hub/main.go.
 package kubernetesedges
 
-import "github.com/faroshq/faros-kedge/pkg/hub/providers"
+import (
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	keVirtual "github.com/faroshq/faros-kedge/providers/kubernetesedges/virtual"
+)
 
 func init() {
 	providers.RegisterBuiltin(providers.BuiltinSpec{
-		Name:         "kubernetes-edges",
-		DisplayName:  "Kubernetes",
-		Description:  "Manage connected Kubernetes cluster edges.",
-		Category:     "Edges",
-		BuiltinRoute: "edges",
-		// Workloads is conceptually a feature OF Kubernetes edges
-		// (you deploy workloads to clusters), so it nests under this
-		// provider rather than standing alone in the top-level nav.
+		Name:        "kubernetes-edges",
+		DisplayName: "Kubernetes",
+		Description: "Manage connected Kubernetes cluster edges.",
+		Category:    "Edges",
+		// No BuiltinRoute — the portal loads this provider through
+		// ProviderFrame (the third-party path) which fetches
+		// /ui/providers/kubernetes-edges/main.js. That script defines a
+		// <kedge-provider-kubernetes-edges> custom element rendered
+		// inline; assets are served from the embedded portal/dist below.
+		//
+		// Workloads is conceptually a feature OF Kubernetes edges, so it
+		// nests under this provider in the side nav. With the custom-
+		// element rewrite the child's path becomes an internal sub-route
+		// (/providers/kubernetes-edges/workloads); the portal store
+		// composes that URL from the parent's `to` + the child's
+		// builtinRoute.
 		Children: []providers.BuiltinChild{
 			{DisplayName: "Workloads", BuiltinRoute: "workloads"},
 		},
+
+		VirtualWorkspaceMount:   apiurl.PathPrefixMCP,
+		VirtualWorkspaceHandler: keVirtual.Build,
+
+		// Embedded Vite-built micro-frontend served under
+		// /ui/providers/kubernetes-edges/* by the hub's UI proxy.
+		LocalUIAssets: localUIAssets(),
 	})
 }

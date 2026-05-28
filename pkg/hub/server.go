@@ -50,9 +50,6 @@ import (
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/edge"
-	linuxmcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/linuxmcp"
-	mcpcontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcp"
-	mcpservercontroller "github.com/faroshq/faros-kedge/pkg/hub/controllers/mcpserver"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/scheduler"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/status"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
@@ -62,6 +59,9 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/util/connman"
 	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
 	"github.com/faroshq/faros-kedge/pkg/virtual/builder"
+	mcpcontroller "github.com/faroshq/faros-kedge/providers/kubernetesedges/controllers"
+	mcpservercontroller "github.com/faroshq/faros-kedge/providers/mcp/controllers"
+	linuxmcpcontroller "github.com/faroshq/faros-kedge/providers/serveredges/controllers"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
@@ -356,17 +356,23 @@ func (s *Server) Run(ctx context.Context) error {
 	vws.Start(ctx.Done()) // start background stale-tunnel sweeper
 	router.PathPrefix(apiurl.PathPrefixAgentProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixAgentProxy, vws.EdgeAgentProxyHandler()))
 	router.PathPrefix(apiurl.PathPrefixEdgesProxy + "/").Handler(http.StripPrefix(apiurl.PathPrefixEdgesProxy, vws.EdgesProxyHandler()))
-	// KubernetesMCP multi-edge MCP handler:
-	//   /services/mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/{name}/mcp
-	router.PathPrefix(apiurl.PathPrefixMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCP, vws.KubernetesMCPHandler()))
-	// LinuxMCP multi-edge MCP handler (server-type edges, SSH transport):
-	//   /services/linux-mcp/{cluster}/apis/kedge.faros.sh/v1alpha1/linuxmcps/{name}/mcp
-	router.PathPrefix(apiurl.PathPrefixLinuxMCP + "/").Handler(http.StripPrefix(apiurl.PathPrefixLinuxMCP, vws.LinuxMCPHandler()))
-	// MCPServer aggregate (kube + linux edges in one endpoint, plus list_targets):
-	//   /services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
-	router.PathPrefix(apiurl.PathPrefixMCPServer + "/").Handler(http.StripPrefix(apiurl.PathPrefixMCPServer, vws.MCPServerHandler()))
 	// Per-edge MCP is served under the agent-proxy route:
 	//   /services/agent-proxy/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/mcp
+
+	// Provider-owned virtual-workspace handlers: each first-party provider
+	// registers a mount path + factory in its manifest.go (BuiltinSpec.
+	// VirtualWorkspaceHandler). We iterate that registry here so the hub
+	// stays decoupled from any one provider's URL or implementation. The
+	// remaining direct vws.*Handler() calls above are pending extraction
+	// into their respective provider packages.
+	for _, b := range providers.AllBuiltins() {
+		if b.VirtualWorkspaceHandler == nil || b.VirtualWorkspaceMount == "" {
+			continue
+		}
+		mount := b.VirtualWorkspaceMount
+		router.PathPrefix(mount + "/").Handler(http.StripPrefix(mount, b.VirtualWorkspaceHandler(vws.Deps())))
+		logger.Info("Mounted provider virtual workspace", "provider", b.Name, "mount", mount)
+	}
 
 	// Provider extension proxies (Phase 1A — see docs/providers.md).
 	// The proxies key off an in-memory registry that the catalog controller

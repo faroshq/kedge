@@ -193,6 +193,17 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating builtin CatalogEntries: %w", err)
 	}
 
+	// 5d. Apply post-providers workspace artefacts under root:kedge — namely
+	//     the `organization` WorkspaceType, which declares a defaultAPIBinding
+	//     to tenancy.kedge.faros.sh in root:kedge:providers. kcp's WT
+	//     admission resolves the binding's LogicalCluster and checks bind
+	//     RBAC at apply time, so the APIExport (created in step 5) must
+	//     exist beforehand or the apply fails with a 403 forbidden.
+	logger.Info("Bootstrapping post-providers workspace artefacts (organization WorkspaceType)")
+	if err := confighelpers.Bootstrap(ctx, kedgeDiscovery, kedgeDynamic, kcp.PostProvidersFS); err != nil {
+		return fmt.Errorf("bootstrapping post-providers artefacts: %w", err)
+	}
+
 	// 6. Install User CRD in root:kedge:users workspace.
 	logger.Info("Installing User CRD in root:kedge:users")
 	if err := b.installUserCRD(ctx); err != nil {

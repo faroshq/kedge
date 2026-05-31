@@ -1,29 +1,41 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260531-fb75204.users.tenancy.kedge.faros.sh
+  name: v260531-fb75204.organizations.tenancy.kedge.faros.sh
 spec:
   group: tenancy.kedge.faros.sh
   names:
-    kind: User
-    listKind: UserList
-    plural: users
-    singular: user
+    kind: Organization
+    listKind: OrganizationList
+    plural: organizations
+    singular: organization
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.email
-      name: Email
+    - jsonPath: .spec.displayName
+      name: DisplayName
       type: string
-    - jsonPath: .spec.name
-      name: Name
+    - jsonPath: .spec.personal
+      name: Personal
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
     name: v1alpha1
     schema:
-      description: User represents a user in the system.
+      description: |-
+        Organization is the unit of tenancy in kedge. An Organization owns a kcp
+        workspace at root:kedge:orgs:{metadata.name} that holds catalog metadata
+        and membership for its members. All tenant work (APIBindings, edges, MCP
+        instances, …) lives in child Workspaces beneath the Organization, never
+        in the Organization workspace itself.
+
+        metadata.name is a server-assigned UUID; spec.displayName carries the
+        human-facing label. Two Organizations may share a displayName. See
+        docs/organizations.md decision O-1 for the rationale.
       properties:
         apiVersion:
           description: |-
@@ -43,60 +55,60 @@ spec:
         metadata:
           type: object
         spec:
-          description: UserSpec defines the desired state of a User.
+          description: OrganizationSpec defines the desired state of an Organization.
           properties:
-            defaultCluster:
-              type: string
-            email:
-              type: string
-            name:
-              type: string
-            oidcProviders:
-              items:
-                description: OIDCProvider stores OIDC provider information for a user.
-                properties:
-                  accessToken:
-                    type: string
-                  email:
-                    type: string
-                  expiresAt:
-                    format: date-time
-                    type: string
-                  name:
-                    type: string
-                  providerID:
-                    type: string
-                  refreshToken:
-                    type: string
-                required:
-                - accessToken
-                - email
-                - name
-                - providerID
-                - refreshToken
-                type: object
-              type: array
-            orgQuota:
+            catalogEntryCreation:
+              default: members
               description: |-
-                OrgQuota overrides the platform default cap on how many Organizations
-                this User may create (see docs/organizations.md O-5). 0 means use the
-                platform default. Settable only by a platform admin.
+                CatalogEntryCreation controls who can publish Org-Private CatalogEntries
+                (see docs/provider-scoping.md). Same enum + default as WorkspaceCreation.
+              enum:
+              - members
+              - admin
+              type: string
+            displayName:
+              description: |-
+                DisplayName is the human-facing label rendered in the portal switcher
+                and CLI output. Not unique — two Organizations may share a displayName;
+                the UUID in metadata.name disambiguates them. Editable after creation.
+              maxLength: 128
+              minLength: 1
+              type: string
+            personal:
+              description: |-
+                Personal marks the Organization auto-created for a single User at
+                User bootstrap. Set once at creation; immutable. Used by the portal
+                to badge / filter the switcher.
+              type: boolean
+              x-kubernetes-validations:
+              - message: personal is immutable
+                rule: self == oldSelf
+            workspaceCreation:
+              default: members
+              description: |-
+                WorkspaceCreation controls who can create child Workspaces:
+                  members — any Org Membership may create (default).
+                  admin   — only Org admins may create.
+              enum:
+              - members
+              - admin
+              type: string
+            workspaceQuota:
+              description: |-
+                WorkspaceQuota caps the number of child Workspaces. 0 means use the
+                platform default (50, see docs/organizations.md O-6). Platform admin
+                may patch this to lift the cap for an Organization that needs more.
               format: int32
               minimum: 0
               type: integer
-            rbacIdentity:
-              type: string
           required:
-          - email
-          - name
-          - rbacIdentity
+          - displayName
           type: object
         status:
-          description: UserStatus defines the observed state of a User.
+          description: OrganizationStatus defines the observed state of an Organization.
           properties:
-            active:
-              type: boolean
             conditions:
+              description: Conditions describe the current state.
               items:
                 description: Condition contains details for one aspect of the current
                   state of this API Resource.
@@ -152,24 +164,23 @@ spec:
                 - type
                 type: object
               type: array
+              x-kubernetes-list-map-keys:
+              - type
+              x-kubernetes-list-type: map
             deletionRequestedAt:
               description: |-
                 DeletionRequestedAt records when a soft-delete was initiated for
-                this User. Per O-8 the cascade controller waits 30 days from this
-                timestamp before removing the personal Org and its Workspaces and
-                finally the User itself. Undelete clears this field.
+                this Organization. Per O-13, the cascade controller waits 30 days
+                from this timestamp before removing child Workspaces, Memberships,
+                CatalogEntries, and finally the Organization itself. Undelete clears
+                this field.
               format: date-time
               type: string
-            lastLogin:
-              format: date-time
-              type: string
-            personalOrg:
+            workspacePath:
               description: |-
-                PersonalOrg is the metadata.name (UUID) of the Organization
-                auto-created for this User at bootstrap. Set once by the
-                organization bootstrap controller; never reassigned. The portal
-                uses this as the default X-Kedge-Org when the user has not
-                explicitly switched orgs. See docs/organizations.md §Personal Org.
+                WorkspacePath is the path to the materialized kcp Workspace, always
+                root:kedge:orgs:{metadata.name}. Set by the bootstrap controller once
+                the workspace has been provisioned.
               type: string
           type: object
       type: object

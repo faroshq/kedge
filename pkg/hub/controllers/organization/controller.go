@@ -89,8 +89,8 @@ type WorkspaceProvisioner interface {
 // Reconciler bootstraps personal Organizations for new Users and reconciles
 // Organization status. See package doc for scope.
 type Reconciler struct {
-	client       client.Client
-	provisioner  WorkspaceProvisioner
+	client      client.Client
+	provisioner WorkspaceProvisioner
 }
 
 // SetupWithManager registers the User and Organization watches with mgr.
@@ -286,11 +286,10 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, orgName st
 	// (test contexts that don't exercise this path) skip and leave the
 	// "Awaiting" condition in place.
 	var (
-		wsCond   metav1.Condition
+		wsCond    metav1.Condition
 		readyCond metav1.Condition
 	)
-	switch {
-	case r.provisioner == nil:
+	if r.provisioner == nil {
 		wsCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
 			Status:  metav1.ConditionFalse,
@@ -303,34 +302,32 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, orgName st
 			Reason:  tenancyv1alpha1.ReasonAwaitingWorkspaceType,
 			Message: "Awaiting workspace provisioning.",
 		}
-	default:
-		if err := r.provisioner.EnsureOrgWorkspace(ctx, org.Name); err != nil {
-			logger.Error(err, "Provisioning Organization workspace failed; will retry")
-			wsCond = metav1.Condition{
-				Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
-				Status:  metav1.ConditionFalse,
-				Reason:  reasonWorkspaceProvisioningFailed,
-				Message: err.Error(),
-			}
-			readyCond = metav1.Condition{
-				Type:    tenancyv1alpha1.OrganizationConditionReady,
-				Status:  metav1.ConditionFalse,
-				Reason:  reasonWorkspaceProvisioningFailed,
-				Message: "Workspace provisioning failed; see WorkspaceReady condition.",
-			}
-		} else {
-			wsCond = metav1.Condition{
-				Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
-				Status:  metav1.ConditionTrue,
-				Reason:  reasonWorkspaceProvisioned,
-				Message: "kcp Workspace " + desiredPath + " is Ready.",
-			}
-			readyCond = metav1.Condition{
-				Type:    tenancyv1alpha1.OrganizationConditionReady,
-				Status:  metav1.ConditionTrue,
-				Reason:  reasonWorkspaceProvisioned,
-				Message: "Organization is ready for use.",
-			}
+	} else if err := r.provisioner.EnsureOrgWorkspace(ctx, org.Name); err != nil {
+		logger.Error(err, "Provisioning Organization workspace failed; will retry")
+		wsCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonWorkspaceProvisioningFailed,
+			Message: err.Error(),
+		}
+		readyCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonWorkspaceProvisioningFailed,
+			Message: "Workspace provisioning failed; see WorkspaceReady condition.",
+		}
+	} else {
+		wsCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionWorkspaceReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonWorkspaceProvisioned,
+			Message: "kcp Workspace " + desiredPath + " is Ready.",
+		}
+		readyCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonWorkspaceProvisioned,
+			Message: "Organization is ready for use.",
 		}
 	}
 

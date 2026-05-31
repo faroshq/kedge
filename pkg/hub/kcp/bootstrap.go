@@ -286,7 +286,7 @@ func (b *Bootstrapper) GetOrgClusterName(ctx context.Context, orgUUID string) (s
 	}
 	clusterName, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
 	if clusterName == "" {
-		return "", fmt.Errorf("Organization workspace %s has no spec.cluster", orgUUID)
+		return "", fmt.Errorf("organization workspace %s has no spec.cluster", orgUUID)
 	}
 	return clusterName, nil
 }

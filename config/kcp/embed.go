@@ -25,9 +25,10 @@ import "embed"
 var RootWorkspaceFS embed.FS
 
 // KedgeWorkspaceFS contains workspace definitions for children of root:kedge,
-// plus the kedge-owned WorkspaceTypes used for per-user tenant workspaces.
+// plus the kedge-owned WorkspaceTypes used for per-user tenant workspaces
+// and the per-Organization workspaces from docs/organizations.md.
 //
-//go:embed workspace-providers.yaml workspace-tenants.yaml workspace-users.yaml workspacetype-tenant.yaml
+//go:embed workspace-providers.yaml workspace-tenants.yaml workspace-users.yaml workspace-orgs.yaml workspacetype-tenant.yaml workspacetype-organization.yaml
 var KedgeWorkspaceFS embed.FS
 
 // ProvidersFS contains APIResourceSchemas and APIExport applied to root:kedge:providers.

@@ -16,14 +16,11 @@ spec:
     with:
     - name: universal
       path: root
-  # Child Workspaces inside an Organization workspace are the team /
-  # project spaces where tenant work (APIBindings, edges, MCPServers)
-  # actually lives. Per docs/organizations.md they will be of type
-  # `workspace` (lands in PR #3); v1 caps to a single allowed child
-  # type so misconfiguration is impossible.
-  defaultChildWorkspaceType:
-    name: workspace
-    path: root:kedge
+  # NOTE: docs/organizations.md mandates that child workspaces inside an
+  # Organization are of type `workspace` (the per-team workspace).
+  # `defaultChildWorkspaceType` is intentionally omitted in PR #2 because
+  # the referenced WorkspaceType is created by PR #3; a dangling reference
+  # would make this WorkspaceType invalid at bootstrap. PR #3 fills it in.
   # Default bindings the bootstrap controller relies on inside the Org
   # workspace:
   #   - tenancy.kedge.faros.sh provides the Organization, CatalogEntry,

@@ -16,20 +16,20 @@ spec:
     with:
     - name: universal
       path: root
-  # NOTE: docs/organizations.md mandates that child workspaces inside an
-  # Organization are of type `workspace` (the per-team workspace).
-  # `defaultChildWorkspaceType` is intentionally omitted in PR #2 because
-  # the referenced WorkspaceType is created by PR #3; a dangling reference
-  # would make this WorkspaceType invalid at bootstrap. PR #3 fills it in.
-  # Default bindings the bootstrap controller relies on inside the Org
-  # workspace:
-  #   - tenancy.kedge.faros.sh provides the Organization, CatalogEntry,
-  #     and (in PR #4) Membership CRDs so the hub can read/write them
-  #     under root:kedge:orgs:{uuid}.
-  #   - tenancy.kcp.io provides the Workspace resource so the hub can
-  #     create child team workspaces inside the Org.
-  defaultAPIBindings:
-  - path: root:kedge:providers
-    export: tenancy.kedge.faros.sh
-  - path: root
-    export: tenancy.kcp.io
+  # NOTE: deferrals to follow-up PRs to keep this WorkspaceType apply
+  # robust at bootstrap time:
+  #
+  #   - docs/organizations.md mandates that child workspaces inside an
+  #     Organization are of type `workspace`. `defaultChildWorkspaceType`
+  #     is intentionally omitted in PR #2 because the referenced
+  #     WorkspaceType is created by PR #3; the dangling reference would
+  #     fail kcp's admission check.
+  #
+  #   - `defaultAPIBindings` are intentionally not declared. Per O-10 the
+  #     Org workspace is hub-mediated only, so the hub writes Organization
+  #     metadata + (PR #4) Membership CRs through its own admin config
+  #     and does not require any default bindings here. Adding bindings
+  #     too early also trips kcp's admission check, which verifies the
+  #     creating actor has `bind` on each APIExport referenced. PR #4
+  #     adds `tenancy.kedge.faros.sh` for Memberships at the same time
+  #     it grants the bind permission needed for it.

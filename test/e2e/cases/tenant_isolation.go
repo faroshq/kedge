@@ -48,10 +48,10 @@ type tenantIsolationData struct {
 	hubURL string
 
 	// User A: created a non-personal org + holds workspace info.
-	userAToken    string
-	userAOrgUUID  string
-	userAWSUUID   string
-	userAOrgName  string
+	userAToken   string
+	userAOrgUUID string
+	userAWSUUID  string
+	userAOrgName string
 
 	// User B: separate OIDC identity. No access to User A's org.
 	userBToken string

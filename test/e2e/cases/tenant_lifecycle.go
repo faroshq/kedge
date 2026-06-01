@@ -190,14 +190,14 @@ func TenancyWorkspaceCRUD() features.Feature {
 			}
 			requireOK(t, "DELETE workspace", code, body)
 
-			// Undelete.
+			// Undelete. Same body-less response pattern as DELETE — 204.
 			code, body, err = framework.DoRESTRequest(ctx, http.MethodPost,
 				workspaceURL(hubURL, org.UUID, ws.UUID)+"/undelete", bearer,
 				orgWSHeaders(org.UUID, ws.UUID), nil)
 			if err != nil {
 				t.Fatalf("undelete workspace: %v", err)
 			}
-			requireStatus(t, "POST workspace undelete", http.StatusOK, code, body)
+			requireOK(t, "POST workspace undelete", code, body)
 
 			return ctx
 		}).

@@ -72,6 +72,15 @@ var (
 		Version:  "v1alpha1",
 		Resource: "usermembershipindices",
 	}
+
+	// OrganizationGVR points at the cluster-scoped Organization CRD
+	// (see apis/tenancy/v1alpha1/types_organization.go). Used by the
+	// step 10 REST surface for Org CRUD against root:kedge:users.
+	OrganizationGVR = schema.GroupVersionResource{
+		Group:    "tenancy.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "organizations",
+	}
 )
 
 // Client provides typed access to kedge custom resources via the dynamic client.
@@ -133,6 +142,14 @@ func (c *Client) Users() *TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.Us
 func (c *Client) UserMembershipIndices() *TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList] {
 	return &TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList]{
 		client: c.dynamic.Resource(UserMembershipIndexGVR),
+	}
+}
+
+// Organizations returns a typed interface for the cluster-scoped
+// Organization CRD. Used by the step 10 REST surface.
+func (c *Client) Organizations() *TypedResource[tenancyv1alpha1.Organization, tenancyv1alpha1.OrganizationList] {
+	return &TypedResource[tenancyv1alpha1.Organization, tenancyv1alpha1.OrganizationList]{
+		client: c.dynamic.Resource(OrganizationGVR),
 	}
 }
 

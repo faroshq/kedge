@@ -21,9 +21,12 @@ cycle button, because users couldn't tell at a glance what the cycle
 button would do next — "click again to find out" is bad UX for a
 non-destructive preference.
 
+Both variants are icon-only; tooltips carry the long form so the
+function is discoverable on hover.
+
 `variant`:
-  - "sidebar"  — icon + short label, takes the full sidebar width
-  - "compact"  — icon-only with tooltips, fits in horizontal/floating bars
+  - "sidebar"  — slightly larger, full sidebar width
+  - "compact"  — tighter, for horizontal + floating dock action groups
 -->
 
 <script setup lang="ts">
@@ -49,8 +52,8 @@ const options: Option[] = [
 </script>
 
 <template>
-  <!-- Sidebar variant: labelled chips, full width, intended to sit in
-       the bottom action area of the vertical sidebar. -->
+  <!-- Sidebar variant: icon-only, full width, intended to sit in the
+       bottom action area of the vertical sidebar. -->
   <div
     v-if="variant !== 'compact'"
     role="group"
@@ -63,7 +66,8 @@ const options: Option[] = [
       type="button"
       :title="o.title"
       :aria-pressed="theme.mode === o.mode"
-      class="flex items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-[10px] font-medium transition-all duration-200"
+      :aria-label="o.title"
+      class="flex h-7 items-center justify-center rounded-lg transition-all duration-200"
       :class="
         theme.mode === o.mode
           ? 'bg-accent/15 text-accent shadow-sm'
@@ -71,8 +75,7 @@ const options: Option[] = [
       "
       @click="theme.setMode(o.mode)"
     >
-      <component :is="o.icon" class="h-3 w-3" :stroke-width="1.75" />
-      <span>{{ o.label }}</span>
+      <component :is="o.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
     </button>
   </div>
 

@@ -455,9 +455,9 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
       </router-link>
 
       <!-- Theme segmented control: shows all three options so users can
-           pick directly instead of cycling through unknown next states. -->
+           pick directly instead of cycling through unknown next states.
+           Icon-only — tooltips carry the per-option label. -->
       <div class="px-1 py-1">
-        <div class="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">Theme</div>
         <ThemeSwitch variant="sidebar" />
       </div>
 

@@ -165,39 +165,33 @@ func MultiOrgIsolation() features.Feature {
 			}
 			t.Logf("User A created org %q (uuid=%s)", createdOrg.DisplayName, createdOrg.UUID)
 
-			// Wait for org bootstrap to land a default workspace.
-			var defaultWS string
-			pollCtx, pollCancel := context.WithTimeout(ctx, 60*time.Second)
-			defer pollCancel()
-			pollErr := framework.Poll(pollCtx, 2*time.Second, 60*time.Second, func(ctx context.Context) (bool, error) {
-				code, body, err := doRESTRequest(
-					ctx, http.MethodGet,
-					clusterEnv.HubURL+"/api/orgs/"+createdOrg.UUID+"/workspaces",
-					resultA.IDToken,
-					map[string]string{"X-Kedge-Org": createdOrg.UUID},
-					nil,
-				)
-				if err != nil || code != http.StatusOK {
-					return false, nil
-				}
-				var list struct {
-					Items []struct {
-						UUID string `json:"uuid"`
-					} `json:"items"`
-				}
-				if err := json.Unmarshal(body, &list); err != nil {
-					return false, nil
-				}
-				if len(list.Items) == 0 {
-					return false, nil
-				}
-				defaultWS = list.Items[0].UUID
-				return true, nil
-			})
-			if pollErr != nil {
-				t.Fatalf("waiting for default workspace in User A's org: %v", pollErr)
+			// Non-personal orgs do NOT get an auto-materialised default
+			// workspace — that path runs only off User.status.defaultWorkspace
+			// for the bootstrap of a user's personal org. Create one
+			// explicitly so the service-account isolation checks below have
+			// a target workspace to address.
+			wsBody := map[string]string{"displayName": "isolation-ws"}
+			code, body, err = doRESTRequest(
+				ctx, http.MethodPost,
+				clusterEnv.HubURL+"/api/orgs/"+createdOrg.UUID+"/workspaces",
+				resultA.IDToken,
+				map[string]string{"X-Kedge-Org": createdOrg.UUID},
+				wsBody,
+			)
+			if err != nil {
+				t.Fatalf("User A POST workspace: %v", err)
 			}
-			t.Logf("User A default workspace: %s", defaultWS)
+			if code != http.StatusCreated {
+				t.Fatalf("User A POST workspace: expected 201, got %d: %s", code, body)
+			}
+			var createdWS struct {
+				UUID string `json:"uuid"`
+			}
+			if err := json.Unmarshal(body, &createdWS); err != nil {
+				t.Fatalf("decoding workspace create response: %v\nbody: %s", err, body)
+			}
+			defaultWS := createdWS.UUID
+			t.Logf("User A created workspace: %s", defaultWS)
 
 			// ── User B: OIDC login ──────────────────────────────────────
 			loginB, cancelB := context.WithTimeout(ctx, 90*time.Second)

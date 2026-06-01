@@ -36,6 +36,7 @@ onMounted(() => {
       email: resp.email ?? '',
       userId: resp.userId ?? '',
       clusterName,
+      kubeconfig: kubeconfigStr,
     }
 
     auth.loginFromOIDCResponse(stored)

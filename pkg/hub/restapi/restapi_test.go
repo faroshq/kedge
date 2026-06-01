@@ -201,6 +201,10 @@ func (f *fakeOps) ClearWorkspaceDeletionAnnotation(_ context.Context, orgUUID, w
 	return nil
 }
 
+func (f *fakeOps) GetChildWorkspaceClusterName(_ context.Context, orgUUID, wsUUID string) (string, error) {
+	return "fake-cluster", nil
+}
+
 // ===== test fixtures =====
 
 func newTestScheme(t *testing.T) *runtime.Scheme {

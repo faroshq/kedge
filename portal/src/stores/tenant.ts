@@ -53,6 +53,7 @@ export interface WorkspaceRow {
   // `?? ''` or `w.displayName || w.uuid` before reading.
   displayName?: string
   deletionRequestedAt?: string | null
+  clusterName?: string
 }
 
 export interface MemberRow {

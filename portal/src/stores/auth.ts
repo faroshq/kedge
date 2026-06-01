@@ -47,6 +47,7 @@ export const useAuthStore = defineStore('auth', () => {
         email: resp.email ?? '',
         userId: resp.userId ?? '',
         clusterName: cluster,
+        kubeconfig: kubeconfigStr,
       }
       saveAuth(auth)
       token.value = auth.idToken

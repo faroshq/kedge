@@ -18,6 +18,7 @@ export interface StoredAuth {
   email: string
   userId: string
   clusterName: string
+  kubeconfig?: string
 }
 
 export type AuthMode = 'oidc' | 'token' | 'both'

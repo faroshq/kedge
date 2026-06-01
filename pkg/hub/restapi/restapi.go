@@ -79,6 +79,7 @@ type WorkspaceOps interface {
 	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
 	SetWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string, at time.Time) error
 	ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error
+	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 }
 
 // Manager holds the dependencies every handler needs: the kedge
@@ -415,6 +416,7 @@ type WorkspaceView struct {
 	OrgUUID             string     `json:"orgUUID"`
 	DisplayName         string     `json:"displayName,omitempty"`
 	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+	ClusterName         string     `json:"clusterName,omitempty"`
 }
 
 // MembershipView is the REST projection of a single org-or-workspace

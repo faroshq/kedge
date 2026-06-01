@@ -247,5 +247,8 @@ func (h *Handler) workspaceView(r *http.Request, orgUUID, wsUUID string) (Worksp
 		tt := *t
 		view.DeletionRequestedAt = &tt
 	}
+	if cn, err := h.mgr.bootstrapper.GetChildWorkspaceClusterName(r.Context(), orgUUID, wsUUID); err == nil && cn != "" {
+		view.ClusterName = cn
+	}
 	return view, true
 }

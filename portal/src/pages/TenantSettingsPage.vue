@@ -31,7 +31,9 @@ UI reflects that.
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
-import { useTenantStore, type MemberRow, type SARow, type TokenResponse } from '@/stores/tenant'
+import { useTenantStore, type MemberRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
+import { generateWorkspaceKubeconfig, downloadKubeconfig, kubeconfigFilename } from '@/lib/kubeconfig'
+import { loadAuth } from '@/auth/token'
 import {
   Building2,
   FolderTree,
@@ -48,6 +50,7 @@ import {
   Loader2,
   ShieldCheck,
   User as UserIcon,
+  Download,
 } from 'lucide-vue-next'
 
 const tenant = useTenantStore()
@@ -241,6 +244,22 @@ async function onUndeleteWorkspace(uuid: string) {
     delete next[uuid]
     wsBusy.value = next
   }
+}
+
+function handleDownloadKubeconfig(workspace: WorkspaceRow) {
+  const stored = loadAuth()
+  if (!stored?.kubeconfig) {
+    flash('error', 'No kubeconfig available. Please log in again.')
+    return
+  }
+  if (!workspace.clusterName) {
+    flash('error', 'Workspace cluster name not available yet.')
+    return
+  }
+  const yaml = generateWorkspaceKubeconfig(stored.kubeconfig, workspace.clusterName)
+  const filename = kubeconfigFilename(workspace)
+  downloadKubeconfig(yaml, filename)
+  flash('info', `Kubeconfig downloaded for "${workspace.displayName || workspace.uuid}"`)
 }
 
 // ===== Members tab =====
@@ -764,6 +783,14 @@ function fmtDate(s?: string | null): string {
                   @click="startEditWS(w.uuid, w.displayName)"
                 >
                   <Pencil class="inline h-3 w-3" :stroke-width="2" />
+                </button>
+                <button
+                  v-if="editingWS !== w.uuid && !w.deletionRequestedAt && w.clusterName"
+                  class="rounded-md border border-border-subtle px-2 py-1 text-[11px] text-text-muted hover:border-accent/30 hover:text-accent"
+                  title="Download kubeconfig"
+                  @click="handleDownloadKubeconfig(w)"
+                >
+                  <Download class="inline h-3 w-3" :stroke-width="2" />
                 </button>
                 <button
                   v-if="!w.deletionRequestedAt"

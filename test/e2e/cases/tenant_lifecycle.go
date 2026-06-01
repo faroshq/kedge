@@ -179,14 +179,16 @@ func TenancyWorkspaceCRUD() features.Feature {
 				t.Fatalf("workspace rename not visible on GET: %s", body)
 			}
 
-			// Soft-delete workspace.
+			// Soft-delete workspace. The hub returns 204 No Content for the
+			// workspace DELETE (no body to send back; the annotation lives on
+			// the kcp Workspace, not in our REST projection).
 			code, body, err = framework.DoRESTRequest(ctx, http.MethodDelete,
 				workspaceURL(hubURL, org.UUID, ws.UUID), bearer,
 				orgWSHeaders(org.UUID, ws.UUID), nil)
 			if err != nil {
 				t.Fatalf("DELETE workspace: %v", err)
 			}
-			requireStatus(t, "DELETE workspace", http.StatusOK, code, body)
+			requireOK(t, "DELETE workspace", code, body)
 
 			// Undelete.
 			code, body, err = framework.DoRESTRequest(ctx, http.MethodPost,
@@ -266,14 +268,15 @@ func TenancySACRUD() features.Feature {
 				t.Fatalf("issued token is empty: %s", body)
 			}
 
-			// Revoke all tokens.
+			// Revoke all tokens. DELETE is allowed to return either 200 or
+			// 204 — the hub uses 204 (no body) for this endpoint.
 			code, body, err = framework.DoRESTRequest(ctx, http.MethodDelete,
 				saTokenURL(hubURL, org.UUID, ws.UUID, sa.UUID), bearer,
 				orgWSHeaders(org.UUID, ws.UUID), nil)
 			if err != nil {
 				t.Fatalf("DELETE tokens: %v", err)
 			}
-			requireStatus(t, "DELETE SA tokens", http.StatusOK, code, body)
+			requireOK(t, "DELETE SA tokens", code, body)
 
 			// Delete the SA itself.
 			code, body, err = framework.DoRESTRequest(ctx, http.MethodDelete,
@@ -282,7 +285,7 @@ func TenancySACRUD() features.Feature {
 			if err != nil {
 				t.Fatalf("DELETE SA: %v", err)
 			}
-			requireStatus(t, "DELETE SA", http.StatusOK, code, body)
+			requireOK(t, "DELETE SA", code, body)
 
 			// List — should no longer contain it.
 			code, body, _ = framework.DoRESTRequest(ctx, http.MethodGet,

@@ -67,8 +67,8 @@ func TestTenancyWorkspaceCRUD(t *testing.T)       { testenv.Test(t, cases.Tenanc
 func TestTenancyServiceAccountCRUD(t *testing.T)  { testenv.Test(t, cases.TenancySACRUD()) }
 func TestTenancyServiceAccountToken(t *testing.T) { testenv.Test(t, cases.TenancySATokenAccess()) }
 func TestTenancyTenantHeaders(t *testing.T)       { testenv.Test(t, cases.TenancyTenantHeaders()) }
-func TestTenancyPersonalOrgGuardrails(t *testing.T) {
-	testenv.Test(t, cases.TenancyPersonalOrgGuardrails())
+func TestTenancyPersonalOrgSoftDelete(t *testing.T) {
+	testenv.Test(t, cases.TenancyPersonalOrgSoftDelete())
 }
 func TestTenancySoftDeleteHidesOrg(t *testing.T) { testenv.Test(t, cases.TenancySoftDeleteHidesOrg()) }
 

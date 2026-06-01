@@ -14,15 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Personal org guardrails. Per O-8 + O-12 the user's personal org and
-// the user themselves are 1:1 — soft-deleting the org separately or
-// self-leaving from it must not succeed because there's no other admin
-// to keep the org alive.
+// Personal org behavior at the REST surface.
+//
+// docs/organizations.md §Personal Org pins that personal orgs cascade off
+// the User CR — soft-deleting the User auto-soft-deletes the personal
+// org. The doc does NOT pin whether the user can independently soft-delete
+// their own personal org via /api/orgs/{org}, nor whether self-leave on
+// the personal org is allowed. The current backend allows both: a personal
+// org's owner can stamp deletionRequestedAt on it just like any other org,
+// and the soft-delete reconciler handles the rest.
+//
+// The portal UI refuses these operations on personal orgs for UX
+// reasons (you'd have no org to switch to), but that's a UI policy, not an
+// API policy. These tests lock in the API contract as it stands today;
+// if a future PR adds an API-level guard, this file flips its expectations.
 
 package cases
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -33,16 +44,19 @@ import (
 	"github.com/faroshq/faros-kedge/test/e2e/framework"
 )
 
-// TenancyPersonalOrgGuardrails discovers the caller's personal org (the
-// bootstrap creates one on first OIDC login or first static-token call)
-// and verifies the two destructive operations the API correctly refuses.
-func TenancyPersonalOrgGuardrails() features.Feature {
-	return features.New("Tenancy/PersonalOrgGuardrails").
+// TenancyPersonalOrgSoftDelete verifies the API contract for the
+// caller's personal org: the bootstrap creates one on first /api/orgs
+// call, a direct DELETE on it is accepted (the soft-delete reconciler
+// picks it up), and Undelete restores it within the grace window. Pins
+// the API behavior so a future guardrail addition has to update this
+// test rather than silently change behavior.
+func TenancyPersonalOrgSoftDelete() features.Feature {
+	return features.New("Tenancy/PersonalOrgSoftDelete").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			hubURL := tenancyHubURL(ctx, t)
 			bearer := tenancyBearer(ctx, t)
-			// The first /api/orgs call is what triggers the personal-org
-			// bootstrap. Retry briefly so we don't race with the controller.
+			// The first /api/orgs call triggers the personal-org bootstrap.
+			// Retry briefly so we don't race with the controller.
 			var personalOrg string
 			pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
@@ -64,41 +78,50 @@ func TenancyPersonalOrgGuardrails() features.Feature {
 				orgUUID: personalOrg,
 			})
 		}).
-		Assess("personal_org_cannot_be_deleted", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("personal_org_soft_delete_then_undelete", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			d := ctx.Value(personalOrgCtxKey{}).(*personalOrgData)
+
+			// Soft-delete the personal org. Backend accepts (200 with the
+			// updated projection); deletionRequestedAt should be set.
 			code, body, err := framework.DoRESTRequest(ctx, http.MethodDelete,
 				orgURL(d.hubURL, d.orgUUID), d.bearer,
 				orgHeaders(d.orgUUID), nil)
 			if err != nil {
 				t.Fatalf("DELETE personal org: %v", err)
 			}
-			// Spec says personal orgs cascade off the User CR — DELETE
-			// against the org directly should be refused. Accept 4xx
-			// (refused) but not 200/2xx (mutation accepted) or 500.
-			if code >= 200 && code < 300 {
-				t.Fatalf("DELETE personal org succeeded (%d): expected 4xx (body=%s)", code, body)
+			requireStatus(t, "DELETE personal org", http.StatusOK, code, body)
+			var afterDelete struct {
+				Personal            bool    `json:"personal"`
+				DeletionRequestedAt *string `json:"deletionRequestedAt"`
 			}
-			if code >= 500 {
-				t.Fatalf("DELETE personal org returned 5xx (%d): %s", code, body)
+			if err := json.Unmarshal(body, &afterDelete); err != nil {
+				t.Fatalf("decoding DELETE response: %v", err)
 			}
-			t.Logf("DELETE personal org refused with %d (correct)", code)
-			return ctx
-		}).
-		Assess("self_leave_personal_org_rejected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			d := ctx.Value(personalOrgCtxKey{}).(*personalOrgData)
-			code, body, err := framework.DoRESTRequest(ctx, http.MethodDelete,
-				orgURL(d.hubURL, d.orgUUID)+"/memberships/me", d.bearer,
+			if !afterDelete.Personal {
+				t.Fatalf("expected personal=true on DELETE response; body=%s", body)
+			}
+			if afterDelete.DeletionRequestedAt == nil || *afterDelete.DeletionRequestedAt == "" {
+				t.Fatalf("expected deletionRequestedAt set; body=%s", body)
+			}
+
+			// Undelete restores the org so the suite can continue running
+			// without leaving the caller's personal org marked for cascade.
+			code, body, err = framework.DoRESTRequest(ctx, http.MethodPost,
+				orgURL(d.hubURL, d.orgUUID)+"/undelete", d.bearer,
 				orgHeaders(d.orgUUID), nil)
 			if err != nil {
-				t.Fatalf("self-leave personal org: %v", err)
+				t.Fatalf("undelete personal org: %v", err)
 			}
-			if code >= 200 && code < 300 {
-				t.Fatalf("self-leave personal org succeeded (%d): expected 4xx (body=%s)", code, body)
+			requireStatus(t, "POST personal org undelete", http.StatusOK, code, body)
+			var afterUndelete struct {
+				DeletionRequestedAt *string `json:"deletionRequestedAt"`
 			}
-			if code >= 500 {
-				t.Fatalf("self-leave personal org returned 5xx (%d): %s", code, body)
+			if err := json.Unmarshal(body, &afterUndelete); err != nil {
+				t.Fatalf("decoding undelete response: %v", err)
 			}
-			t.Logf("self-leave personal org refused with %d (correct)", code)
+			if afterUndelete.DeletionRequestedAt != nil && *afterUndelete.DeletionRequestedAt != "" {
+				t.Fatalf("expected deletionRequestedAt cleared; body=%s", body)
+			}
 			return ctx
 		}).
 		Feature()

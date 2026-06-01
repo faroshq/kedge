@@ -80,13 +80,24 @@ func requireStatus(t *testing.T, name string, wantCode, gotCode int, body []byte
 	}
 }
 
-// requireReject is the negative analogue: any of 401/403/404 is fine; a
-// 2xx is the bug. Mirrors framework.IsAuthRejectStatus but with the
-// assertion+log baked in.
+// requireOK accepts any successful status code (200 or 204) — used for
+// DELETE/PATCH endpoints where the backend may legitimately return
+// either depending on whether it has a body to send back.
+func requireOK(t *testing.T, name string, gotCode int, body []byte) {
+	t.Helper()
+	if gotCode != http.StatusOK && gotCode != http.StatusNoContent {
+		t.Fatalf("%s: expected 200 or 204, got %d (body=%s)", name, gotCode, body)
+	}
+}
+
+// requireReject is the negative analogue: any of 400/401/403/404 is
+// acceptable; a 2xx is the bug. 400 covers the validation path the
+// tenant middleware takes for missing/malformed headers — that's a
+// rejection just like a 403 from an auth check.
 func requireReject(t *testing.T, name string, gotCode int, body []byte) {
 	t.Helper()
-	if !framework.IsAuthRejectStatus(gotCode) {
-		t.Fatalf("%s: expected 401/403/404, got %d (body=%s)", name, gotCode, body)
+	if gotCode != http.StatusBadRequest && !framework.IsAuthRejectStatus(gotCode) {
+		t.Fatalf("%s: expected 400/401/403/404, got %d (body=%s)", name, gotCode, body)
 	}
 }
 

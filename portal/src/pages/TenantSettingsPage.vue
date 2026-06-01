@@ -187,9 +187,12 @@ async function onCreateWorkspace() {
   }
 }
 
-function startEditWS(uuid: string, current: string) {
+function startEditWS(uuid: string, current: string | undefined) {
   editingWS.value = uuid
-  wsNameDraft.value = current
+  // The default workspace has no display-name annotation, so the REST
+  // projection omits the field entirely — passing undefined here would
+  // make the v-model + .trim() bindings throw.
+  wsNameDraft.value = current ?? ''
 }
 
 async function saveWSName(uuid: string) {
@@ -210,9 +213,10 @@ async function saveWSName(uuid: string) {
   }
 }
 
-async function onDeleteWorkspace(uuid: string, name: string) {
+async function onDeleteWorkspace(uuid: string, name: string | undefined) {
   if (!tenant.orgUUID) return
-  if (!window.confirm(`Delete workspace "${name}"? It enters a 30-day grace window and can be restored.`)) return
+  const label = name || uuid
+  if (!window.confirm(`Delete workspace "${label}"? It enters a 30-day grace window and can be restored.`)) return
   wsBusy.value = { ...wsBusy.value, [uuid]: true }
   try {
     const ok = await tenant.deleteWorkspace(tenant.orgUUID, uuid)

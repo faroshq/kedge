@@ -41,7 +41,14 @@ const open = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
 
 const orgLabel = computed(() => tenant.activeOrg?.displayName ?? 'No org')
-const wsLabel = computed(() => tenant.activeWorkspace?.displayName ?? 'No workspace')
+const wsLabel = computed(() => {
+  const w = tenant.activeWorkspace
+  if (!w) return 'No workspace'
+  // Default workspace has no display-name annotation; fall back to the
+  // UUID prefix so the chip still reflects an existing context rather
+  // than reading as "no workspace selected".
+  return w.displayName || w.uuid.slice(0, 8)
+})
 
 const workspaces = computed(() =>
   tenant.orgUUID ? tenant.workspacesByOrg[tenant.orgUUID] ?? [] : [],

@@ -48,7 +48,10 @@ export interface OrgRow {
 export interface WorkspaceRow {
   uuid: string
   orgUUID: string
-  displayName: string
+  // Optional: the REST layer omits the field for the default workspace,
+  // which has no display-name annotation yet. Callers must guard with
+  // `?? ''` or `w.displayName || w.uuid` before reading.
+  displayName?: string
   deletionRequestedAt?: string | null
 }
 

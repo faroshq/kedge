@@ -52,6 +52,28 @@ export interface WorkspaceRow {
   deletionRequestedAt?: string | null
 }
 
+export interface MemberRow {
+  user: string
+  role: 'admin' | 'member'
+  orgUUID: string
+  workspaceUUID?: string
+  orgDisplayName?: string
+  workspaceDisplayName?: string
+}
+
+export interface SARow {
+  uuid: string
+  displayName: string
+  role: 'admin' | 'member'
+  createdAt: string
+  lastTokenIssuedAt?: string
+}
+
+export interface TokenResponse {
+  token: string
+  expiresAt: string
+}
+
 function loadPersisted(): PersistedTenant {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -245,6 +267,258 @@ export const useTenantStore = defineStore('tenant', () => {
     return created
   }
 
+  // ===== org-level CRUD =====
+
+  async function patchOrgDisplayName(targetOrgUUID: string, displayName: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}`, {
+      method: 'PATCH',
+      headers: { ...authHeader(), 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      body: JSON.stringify({ displayName }),
+    })
+    if (!resp.ok) {
+      error.value = `failed to patch org: ${resp.status}`
+      return false
+    }
+    await fetchOrgs()
+    return true
+  }
+
+  async function deleteOrg(targetOrgUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}`, {
+      method: 'DELETE',
+      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to delete org: ${resp.status}`
+      return false
+    }
+    await fetchOrgs()
+    return true
+  }
+
+  async function undeleteOrg(targetOrgUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/undelete`, {
+      method: 'POST',
+      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to undelete org: ${resp.status}`
+      return false
+    }
+    await fetchOrgs()
+    return true
+  }
+
+  // ===== workspace CRUD =====
+
+  async function patchWorkspaceDisplayName(targetOrgUUID: string, wsUUID: string, displayName: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
+      method: 'PATCH',
+      headers: {
+        ...authHeader(),
+        'Content-Type': 'application/json',
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+      body: JSON.stringify({ displayName }),
+    })
+    if (!resp.ok) {
+      error.value = `failed to patch workspace: ${resp.status}`
+      return false
+    }
+    await fetchWorkspaces(targetOrgUUID)
+    return true
+  }
+
+  async function deleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
+      method: 'DELETE',
+      headers: {
+        ...authHeader(),
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      error.value = `failed to delete workspace: ${resp.status}`
+      return false
+    }
+    await fetchWorkspaces(targetOrgUUID)
+    return true
+  }
+
+  async function undeleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/undelete`, {
+      method: 'POST',
+      headers: {
+        ...authHeader(),
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      error.value = `failed to undelete workspace: ${resp.status}`
+      return false
+    }
+    await fetchWorkspaces(targetOrgUUID)
+    return true
+  }
+
+  // ===== Org membership =====
+
+  async function listOrgMembers(targetOrgUUID: string): Promise<MemberRow[]> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships`, {
+      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to list org members: ${resp.status}`
+      return []
+    }
+    const data = (await resp.json()) as { items: MemberRow[] }
+    return data.items ?? []
+  }
+
+  async function addOrgMember(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships`, {
+      method: 'POST',
+      headers: { ...authHeader(), 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      body: JSON.stringify({ user, role }),
+    })
+    if (!resp.ok) {
+      error.value = `failed to add member: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
+  async function patchOrgMemberRole(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships/${user}`, {
+      method: 'PATCH',
+      headers: { ...authHeader(), 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      body: JSON.stringify({ role }),
+    })
+    if (!resp.ok) {
+      error.value = `failed to patch member role: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
+  async function removeOrgMember(targetOrgUUID: string, user: string, cascade = false): Promise<boolean> {
+    const url = `/api/orgs/${targetOrgUUID}/memberships/${user}${cascade ? '?cascade=true' : ''}`
+    const resp = await fetch(url, {
+      method: 'DELETE',
+      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to remove member: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
+  async function leaveOrg(targetOrgUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/memberships/me`, {
+      method: 'DELETE',
+      headers: { ...authHeader(), 'X-Kedge-Org': targetOrgUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to leave org: ${resp.status}`
+      return false
+    }
+    await fetchOrgs()
+    return true
+  }
+
+  // ===== Service Accounts =====
+
+  async function listServiceAccounts(targetOrgUUID: string, wsUUID: string): Promise<SARow[]> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
+      headers: {
+        ...authHeader(),
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      error.value = `failed to list service accounts: ${resp.status}`
+      return []
+    }
+    const data = (await resp.json()) as { items: SARow[] }
+    return data.items ?? []
+  }
+
+  async function createServiceAccount(
+    targetOrgUUID: string,
+    wsUUID: string,
+    displayName: string,
+    role: 'admin' | 'member',
+  ): Promise<SARow | null> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
+      method: 'POST',
+      headers: {
+        ...authHeader(),
+        'Content-Type': 'application/json',
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+      body: JSON.stringify({ displayName, role }),
+    })
+    if (!resp.ok) {
+      error.value = `failed to create SA: ${resp.status}`
+      return null
+    }
+    return (await resp.json()) as SARow
+  }
+
+  async function deleteServiceAccount(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}`, {
+      method: 'DELETE',
+      headers: {
+        ...authHeader(),
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      error.value = `failed to delete SA: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
+  async function issueSAToken(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<TokenResponse | null> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
+      method: 'POST',
+      headers: {
+        ...authHeader(),
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      error.value = `failed to issue token: ${resp.status}`
+      return null
+    }
+    return (await resp.json()) as TokenResponse
+  }
+
+  async function revokeSATokens(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<boolean> {
+    const resp = await fetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
+      method: 'DELETE',
+      headers: {
+        ...authHeader(),
+        'X-Kedge-Org': targetOrgUUID,
+        'X-Kedge-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      error.value = `failed to revoke tokens: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
   return {
     // state
     orgUUID,
@@ -256,13 +530,33 @@ export const useTenantStore = defineStore('tenant', () => {
     // computed
     activeOrg,
     activeWorkspace,
-    // actions
+    // actions: selection
     tenantHeaders,
     fetchOrgs,
     fetchWorkspaces,
     selectOrg,
     selectWorkspace,
+    // actions: org
     createOrg,
+    patchOrgDisplayName,
+    deleteOrg,
+    undeleteOrg,
+    // actions: workspace
     createWorkspace,
+    patchWorkspaceDisplayName,
+    deleteWorkspace,
+    undeleteWorkspace,
+    // actions: membership
+    listOrgMembers,
+    addOrgMember,
+    patchOrgMemberRole,
+    removeOrgMember,
+    leaveOrg,
+    // actions: service accounts
+    listServiceAccounts,
+    createServiceAccount,
+    deleteServiceAccount,
+    issueSAToken,
+    revokeSATokens,
   }
 })

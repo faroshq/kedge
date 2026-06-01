@@ -6,8 +6,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import TerminalDock from '@/components/TerminalDock.vue'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
-import TenantSwitcher from '@/components/TenantSwitcher.vue'
-import { Hexagon, LayoutDashboard, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 
@@ -63,6 +62,7 @@ interface NavItem {
 // only true platform-wide page.
 const staticNavItems: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
+  { label: 'Settings', to: '/tenant', icon: Settings },
 ]
 
 // Catalog link sits at the top of the Providers section as a header that
@@ -311,14 +311,6 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
           <span class="text-[7px] font-semibold uppercase tracking-widest text-success">Live</span>
         </div>
       </div>
-
-      <div class="mx-2 my-2 h-px bg-border-default/50" />
-
-      <!-- Org + Workspace switcher (roadmap step 10 / O-10). Sits
-           between the logo and the nav so the user can see + change
-           their active tenant before navigating into a Dashboard /
-           Workloads view that depends on it. -->
-      <TenantSwitcher />
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 

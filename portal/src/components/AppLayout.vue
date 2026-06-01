@@ -77,18 +77,42 @@ function categoryIcon(name: string | null): unknown {
   return categoryIcons[name] ?? fallbackCategoryIcon
 }
 
-// flatNavItems is used by the horizontal bar + floating bar layouts,
-// where vertical space for category headers doesn't exist. Categories
-// are collapsed; every provider shows as a sibling of the static items.
-const flatNavItems = computed<NavItem[]>(() => [
-  ...staticNavItems,
-  providersHeaderItem,
-  ...providersStore.enabledNavItems.map((p) => ({
-    label: p.label,
-    to: p.to,
-    iconURL: p.iconURL,
-  })),
-])
+// horizontalNavSections shape: the horizontal + floating docks need to
+// distinguish what would otherwise be a stream of identical Puzzle
+// icons. Group items by category and render a tiny category chip
+// before each group so the bar reads as "Static | Kubernetes: x y |
+// MCP: z | Other: w" instead of a flat icon parade.
+interface HorizontalSection {
+  key: string
+  label: string | null
+  icon: unknown | null
+  items: NavItem[]
+}
+const horizontalNavSections = computed<HorizontalSection[]>(() => {
+  const sections: HorizontalSection[] = []
+  sections.push({ key: 'static', label: null, icon: null, items: [...staticNavItems] })
+  const cat = providersStore.categorizedNavItems
+  for (const g of cat.groups) {
+    sections.push({
+      key: 'g-' + g.name,
+      label: g.name,
+      icon: categoryIcon(g.icon),
+      items: g.items.map((p) => ({ label: p.label, to: p.to, iconURL: p.iconURL })),
+    })
+  }
+  if (cat.uncategorized.length) {
+    sections.push({
+      key: 'uncat',
+      label: 'Other',
+      icon: fallbackCategoryIcon,
+      items: cat.uncategorized.map((p) => ({ label: p.label, to: p.to, iconURL: p.iconURL })),
+    })
+  }
+  // Providers catalog link goes last so it acts as "+" rather than a
+  // sibling of the items.
+  sections.push({ key: 'catalog', label: null, icon: null, items: [providersHeaderItem] })
+  return sections
+})
 
 // isActive lights up a nav row when the current route matches its target.
 // `exact` opts out of prefix matching for links whose URL is a parent of
@@ -506,19 +530,37 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-      <!-- Nav items -->
-      <router-link
-        v-for="item in flatNavItems"
-        :key="item.to"
-        :to="item.to"
-        class="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-        :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
-      >
-        <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-        <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <span v-if="isActive(item.to)">{{ item.label }}</span>
-      </router-link>
+      <!-- Nav sections: labels always visible, category chips between
+           groups so providers don't all look like Puzzle icons. -->
+      <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
+        <div
+          v-if="section.label"
+          class="ml-1 flex items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
+          :title="section.label"
+        >
+          <component v-if="section.icon" :is="section.icon" class="h-3 w-3 text-text-muted/80" :stroke-width="2" />
+          <span class="text-[8px] font-semibold uppercase tracking-wider text-text-muted/80">
+            {{ section.label }}
+          </span>
+        </div>
+        <router-link
+          v-for="item in section.items"
+          :key="item.to"
+          :to="item.to"
+          class="flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+          :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/40 hover:text-text-secondary'"
+          :title="item.label"
+        >
+          <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+          <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <span>{{ item.label }}</span>
+        </router-link>
+        <div
+          v-if="sIdx < horizontalNavSections.length - 1"
+          class="mx-0.5 h-4 w-px bg-border-default/30"
+        />
+      </template>
 
       <div class="flex-1" />
 
@@ -622,18 +664,35 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-        <router-link
-          v-for="item in flatNavItems"
-          :key="item.to"
-          :to="item.to"
-          class="island-nav flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-          :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
-        >
-          <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
-        <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <span v-if="isActive(item.to)">{{ item.label }}</span>
-        </router-link>
+        <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
+          <div
+            v-if="section.label"
+            class="ml-1 flex items-center gap-1 rounded-md border border-border-subtle/60 bg-surface-overlay/40 px-1.5 py-0.5"
+            :title="section.label"
+          >
+            <component v-if="section.icon" :is="section.icon" class="h-3 w-3 text-text-muted/80" :stroke-width="2" />
+            <span class="text-[8px] font-semibold uppercase tracking-wider text-text-muted/80">
+              {{ section.label }}
+            </span>
+          </div>
+          <router-link
+            v-for="item in section.items"
+            :key="item.to"
+            :to="item.to"
+            class="island-nav flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
+            :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
+            :title="item.label"
+          >
+            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
+            <component v-else-if="item.icon" :is="item.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <Puzzle v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <span>{{ item.label }}</span>
+          </router-link>
+          <div
+            v-if="sIdx < horizontalNavSections.length - 1"
+            class="mx-0.5 h-4 w-px bg-border-default/30"
+          />
+        </template>
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 

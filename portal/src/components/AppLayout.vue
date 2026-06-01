@@ -6,6 +6,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import TerminalDock from '@/components/TerminalDock.vue'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
+import TenantContextChip from '@/components/TenantContextChip.vue'
 import { Hexagon, LayoutDashboard, LogOut, Zap, Sun, Moon, Monitor, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -314,6 +315,13 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
+      <!-- Active org/workspace context. Compact selector + link to the
+           full /tenant settings page. Sits above the static nav so the
+           "where am I" cue is the first thing users see. -->
+      <TenantContextChip variant="sidebar" />
+
+      <div class="mx-2 my-2 h-px bg-border-default/50" />
+
       <!-- Static nav items (Dashboard, Workloads) -->
       <router-link
         v-for="item in staticNavItems"
@@ -493,6 +501,11 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
 
       <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
+      <!-- Tenant context chip (horizontal variant) -->
+      <TenantContextChip variant="horizontal" />
+
+      <div class="mx-0.5 h-5 w-px bg-border-default/40" />
+
       <!-- Nav items -->
       <router-link
         v-for="item in flatNavItems"
@@ -602,6 +615,10 @@ const layoutInsetsStyle = computed<Record<string, string>>(() => {
             <span class="text-[8px] font-semibold uppercase tracking-widest text-success">Live</span>
           </div>
         </div>
+
+        <div class="mx-0.5 h-5 w-px bg-border-default/40" />
+
+        <TenantContextChip variant="horizontal" />
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 

@@ -101,6 +101,17 @@ func main() {
 		}
 	}()
 
+	// Platform controller manager (PR A). Opt-in: when no kubeconfig
+	// is in scope the provider stays in REST-only mode, preserving the
+	// existing dev/stub flow while the new code lands.
+	if err := startControllerManager(ctx); err != nil {
+		if errors.Is(err, errControllerDisabled) {
+			log.Printf("controller manager: disabled (no kubeconfig); set INFRASTRUCTURE_CONTROLLER_KUBECONFIG to enable")
+		} else {
+			log.Printf("controller manager: NOT started: %v", err)
+		}
+	}
+
 	go runHeartbeat(ctx)
 
 	<-ctx.Done()

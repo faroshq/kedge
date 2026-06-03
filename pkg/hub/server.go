@@ -122,7 +122,9 @@ func (s *Server) Run(ctx context.Context) error {
 			BatteriesInclude: batteries,
 			TLSCertFile:      s.opts.KCPTLSCertFile,
 			TLSKeyFile:       s.opts.KCPTLSKeyFile,
-			StaticAuthTokens: s.opts.StaticAuthTokens,
+			ShardExternalURL:         s.opts.KCPShardExternalURL,
+			ShardVirtualWorkspaceURL: s.opts.KCPShardVirtualWorkspaceURL,
+			StaticAuthTokens:         s.opts.StaticAuthTokens,
 			// Wire OIDC into kcp so it can authenticate user tokens forwarded
 			// by the proxy natively. The default username mapping (sub →
 			// "kedge:<sub>") matches User.Spec.RBACIdentity issued by the auth

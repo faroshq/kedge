@@ -33,6 +33,7 @@ import (
 
 	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,10 +70,18 @@ var (
 // content-equal schema reuses its existing name; an already-present
 // resource entry is left alone.
 //
-// Called from controller_manager.go AFTER install.CRDs has placed the
-// CRDs into the apiserver. Errors mean "the binary boot didn't
-// complete" — log + bubble.
-func PlatformSchemaInAPIExport(ctx context.Context, config *rest.Config) error {
+// templatesIdentityHash, when non-empty, switches the
+// templates.infrastructure.kedge.faros.sh entry to use storage.virtual
+// (backed by the CachedResourceEndpointSlice from
+// install/endpointslice.go) so tenants who APIBind see Templates as
+// a read-only projection of the provider workspace. Empty falls back
+// to storage.crd, matching the pre-CachedResource behavior.
+//
+// Called from init_cmd.go AFTER install.CRDs +
+// install.PlatformCachedResources + install.PlatformCachedResourceEndpointSlices +
+// install.WaitForCachedResourceIdentity. Errors mean "the binary boot
+// didn't complete" — log + bubble.
+func PlatformSchemaInAPIExport(ctx context.Context, config *rest.Config, templatesIdentityHash string) error {
 	log := klog.FromContext(ctx).WithName("install.apiexport")
 	dyn, err := dynamic.NewForConfig(config)
 	if err != nil {
@@ -100,18 +109,55 @@ func PlatformSchemaInAPIExport(ctx context.Context, config *rest.Config) error {
 		if err != nil {
 			return fmt.Errorf("ensure APIResourceSchema for %s: %w", crd.Name, err)
 		}
-		if err := ensureAPIExportEntry(ctx, dyn, schemaName, crd.Spec.Names.Plural, crd.Spec.Group); err != nil {
+		storage := storageForResource(crd.Spec.Group, crd.Spec.Names.Plural, templatesIdentityHash)
+		if err := ensureAPIExportEntry(ctx, dyn, schemaName, crd.Spec.Names.Plural, crd.Spec.Group, storage); err != nil {
 			return fmt.Errorf("upsert APIExport entry for %s: %w", crd.Name, err)
 		}
 		processed++
 	}
-	log.Info("platform schemas registered on APIExport", "count", processed, "apiExport", APIExportName)
+	log.Info("platform schemas registered on APIExport",
+		"count", processed,
+		"apiExport", APIExportName,
+		"templatesStorage", storageKindLabel(templatesIdentityHash),
+	)
 	// Anchor on the platform group import so the linter doesn't strip
 	// the dependency the controller package will share once PR B
 	// collapses the two install/controller flows.
 	_ = infrav1alpha1.GroupName
 	return nil
 }
+
+// storageForResource picks the storage type for the APIExport entry.
+// For the platform-owned templates resource we use virtual storage
+// (backed by the CachedResourceEndpointSlice) iff the caller supplied
+// an identity hash; otherwise (and for every other resource) we fall
+// back to CRD storage.
+func storageForResource(group, plural, templatesIdentityHash string) apisv1alpha2.ResourceSchemaStorage {
+	if templatesIdentityHash != "" && group == infrav1alpha1.GroupName && plural == "templates" {
+		return apisv1alpha2.ResourceSchemaStorage{
+			Virtual: &apisv1alpha2.ResourceSchemaStorageVirtual{
+				Reference: corev1.TypedLocalObjectReference{
+					APIGroup: ptrTo("cache.kcp.io"),
+					Kind:     "CachedResourceEndpointSlice",
+					Name:     EndpointSliceTemplatesName,
+				},
+				IdentityHash: templatesIdentityHash,
+			},
+		}
+	}
+	return apisv1alpha2.ResourceSchemaStorage{
+		CRD: &apisv1alpha2.ResourceSchemaStorageCRD{},
+	}
+}
+
+func storageKindLabel(hash string) string {
+	if hash == "" {
+		return "crd"
+	}
+	return "virtual"
+}
+
+func ptrTo[T any](v T) *T { return &v }
 
 // ensureAPIResourceSchema is a near-mirror of the Template
 // controller's helper (controller/template/apiexport.go). Kept
@@ -139,7 +185,7 @@ func ensureAPIResourceSchema(ctx context.Context, dyn dynamic.Interface, crd *ap
 	return schemaObj.Name, nil
 }
 
-func ensureAPIExportEntry(ctx context.Context, dyn dynamic.Interface, schemaName, resource, group string) error {
+func ensureAPIExportEntry(ctx context.Context, dyn dynamic.Interface, schemaName, resource, group string, storage apisv1alpha2.ResourceSchemaStorage) error {
 	export, err := dyn.Resource(apiExportGVR).Get(ctx, APIExportName, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -162,7 +208,7 @@ func ensureAPIExportEntry(ctx context.Context, dyn dynamic.Interface, schemaName
 		}
 	}
 
-	updated := upsertResource(resources, resource, group, schemaName)
+	updated := upsertResource(resources, resource, group, schemaName, storage)
 	if resourcesEqual(resources, updated) {
 		return nil
 	}
@@ -183,7 +229,13 @@ func ensureAPIExportEntry(ctx context.Context, dyn dynamic.Interface, schemaName
 	return nil
 }
 
-func upsertResource(in []apisv1alpha2.ResourceSchema, name, group, schemaName string) []apisv1alpha2.ResourceSchema {
+// upsertResource replaces (or appends) the {group, name} entry. The
+// caller-supplied storage is always preferred over whatever the
+// existing entry carried: that's how the templates resource flips
+// from CRD storage to Virtual storage once the CachedResource is
+// ready, without us having to special-case the storage type at the
+// call site beyond storageForResource.
+func upsertResource(in []apisv1alpha2.ResourceSchema, name, group, schemaName string, storage apisv1alpha2.ResourceSchemaStorage) []apisv1alpha2.ResourceSchema {
 	out := make([]apisv1alpha2.ResourceSchema, 0, len(in)+1)
 	replaced := false
 	for _, r := range in {
@@ -192,7 +244,7 @@ func upsertResource(in []apisv1alpha2.ResourceSchema, name, group, schemaName st
 				Name:    name,
 				Group:   group,
 				Schema:  schemaName,
-				Storage: r.Storage,
+				Storage: storage,
 			})
 			replaced = true
 			continue
@@ -201,23 +253,46 @@ func upsertResource(in []apisv1alpha2.ResourceSchema, name, group, schemaName st
 	}
 	if !replaced {
 		out = append(out, apisv1alpha2.ResourceSchema{
-			Name:   name,
-			Group:  group,
-			Schema: schemaName,
-			Storage: apisv1alpha2.ResourceSchemaStorage{
-				CRD: &apisv1alpha2.ResourceSchemaStorageCRD{},
-			},
+			Name:    name,
+			Group:   group,
+			Schema:  schemaName,
+			Storage: storage,
 		})
 	}
 	return out
 }
 
+// resourcesEqual is deliberately a shallow check on the discriminating
+// fields. Storage is included because the templates flip from CRD →
+// Virtual is a meaningful change we must persist on the apiserver.
 func resourcesEqual(a, b []apisv1alpha2.ResourceSchema) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
 		if a[i].Name != b[i].Name || a[i].Group != b[i].Group || a[i].Schema != b[i].Schema {
+			return false
+		}
+		if !storageEqual(a[i].Storage, b[i].Storage) {
+			return false
+		}
+	}
+	return true
+}
+
+func storageEqual(a, b apisv1alpha2.ResourceSchemaStorage) bool {
+	if (a.CRD == nil) != (b.CRD == nil) {
+		return false
+	}
+	if (a.Virtual == nil) != (b.Virtual == nil) {
+		return false
+	}
+	if a.Virtual != nil && b.Virtual != nil {
+		if a.Virtual.IdentityHash != b.Virtual.IdentityHash {
+			return false
+		}
+		if a.Virtual.Reference.Name != b.Virtual.Reference.Name ||
+			a.Virtual.Reference.Kind != b.Virtual.Reference.Kind {
 			return false
 		}
 	}

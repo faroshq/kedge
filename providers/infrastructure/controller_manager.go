@@ -49,28 +49,34 @@ func startControllerManager(ctx context.Context) error {
 		return err
 	}
 
-	// Install platform CRDs into this workspace. Idempotent. Doing
-	// this before the manager starts means the Template type is
-	// already registered when the controller's informer wakes up.
-	if err := install.CRDs(ctx, config); err != nil {
-		return fmt.Errorf("install CRDs: %w", err)
-	}
-
-	// Register the platform's own CRDs as APIExport resources so
-	// tenants who APIBind see Templates from day one — without
-	// waiting for an operator to apply the first Template. The
-	// Template controller adds per-template resources at runtime
-	// using the same machinery.
-	if err := install.PlatformSchemaInAPIExport(ctx, config); err != nil {
-		return fmt.Errorf("register platform schemas on APIExport: %w", err)
-	}
-
-	// CachedResource projection: makes Templates visible to tenants
-	// in their own workspace via the kcp cache machinery. Without
-	// this, tenants can see the per-template kinds (Redis, Postgres,
-	// …) but not the Template catalog itself. Idempotent.
-	if err := install.PlatformCachedResources(ctx, config); err != nil {
-		return fmt.Errorf("install CachedResources: %w", err)
+	// In the init/serve split (INFRASTRUCTURE_KUBECONFIG set), init has
+	// already done all the high-privilege bootstrap. Serve runs with a
+	// narrow SA that doesn't have all the rights needed to re-apply
+	// CachedResources, so we MUST skip these calls. In the legacy
+	// single-binary mode we still run them so dev clusters that haven't
+	// migrated to init/serve keep working.
+	if os.Getenv("INFRASTRUCTURE_KUBECONFIG") == "" {
+		if err := install.CRDs(ctx, config); err != nil {
+			return fmt.Errorf("install CRDs: %w", err)
+		}
+		// Legacy single-binary path: CachedResource + EndpointSlice
+		// before APIExport so we can use virtual storage for templates.
+		// IdentityHash wait is best-effort; fall back to CRD storage
+		// when it times out so the binary still boots in stub-only mode.
+		if err := install.PlatformCachedResources(ctx, config); err != nil {
+			return fmt.Errorf("install CachedResources: %w", err)
+		}
+		if err := install.PlatformCachedResourceEndpointSlices(ctx, config); err != nil {
+			return fmt.Errorf("install EndpointSlice: %w", err)
+		}
+		hash, err := install.WaitForCachedResourceIdentity(ctx, config)
+		if err != nil {
+			log.Printf("controller manager: WARNING %v — using CRD storage for templates", err)
+			hash = ""
+		}
+		if err := install.PlatformSchemaInAPIExport(ctx, config, hash); err != nil {
+			return fmt.Errorf("register platform schemas on APIExport: %w", err)
+		}
 	}
 
 	mgr, err := manager.New(config, manager.Options{
@@ -114,13 +120,28 @@ func startControllerManager(ctx context.Context) error {
 // loadControllerConfig returns a rest.Config for the workspace the
 // platform controllers target. Looked up in this order:
 //
-//	INFRASTRUCTURE_CONTROLLER_KUBECONFIG  — provider-specific override
+//	INFRASTRUCTURE_KUBECONFIG             — minted SA kubeconfig from `init`
+//	INFRASTRUCTURE_CONTROLLER_KUBECONFIG  — legacy provider-specific override
 //	KUBECONFIG                            — standard env var
 //	in-cluster service account            — when run as a pod
 //
-// Returns errControllerDisabled when none of the three resolve; the
+// The minted path wins because serve mode is supposed to run with
+// the lowest-privilege identity available. If init has already run,
+// INFRASTRUCTURE_KUBECONFIG points at a SA token bound to the
+// narrow ClusterRole in install/identity.go. The remaining entries
+// stay as escape hatches for dev clusters that haven't migrated to
+// the init/serve split.
+//
+// Returns errControllerDisabled when none of the four resolve; the
 // caller logs + continues without the controller.
 func loadControllerConfig() (*rest.Config, error) {
+	if p := os.Getenv("INFRASTRUCTURE_KUBECONFIG"); p != "" {
+		c, err := clientcmd.BuildConfigFromFlags("", p)
+		if err != nil {
+			return nil, fmt.Errorf("INFRASTRUCTURE_KUBECONFIG: %w", err)
+		}
+		return c, nil
+	}
 	if p := os.Getenv("INFRASTRUCTURE_CONTROLLER_KUBECONFIG"); p != "" {
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {

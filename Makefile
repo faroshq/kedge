@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal run-provider-infrastructure install-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -121,6 +121,19 @@ build-infrastructure-provider-portal: ## Build the infrastructure provider's mic
 
 build-infrastructure-provider: build-infrastructure-provider-portal ## Build the infrastructure provider binary (portal embedded)
 	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/infrastructure-provider .
+
+## Generate deepcopy methods + CRD YAML for the infrastructure provider's
+## own API types (providers/infrastructure/apis/v1alpha1/...). The CRDs land
+## under providers/infrastructure/config/crds/ and are embedded into the
+## binary via go:embed — the hub does not install them, the provider does
+## (one of the deliberate self-contained-system properties).
+codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastructure provider's local API
+	@mkdir -p providers/infrastructure/config/crds
+	cd providers/infrastructure && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
+	./hack/ensure-boilerplate.sh
 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
@@ -560,8 +573,8 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry
 		delete -f $(KROMC_MANIFEST)
 
 # --- Management kro cluster (backend for the infrastructure provider) ---
-# Brings up a dedicated kind cluster running the faroshq/infrastructure
-# fork (image + chart published to ghcr.io/faroshq/infrastructure/*),
+# Brings up a dedicated kind cluster running the faroshq/kro-multicluster
+# fork (image + chart published to ghcr.io/faroshq/kro-multicluster/*),
 # configured for multicluster mode per the fork's docs/multicluster-setup.md:
 #
 #   - --enable-multicluster flag turns on the discovery loop
@@ -579,9 +592,9 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry
 #
 KRO_KIND_NAME ?= kedge-kro
 KRO_KIND_KUBECONFIG ?= $(CURDIR)/.kedge-kro.kubeconfig
-KRO_CHART ?= oci://ghcr.io/faroshq/infrastructure/charts/kro/kro
+KRO_CHART ?= oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
 KRO_CHART_VERSION ?= v0.0.1-mc.1
-KRO_IMAGE_REPO ?= ghcr.io/faroshq/infrastructure/kro
+KRO_IMAGE_REPO ?= ghcr.io/faroshq/kro-multicluster/kro
 KRO_IMAGE_TAG ?= v0.0.1-mc.1
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds

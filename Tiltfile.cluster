@@ -28,11 +28,23 @@
 # ---------------------------------------------------------------------------
 
 config.define_string('kcp-dir')
+config.define_string('kcp-image-tag')
 cfg = config.parse()
 
 kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', '/tmp/kcp'))
 kcp_repo = 'https://github.com/kcp-dev/kcp'
 cluster_name = 'kcp-tilt'
+
+# Optional: pin every kcp component (RootShard, Shard, FrontProxy + proxy) to a
+# specific image tag, keeping the kcp-operator's default repositories. The
+# included Tiltfile.static reads KCP_IMAGE_TAG and injects spec.image.tag into
+# the operator CRs. Unset → operator's version-matched defaults.
+# Defaults to "main" (latest kcp build); override to pin a release:
+#   tilt up -f Tiltfile.cluster -- --kcp-image-tag=v0.27.0
+#   KCP_IMAGE_TAG=v0.27.0 tilt up -f Tiltfile.cluster
+kcp_image_tag = cfg.get('kcp-image-tag', os.getenv('KCP_IMAGE_TAG', 'main'))
+if kcp_image_tag:
+    os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
 
 # Clone kcp into the default location if it isn't there yet. A shallow clone is
 # enough — the upstream Tiltfile only needs the source tree to build from.
@@ -62,6 +74,7 @@ allow_k8s_contexts('kind-%s' % cluster_name)
 print('')
 print('Deploying upstream kcp into kind cluster %s' % cluster_name)
 print('  kcp source:     %s' % kcp_dir)
+print('  kcp image tag:  %s' % (kcp_image_tag if kcp_image_tag else '(operator default)'))
 print('  front-proxy:    https://kcp.localhost:8443')
 print('  root shard:     https://root.kcp.localhost:8443')
 print('  theseus shard:  https://theseus.kcp.localhost:8443')
@@ -250,6 +263,68 @@ k8s_resource(
     port_forwards=['9443:9443'],
     resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac'],
     labels=['hub'],
+)
+
+# ---------------------------------------------------------------------------
+# HACK (temporary): static token auth on the front-proxy.
+#
+# The hub/GraphQL gateway forwards the user's bearer token (dev-token) to kcp,
+# but the operator-deployed kcp doesn't trust it → GraphQL "Unauthorized" when
+# listing Edge/VirtualWorkload. The proper fix is kcp-operator PR #240
+# (auth.tokenAuthFile), which needs an operator release. Until then we patch the
+# running front-proxy Deployment directly:
+#   1. create a token CSV Secret. CRITICAL: the token must map to the SAME kcp
+#      identity the hub provisions RBAC for, or you authenticate but get
+#      "access denied". The hub derives a deterministic user from the token
+#      (see pkg/hub/kcp/embedded.go): user = kedge:static:<first16 hex of
+#      sha256("static-token/"+token)>, group system:authenticated. The hub's
+#      proxy then creates that user's tenant workspace and grants it admin
+#      there. We compute the same identity below so the existing RBAC applies.
+#   2. PAUSE the kcp-operator (scale to 0) so it can't revert the Deployment
+#      patch on its next reconcile.
+#   3. JSON-patch frontproxy-front-proxy to mount the CSV + add --token-auth-file
+#      (same mount path/arg PR #240 uses), idempotently.
+#
+# Undo with the 'frontproxy-token-unhack' resource (un-pauses the operator,
+# which then reconciles the patch away).
+# ---------------------------------------------------------------------------
+local_resource(
+    'frontproxy-token-hack',
+    cmd='''
+set -e
+# Derive the hub's static-token identity: kedge:static:<first16 of
+# sha256("static-token/"+token)>, group system:authenticated (see embedded.go).
+TOKEN=dev-token
+HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
+kubectl create secret generic kcp-static-tokens -n default \
+  --from-literal=token.csv="$TOKEN,kedge:static:$HASH,$HASH,system:authenticated" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Pause the operator so it doesn't revert the Deployment patch below.
+kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=0
+
+if kubectl -n default get deploy frontproxy-front-proxy \
+     -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- '--token-auth-file'; then
+  echo "front-proxy already patched"
+else
+  kubectl -n default patch deploy frontproxy-front-proxy --type=json -p '[
+    {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"token-auth-file","secret":{"secretName":"kcp-static-tokens"}}},
+    {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"token-auth-file","readOnly":true,"mountPath":"/etc/kcp/authentication/token"}},
+    {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--token-auth-file=/etc/kcp/authentication/token/token.csv"}
+  ]'
+fi
+kubectl -n default rollout status deploy/frontproxy-front-proxy --timeout=180s
+''',
+    resource_deps=['kcp-admin extract'],
+    labels=['kcp'],
+)
+
+local_resource(
+    'frontproxy-token-unhack',
+    cmd='kubectl -n kcp-operator-system scale deploy/kcp-operator-controller-manager --replicas=1',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['kcp'],
 )
 
 print('  kedge-hub:      https://localhost:9443 (in-cluster, static token: dev-token)')

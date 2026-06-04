@@ -1,0 +1,79 @@
+# Tiltfile.cluster — full-fledged kcp running in a local kind cluster.
+#
+# Unlike the default ./Tiltfile (which runs the kedge hub with an *embedded*
+# kcp as a local process), this one stands up a complete multi-shard kcp the
+# way upstream does: built into images and deployed into a kind cluster, with
+# cert-manager, an Envoy gateway, etcd, the kcp-operator and the observability
+# stack. For now it deploys ONLY kcp — no kedge components yet.
+#
+# It reuses the upstream kcp Tilt setup (kcp/contrib/tilt/Tiltfile) verbatim by
+# importing it as an external Tiltfile:
+#   https://docs.tilt.dev/multiple_repos.html
+# Tilt resolves the included Tiltfile's relative paths and local_resource
+# command working directories against ITS OWN directory (kcp/contrib/tilt), so
+# the upstream `../../cmd/kcp` builds, `./etcd` kustomize, etc. all still work.
+#
+# ---------------------------------------------------------------------------
+# kcp source location
+# ---------------------------------------------------------------------------
+# Point this at a local kcp checkout to iterate against your own kcp tree:
+#
+#   tilt up -f Tiltfile.cluster -- --kcp-dir=/path/to/kcp
+#   KCP_DIR=/path/to/kcp tilt up -f Tiltfile.cluster
+#
+# If unset, it defaults to /tmp/kcp and shallow-clones kcp there on first run.
+# ---------------------------------------------------------------------------
+
+config.define_string('kcp-dir')
+cfg = config.parse()
+
+kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', '/tmp/kcp'))
+kcp_repo = 'https://github.com/kcp-dev/kcp'
+cluster_name = 'kcp-tilt'
+
+# Clone kcp into the default location if it isn't there yet. A shallow clone is
+# enough — the upstream Tiltfile only needs the source tree to build from.
+if not os.path.exists(kcp_dir):
+    print('kcp source not found at %s — cloning %s (shallow)' % (kcp_dir, kcp_repo))
+    local('git clone --depth=1 %s %s' % (kcp_repo, kcp_dir), quiet=False)
+
+kcp_tilt = os.path.join(kcp_dir, 'contrib', 'tilt', 'Tiltfile.static')
+if not os.path.exists(kcp_tilt):
+    fail('expected upstream kcp Tiltfile at %s — is --kcp-dir pointing at a kcp checkout?' % kcp_tilt)
+
+# On macOS the kind nodes are still Linux containers, so the kcp binaries that
+# get baked into images must be cross-compiled. kind.sh does this by exporting
+# GOOS before `tilt up`; we set it here so the upstream `go build` resources
+# (which run in kcp/contrib/tilt) inherit it.
+if str(local('uname -s', quiet=True, echo_off=True)).strip() == 'Darwin':
+    os.putenv('GOOS', 'linux')
+
+# Create the kind cluster up front (parse-time) so the cluster context exists
+# before Tilt applies any of the upstream kcp manifests.
+existing = str(local('kind get clusters', quiet=True, echo_off=True)).split('\n')
+if cluster_name not in existing:
+    print('creating kind cluster %s' % cluster_name)
+    local('kind create cluster --name %s' % cluster_name, quiet=False)
+local('kind export kubeconfig --name %s' % cluster_name, quiet=False)
+
+allow_k8s_contexts('kind-%s' % cluster_name)
+
+print('')
+print('Deploying upstream kcp into kind cluster %s' % cluster_name)
+print('  kcp source:     %s' % kcp_dir)
+print('  front-proxy:    https://kcp.localhost:8443')
+print('  root shard:     https://root.kcp.localhost:8443')
+print('  theseus shard:  https://theseus.kcp.localhost:8443')
+print('  grafana:        http://localhost:3333/')
+print('  prometheus:     http://localhost:9091')
+print('  admin kubeconfigs (tilt-*.kubeconfig) are written into this project dir once kcp is ready')
+print('')
+
+# By default the upstream `kcp-admin extract` script writes tilt-*.kubeconfig to
+# the kcp repo root. It honors KCP_KUBECONFIG_DIR as an override, so we point it
+# at this project's directory and the kubeconfigs land here instead of the kcp
+# tree. os.getcwd() resolves to this (root) Tiltfile's directory.
+os.putenv('KCP_KUBECONFIG_DIR', os.getcwd())
+
+# Pull in the entire upstream kcp Tilt setup.
+include(kcp_tilt)

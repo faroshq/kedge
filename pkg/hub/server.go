@@ -116,12 +116,12 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
-			RootDir:          kcpRootDir,
-			SecurePort:       s.opts.KCPSecurePort,
-			BindAddress:      s.opts.KCPBindAddress,
-			BatteriesInclude: batteries,
-			TLSCertFile:      s.opts.KCPTLSCertFile,
-			TLSKeyFile:       s.opts.KCPTLSKeyFile,
+			RootDir:                  kcpRootDir,
+			SecurePort:               s.opts.KCPSecurePort,
+			BindAddress:              s.opts.KCPBindAddress,
+			BatteriesInclude:         batteries,
+			TLSCertFile:              s.opts.KCPTLSCertFile,
+			TLSKeyFile:               s.opts.KCPTLSKeyFile,
 			ShardExternalURL:         s.opts.KCPShardExternalURL,
 			ShardVirtualWorkspaceURL: s.opts.KCPShardVirtualWorkspaceURL,
 			StaticAuthTokens:         s.opts.StaticAuthTokens,

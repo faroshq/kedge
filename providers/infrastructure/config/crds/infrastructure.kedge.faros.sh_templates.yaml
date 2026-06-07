@@ -108,6 +108,14 @@ spec:
                   "Other" bucket.
                 maxLength: 64
                 type: string
+              cloud:
+                description: |-
+                  Cloud identifies the target environment for catalog filtering
+                  (for example "k8s", "gcp", "aws", or "azure"). Empty means
+                  the template is not cloud-specific.
+                maxLength: 64
+                pattern: ^[a-z][a-z0-9-]*$
+                type: string
               description:
                 description: |-
                   Description is one to three sentences shown beneath the

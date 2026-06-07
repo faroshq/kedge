@@ -6,6 +6,7 @@ spec:
   displayName: "Redis cache"
   description: "A Redis instance for caching workloads. StatefulSet + Service; size knob picks the memory limit."
   category: Databases
+  cloud: k8s
   version: 0.1.0
   backend: kro
   instanceCRD:

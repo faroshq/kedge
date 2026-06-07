@@ -1,0 +1,84 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: gcp-cloud-run-service
+spec:
+  displayName: "Cloud Run service"
+  description: "A public Google Cloud Run service reconciled by Config Connector."
+  category: Serverless
+  cloud: gcp
+  version: 0.1.0
+  backend: kro
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: cloudrunservices
+    kind: CloudRunService
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Cloud Run service name."
+        pattern: "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+      projectID:
+        type: string
+        description: "Google Cloud project ID."
+      region:
+        type: string
+        default: "us-central1"
+      image:
+        type: string
+        default: "gcr.io/cloudrun/hello"
+      port:
+        type: integer
+        default: 8080
+        minimum: 1
+        maximum: 65535
+      ingress:
+        type: string
+        enum: ["INGRESS_TRAFFIC_ALL", "INGRESS_TRAFFIC_INTERNAL_ONLY", "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"]
+        default: "INGRESS_TRAFFIC_ALL"
+    required:
+      - name
+      - projectID
+  backendConfig:
+    resources:
+      - id: service
+        template:
+          apiVersion: run.cnrm.cloud.google.com/v1beta1
+          kind: RunService
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            ingress: ${schema.spec.ingress}
+            launchStage: GA
+            location: ${schema.spec.region}
+            projectRef:
+              external: projects/${schema.spec.projectID}
+            template:
+              containers:
+                - image: ${schema.spec.image}
+                  ports:
+                    - containerPort: ${schema.spec.port}
+            traffic:
+              - percent: 100
+                type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
+      - id: publicInvoker
+        template:
+          apiVersion: iam.cnrm.cloud.google.com/v1beta1
+          kind: IAMPolicyMember
+          metadata:
+            name: ${schema.spec.name}-public-invoker
+            namespace: default
+          spec:
+            member: allUsers
+            role: roles/run.invoker
+            resourceRef:
+              apiVersion: run.cnrm.cloud.google.com/v1beta1
+              kind: RunService
+              name: ${service.metadata.name}
+    status:
+      url: ${service.status.url}
+      conditions: ${service.status.conditions}

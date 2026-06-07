@@ -93,6 +93,14 @@ type TemplateSpec struct {
 	// +kubebuilder:validation:MaxLength=64
 	Category string `json:"category,omitempty"`
 
+	// Cloud identifies the target environment for catalog filtering
+	// (for example "k8s", "gcp", "aws", or "azure"). Empty means
+	// the template is not cloud-specific.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*$`
+	Cloud string `json:"cloud,omitempty"`
+
 	// Version pins the Template definition's revision. Required by
 	// the per-template CRD's served version selection and by
 	// instance-create-time consistency checks.

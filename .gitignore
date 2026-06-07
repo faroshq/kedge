@@ -39,6 +39,8 @@ _artifacts/
 pkg/hub/portal/
 portal/dist/
 portal/node_modules/
+providers/infrastructure/portal/dist/
+providers/infrastructure/portal/node_modules/
 
 # Data dirs
 data/
@@ -68,3 +70,4 @@ edge-kubeconfig
 .env.edge.server
 .env.edge.kubernetes
 values.yaml
+.secrets/

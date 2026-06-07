@@ -11,10 +11,15 @@ You may obtain a copy of the License at
 package kro
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	infrav1alpha1 "github.com/faroshq/faros-kedge/providers/infrastructure/apis/v1alpha1"
 )
@@ -132,4 +137,109 @@ func TestBuildRGDRequiresBackendConfig(t *testing.T) {
 	if _, err := buildRGD(tmpl); err == nil {
 		t.Fatal("expected error when backendConfig is missing")
 	}
+}
+
+func TestBuildRGDFromCloudRunSeedTemplate(t *testing.T) {
+	tmpl := loadSeedTemplate(t, "../../install/templates/gcp-cloud-run-service.yaml")
+	rgd, err := buildRGD(tmpl)
+	if err != nil {
+		t.Fatalf("buildRGD: %v", err)
+	}
+
+	assertNested := func(want string, fields ...string) {
+		got, found, err := unstructured.NestedString(rgd.Object, fields...)
+		if err != nil || !found {
+			t.Fatalf("%v: not found (err=%v)", fields, err)
+		}
+		if got != want {
+			t.Fatalf("%v = %q, want %q", fields, got, want)
+		}
+	}
+	assertNested("CloudRunService", "spec", "schema", "kind")
+	assertNested("infrastructure.kedge.faros.sh", "spec", "schema", "group")
+
+	resources, found, err := unstructured.NestedSlice(rgd.Object, "spec", "resources")
+	if err != nil || !found {
+		t.Fatalf("spec.resources: found=%v err=%v", found, err)
+	}
+	if len(resources) != 2 {
+		t.Fatalf("resources len = %d, want 2", len(resources))
+	}
+
+	kinds := map[string]bool{}
+	for _, res := range resources {
+		rm, ok := res.(map[string]any)
+		if !ok {
+			t.Fatalf("resource is %T, want map", res)
+		}
+		tm, ok := rm["template"].(map[string]any)
+		if !ok {
+			t.Fatalf("template is %T, want map", rm["template"])
+		}
+		apiVersion, _ := tm["apiVersion"].(string)
+		kind, _ := tm["kind"].(string)
+		kinds[apiVersion+"/"+kind] = true
+	}
+	if !kinds["run.cnrm.cloud.google.com/v1beta1/RunService"] {
+		t.Fatalf("missing RunService resource: %v", kinds)
+	}
+	if !kinds["iam.cnrm.cloud.google.com/v1beta1/IAMPolicyMember"] {
+		t.Fatalf("missing IAMPolicyMember resource: %v", kinds)
+	}
+	assertNested("${service.status.url}", "spec", "schema", "status", "url")
+}
+
+func loadSeedTemplate(t *testing.T, path string) *infrav1alpha1.Template {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed template: %v", err)
+	}
+	var obj map[string]any
+	if err := utilyaml.Unmarshal(raw, &obj); err != nil {
+		t.Fatalf("unmarshal seed template: %v", err)
+	}
+	name, _, _ := unstructured.NestedString(obj, "metadata", "name")
+	if name == "" {
+		t.Fatal("seed template missing metadata.name")
+	}
+	schemaRaw, err := marshalNested(obj, "spec", "schema")
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	backendConfigRaw, err := marshalNested(obj, "spec", "backendConfig")
+	if err != nil {
+		t.Fatalf("backendConfig: %v", err)
+	}
+	group, _, _ := unstructured.NestedString(obj, "spec", "instanceCRD", "group")
+	version, _, _ := unstructured.NestedString(obj, "spec", "instanceCRD", "version")
+	resource, _, _ := unstructured.NestedString(obj, "spec", "instanceCRD", "resource")
+	kind, _, _ := unstructured.NestedString(obj, "spec", "instanceCRD", "kind")
+	templateVersion, _, _ := unstructured.NestedString(obj, "spec", "version")
+
+	return &infrav1alpha1.Template{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: infrav1alpha1.TemplateSpec{
+			Version: templateVersion,
+			InstanceCRD: infrav1alpha1.TemplateInstanceCRD{
+				Group:    group,
+				Version:  version,
+				Resource: resource,
+				Kind:     kind,
+			},
+			Schema:        &runtime.RawExtension{Raw: schemaRaw},
+			BackendConfig: &runtime.RawExtension{Raw: backendConfigRaw},
+		},
+	}
+}
+
+func marshalNested(obj map[string]any, fields ...string) ([]byte, error) {
+	nested, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("missing %v", fields)
+	}
+	return json.Marshal(nested)
 }

@@ -152,6 +152,32 @@ local_resource(
 )
 
 local_resource(
+    'config-connector-up',
+    cmd='make dev-config-connector-up',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kro-mgmt-up'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'config-connector-status',
+    cmd='make dev-config-connector-status',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kro-mgmt-up'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'config-connector-down',
+    cmd='make dev-config-connector-down',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
+local_resource(
     'infrastructure',
     cmd='make build-infrastructure-provider',
     serve_cmd='make run-provider-infrastructure',

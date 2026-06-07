@@ -6,6 +6,7 @@ spec:
   displayName: "Simple webapp"
   description: "A web application — Deployment + Service, nginx by default. Scales via the replicas input."
   category: Workloads
+  cloud: k8s
   version: 0.1.0
   backend: kro
   instanceCRD:

@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal run-provider-quickstart install-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self dev-config-connector-up dev-config-connector-down dev-config-connector-status e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -660,6 +660,10 @@ KRO_IMAGE_REPO ?= ghcr.io/faroshq/kro-multicluster/kro
 KRO_IMAGE_TAG ?= v0.0.1-mc.6
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
+CONFIG_CONNECTOR_BUNDLE_URI ?= gs://configconnector-operator/latest/release-bundle.tar.gz
+CONFIG_CONNECTOR_KUBECONFIG ?= $(if $(KRO_TARGET_KUBECONFIG),$(KRO_TARGET_KUBECONFIG),$(KRO_KIND_KUBECONFIG))
+CONFIG_CONNECTOR_NAMESPACE ?= cnrm-system
+CONFIG_CONNECTOR_SECRET_NAME ?= kcc-gcp-key
 
 ## Bring up the management kro cluster + install kro (fork w/ multicluster) +
 ## register the cluster as a self-member + seed RGDs. Idempotent: re-running
@@ -822,6 +826,76 @@ dev-kro-down-into: ## Helm-uninstall kro from $KRO_TARGET_KUBECONFIG cluster
 	@test -n "$(KRO_TARGET_KUBECONFIG)" || { echo "KRO_TARGET_KUBECONFIG not set"; exit 1; }
 	-KUBECONFIG=$(KRO_TARGET_KUBECONFIG) helm uninstall kro -n $(KRO_NAMESPACE)
 	-KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl delete namespace $(KRO_NAMESPACE) --wait=false
+
+## Install Config Connector into the kro runtime cluster. This is manual in
+## Tilt because it imports a local GCP service-account key into the cluster.
+dev-config-connector-up: ## Install Config Connector; requires CONFIG_CONNECTOR_KEY_FILE=/path/to/key.json
+	@command -v gcloud >/dev/null || { echo "gcloud not found; install the Google Cloud SDK"; exit 1; }
+	@command -v kubectl >/dev/null || { echo "kubectl not found"; exit 1; }
+	@test -n "$(CONFIG_CONNECTOR_KUBECONFIG)" || { echo "CONFIG_CONNECTOR_KUBECONFIG not set"; exit 1; }
+	@test -f "$(CONFIG_CONNECTOR_KUBECONFIG)" || { echo "no kubeconfig at $(CONFIG_CONNECTOR_KUBECONFIG)"; exit 1; }
+	@test -n "$(CONFIG_CONNECTOR_KEY_FILE)" || { echo "CONFIG_CONNECTOR_KEY_FILE must point at a local service-account key named/imported as key.json"; exit 1; }
+	@test -f "$(CONFIG_CONNECTOR_KEY_FILE)" || { echo "no key file at $(CONFIG_CONNECTOR_KEY_FILE)"; exit 1; }
+	@echo ">>> ensuring $(CONFIG_CONNECTOR_NAMESPACE) namespace"
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl create namespace $(CONFIG_CONNECTOR_NAMESPACE) \
+		--dry-run=client -o yaml | KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl apply -f -
+	@echo ">>> importing Config Connector service-account key into $(CONFIG_CONNECTOR_NAMESPACE)/$(CONFIG_CONNECTOR_SECRET_NAME)"
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl -n $(CONFIG_CONNECTOR_NAMESPACE) create secret generic $(CONFIG_CONNECTOR_SECRET_NAME) \
+		--from-file=key.json="$(CONFIG_CONNECTOR_KEY_FILE)" \
+		--dry-run=client -o yaml | KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl apply -f -
+	@echo ">>> downloading and applying Config Connector operator"
+	@tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	gcloud storage cp $(CONFIG_CONNECTOR_BUNDLE_URI) "$$tmpdir/release-bundle.tar.gz"; \
+	tar -xzf "$$tmpdir/release-bundle.tar.gz" -C "$$tmpdir"; \
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl apply -f "$$tmpdir/operator-system/configconnector-operator.yaml"
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl wait --for=condition=Established crd/configconnectors.core.cnrm.cloud.google.com --timeout=120s
+	@echo ">>> configuring Config Connector in cluster mode"
+	@printf '%s\n' \
+		'apiVersion: core.cnrm.cloud.google.com/v1beta1' \
+		'kind: ConfigConnector' \
+		'metadata:' \
+		'  name: configconnector.core.cnrm.cloud.google.com' \
+		'spec:' \
+		'  mode: cluster' \
+		'  credentialSecretName: $(CONFIG_CONNECTOR_SECRET_NAME)' \
+		'  stateIntoSpec: Absent' | KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl apply -f -
+	@echo ">>> waiting for Config Connector pods and Google Cloud CRDs"
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl wait -n $(CONFIG_CONNECTOR_NAMESPACE) --for=condition=Ready pod --all --timeout=300s
+	@for crd in runservices.run.cnrm.cloud.google.com iampolicymembers.iam.cnrm.cloud.google.com; do \
+		for i in $$(seq 1 60); do \
+			if KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl get crd $$crd >/dev/null 2>&1; then \
+				break; \
+			fi; \
+			if [ "$$i" -eq 60 ]; then \
+				echo "timed out waiting for $$crd"; \
+				exit 1; \
+			fi; \
+			sleep 5; \
+		done; \
+		KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl wait --for=condition=Established crd/$$crd --timeout=300s; \
+	done
+	@echo ">>> Config Connector ready"
+
+dev-config-connector-status: ## Show Config Connector status in the kro runtime cluster
+	@test -n "$(CONFIG_CONNECTOR_KUBECONFIG)" || { echo "CONFIG_CONNECTOR_KUBECONFIG not set"; exit 1; }
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl get configconnector configconnector.core.cnrm.cloud.google.com -o wide
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl -n $(CONFIG_CONNECTOR_NAMESPACE) get pods
+	KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl get crd runservices.run.cnrm.cloud.google.com iampolicymembers.iam.cnrm.cloud.google.com
+
+dev-config-connector-down: ## Uninstall Config Connector from the kro runtime cluster
+	@test -n "$(CONFIG_CONNECTOR_KUBECONFIG)" || { echo "CONFIG_CONNECTOR_KUBECONFIG not set"; exit 1; }
+	-KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl delete ConfigConnector configconnector.core.cnrm.cloud.google.com --wait=true
+	@if command -v gcloud >/dev/null; then \
+		tmpdir=$$(mktemp -d); \
+		trap 'rm -rf "$$tmpdir"' EXIT; \
+		gcloud storage cp $(CONFIG_CONNECTOR_BUNDLE_URI) "$$tmpdir/release-bundle.tar.gz" && \
+		tar -xzf "$$tmpdir/release-bundle.tar.gz" -C "$$tmpdir" && \
+		KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl delete -f "$$tmpdir/operator-system/configconnector-operator.yaml" --wait=true || true; \
+	else \
+		echo "gcloud not found; skipping operator manifest delete"; \
+	fi
+	-KUBECONFIG=$(CONFIG_CONNECTOR_KUBECONFIG) kubectl delete namespace $(CONFIG_CONNECTOR_NAMESPACE) --wait=false
 
 dev-status: ## Show status of dev services (dex, kcp)
 	@source $(SERVICE_HOOKS) && list_services

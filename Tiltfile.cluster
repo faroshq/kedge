@@ -528,6 +528,35 @@ local_resource(
 )
 
 local_resource(
+    'config-connector-up',
+    cmd='CONFIG_CONNECTOR_KUBECONFIG={kc} make dev-config-connector-up'.format(
+        kc=KIND_HOST_KUBECONFIG),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kro-mgmt-up'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'config-connector-status',
+    cmd='CONFIG_CONNECTOR_KUBECONFIG={kc} make dev-config-connector-status'.format(
+        kc=KIND_HOST_KUBECONFIG),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kro-mgmt-up'],
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'config-connector-down',
+    cmd='CONFIG_CONNECTOR_KUBECONFIG={kc} make dev-config-connector-down'.format(
+        kc=KIND_HOST_KUBECONFIG),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
+local_resource(
     'infrastructure',
     cmd='make build-infrastructure-provider',
     # Point KRO_KUBECONFIG at the same kind cluster's host kubeconfig (where

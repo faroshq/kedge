@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // infrastructure is a kedge provider that brokers application
 // templates from a central kro (Kube Resource Orchestrator) cluster
@@ -15,14 +15,13 @@
 //
 //   - /, /main.js, /icon.svg, /assets/*  — embedded Vite bundle
 //   - /healthz                           — liveness; gates BackendHealthy
-//   - /api/templates[/{name}]            — catalog (phase 2)
-//   - /api/instances[/{name}]            — broker writes/reads (phase 3)
-//   - /mcp, /mcp/sse                     — MCP transport (phase 4)
+//   - /mcp, /mcp/sse                     — MCP transport
 //
-// Identity threading: requests arrive via the hub backend proxy with
-// X-Kedge-Tenant + X-Kedge-User pre-injected (see pkg/hub/providers/
-// proxy.go + pkg/hub/provider_tenant_resolver.go). The provider trusts
-// those headers blindly; spoof-resistance lives in the proxy.
+// Templates and instances are NOT served as REST here: the portal and
+// tenants drive them as CRDs directly against kcp
+// (templates.infrastructure.kedge.faros.sh + the per-template instance
+// kinds), projected to tenant workspaces via the CachedResource +
+// APIExport. The MCP surface keeps its own kro.Client.
 package main
 
 import (
@@ -36,7 +35,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/faroshq/faros-kedge/providers/infrastructure/kro"
 	"github.com/faroshq/faros-kedge/providers/infrastructure/mcpserver"
 	"github.com/faroshq/faros-kedge/providers/infrastructure/server"
 	"github.com/faroshq/faros-kedge/providers/infrastructure/tenant"
@@ -44,19 +42,19 @@ import (
 
 // Subcommands:
 //
-//   infrastructure-provider init
-//       One-shot bootstrap with admin credentials. Seeds the provider's
-//       kcp workspace: installs CRDs, registers APIExport schemas,
-//       creates the CachedResource projection, mints a ServiceAccount
-//       + RBAC + bearer, writes a kubeconfig the runtime mode reads,
-//       and seeds the kro install with a Secret pointing at the
-//       APIExport virtual workspace. Exits when done.
+//	infrastructure-provider init
+//	    One-shot bootstrap with admin credentials. Seeds the provider's
+//	    kcp workspace: installs CRDs, registers APIExport schemas,
+//	    creates the CachedResource projection, mints a ServiceAccount
+//	    + RBAC + bearer, writes a kubeconfig the runtime mode reads,
+//	    and seeds the kro install with a Secret pointing at the
+//	    APIExport virtual workspace. Exits when done.
 //
-//   infrastructure-provider serve  (default if no subcommand)
-//       Runtime. Reads the minted kubeconfig from INFRASTRUCTURE_KUBECONFIG
-//       (or the legacy INFRASTRUCTURE_CONTROLLER_KUBECONFIG fallback) and
-//       starts the REST + portal + MCP server, plus the platform
-//       controller manager. Does NOT need admin credentials.
+//	infrastructure-provider serve  (default if no subcommand)
+//	    Runtime. Reads the minted kubeconfig from INFRASTRUCTURE_KUBECONFIG
+//	    (or the legacy INFRASTRUCTURE_CONTROLLER_KUBECONFIG fallback) and
+//	    starts the REST + portal + MCP server, plus the platform
+//	    controller manager. Does NOT need admin credentials.
 //
 // The split lets dev clusters run init once (Makefile target) and
 // keeps the long-lived process scoped to the minted SA's grants.
@@ -105,13 +103,6 @@ func runServe() {
 		port = "8081"
 	}
 
-	// kro client: real cluster when KRO_KUBECONFIG is set, baked-in
-	// stub otherwise. The stub keeps phase 2 demoable without infra.
-	kroClient, err := kro.NewClient()
-	if err != nil {
-		log.Fatalf("kro client: %v", err)
-	}
-
 	// Tenant kcp client factory. Optional in dev — if the
 	// kedge-provider-kubeconfig Secret isn't mounted (e.g. running
 	// the binary outside the hub flow), broker writes that require
@@ -125,7 +116,6 @@ func runServe() {
 	}
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Kro:    kroClient,
 		Tenant: tenantFactory,
 	})
 
@@ -135,8 +125,6 @@ func runServe() {
 	}
 
 	srv := server.New(server.Deps{
-		Kro:              kroClient,
-		Tenant:           tenantFactory,
 		MCP:              mcpHandler,
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,
@@ -153,7 +141,7 @@ func runServe() {
 	defer stop()
 
 	go func() {
-		log.Printf("infrastructure provider listening on :%s (kro=%T tenant=%v mcp=true)", port, kroClient, tenantFactory != nil)
+		log.Printf("infrastructure provider listening on :%s (tenant=%v mcp=true)", port, tenantFactory != nil)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
 		}

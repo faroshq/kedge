@@ -103,20 +103,17 @@ func runServe() {
 		port = "8081"
 	}
 
-	// Tenant kcp client factory. Optional in dev — if the
-	// kedge-provider-kubeconfig Secret isn't mounted (e.g. running
-	// the binary outside the hub flow), broker writes that require
-	// cloud-credentials will fail with a clear error rather than
-	// silently dropping creds.
-	var tenantFactory *tenant.ClientFactory
-	if tf, terr := tenant.NewClientFactory(); terr == nil {
-		tenantFactory = tf
-	} else {
-		log.Printf("tenant factory disabled (no kedge-provider-kubeconfig at expected path): %v", terr)
+	// Load the provider's kcp connection once and share it: the controller
+	// manager uses it directly, and the MCP tenant client borrows only its
+	// host + TLS (every tenant request authenticates with the CALLER's own
+	// bearer token — no provider-wide identity). nil config => REST-only dev.
+	kcpConfig, kcpErr := loadControllerConfig()
+	if kcpErr != nil {
+		log.Printf("kcp config unavailable (%v); tenant MCP tools + controller manager disabled", kcpErr)
 	}
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tenant: tenantFactory,
+		Tenant: tenant.NewClientFactory(kcpConfig),
 	})
 
 	fileServer, distFS, err := portalHandler()
@@ -141,7 +138,7 @@ func runServe() {
 	defer stop()
 
 	go func() {
-		log.Printf("infrastructure provider listening on :%s (tenant=%v mcp=true)", port, tenantFactory != nil)
+		log.Printf("infrastructure provider listening on :%s (tenant=%v mcp=true)", port, kcpConfig != nil)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
 		}
@@ -150,7 +147,7 @@ func runServe() {
 	// Platform controller manager (PR A). Opt-in: when no kubeconfig
 	// is in scope the provider stays in REST-only mode, preserving the
 	// existing dev/stub flow while the new code lands.
-	if err := startControllerManager(ctx); err != nil {
+	if err := startControllerManager(ctx, kcpConfig); err != nil {
 		if errors.Is(err, errControllerDisabled) {
 			log.Printf("controller manager: disabled (no kubeconfig); set INFRASTRUCTURE_CONTROLLER_KUBECONFIG to enable")
 		} else {

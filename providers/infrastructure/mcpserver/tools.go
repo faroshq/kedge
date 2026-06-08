@@ -21,18 +21,22 @@ import (
 	"github.com/faroshq/faros-kedge/providers/infrastructure/kro"
 )
 
-// tenantClient resolves the caller's tenant-scoped kcp dynamic client. All
-// catalog + instance work is CRD-based against the tenant workspace (the same
-// surface the portal drives), so every tool needs both an identity and the
-// tenant client factory.
+// tenantClient resolves a tenant-scoped kcp dynamic client that acts AS THE
+// CALLER. All catalog + instance work is CRD-based against the tenant
+// workspace (the same surface the portal drives), authenticated with the
+// caller's own bearer token — there is no provider-wide identity, so every
+// action is authorized by the caller's RBAC in their workspace.
 func tenantClient(deps Deps, ident identity) (dynamic.Interface, error) {
 	if ident.tenantPath == "" {
 		return nil, errors.New("no tenant identity on this request — bearer token did not resolve to a workspace")
 	}
-	if deps.Tenant == nil {
-		return nil, errors.New("tenant client unavailable (provider kubeconfig not mounted)")
+	if ident.token == "" {
+		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")
 	}
-	return deps.Tenant.For(ident.tenantPath)
+	if deps.Tenant == nil {
+		return nil, errors.New("tenant client unavailable (INFRASTRUCTURE_KUBECONFIG not set)")
+	}
+	return deps.Tenant.For(ident.tenantPath, ident.token)
 }
 
 // Tool input / output structs. Field tags inform the SDK's

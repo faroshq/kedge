@@ -27,11 +27,11 @@ import (
 )
 
 var (
-	catalogEntryGVR  = schema.GroupVersionResource{Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
-	apiExportGVR     = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
-	cachedResGVR     = schema.GroupVersionResource{Group: "cache.kcp.io", Version: "v1alpha1", Resource: "cachedresources"}
-	templatesGVR     = schema.GroupVersionResource{Group: infraGroup, Version: "v1alpha1", Resource: "templates"}
-	cachedTemplates  = "publish-templates"
+	catalogEntryGVR   = schema.GroupVersionResource{Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
+	apiExportGVR      = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
+	cachedResGVR      = schema.GroupVersionResource{Group: "cache.kcp.io", Version: "v1alpha1", Resource: "cachedresources"}
+	templatesGVR      = schema.GroupVersionResource{Group: infraGroup, Version: "v1alpha1", Resource: "templates"}
+	cachedTemplates   = "publish-templates"
 	wantTemplateNames = []string{"redis-cache", "simple-webapp"}
 )
 

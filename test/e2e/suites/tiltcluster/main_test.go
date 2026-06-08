@@ -43,10 +43,11 @@ import (
 	"strings"
 	"time"
 
+	"testing"
+
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"testing"
 )
 
 // Suite-shared state, populated by TestMain.
@@ -68,11 +69,11 @@ var (
 const (
 	// providerName is the slug the infrastructure provider registers under;
 	// the MCP aggregate federates its tools as "<providerName>__<tool>".
-	providerName        = "infrastructure"
-	providerWorkspace   = "root:kedge:providers:infrastructure"
-	providersWorkspace  = "root:kedge:providers"
-	infraGroup          = "infrastructure.kedge.faros.sh"
-	infraAPIExportName  = "infrastructure.providers.kedge.faros.sh"
+	providerName       = "infrastructure"
+	providerWorkspace  = "root:kedge:providers:infrastructure"
+	providersWorkspace = "root:kedge:providers"
+	infraGroup         = "infrastructure.kedge.faros.sh"
+	infraAPIExportName = "infrastructure.providers.kedge.faros.sh"
 )
 
 func TestMain(m *testing.M) {

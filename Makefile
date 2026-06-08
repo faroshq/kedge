@@ -847,6 +847,7 @@ dev-kro-up-into: ## Install kro into an existing cluster ($KRO_TARGET_KUBECONFIG
 		--set multicluster.provider=kcp-apiexport \
 		--set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
 		--set multicluster.kcp.apiExportEndpointSlice=infrastructure \
+		--set controller.deployToLocalRuntime=true \
 		--timeout 5m
 	@# kro pods need to resolve kcp.localhost/root.kcp.localhost/theseus.kcp.localhost
 	@# (which the operator-issued kubeconfigs bake in) to the envoy gateway

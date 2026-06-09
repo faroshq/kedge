@@ -128,10 +128,45 @@ jobs:
             exit 1
           }
 
+          # `tilt wait` errors "not found" if a resource isn't registered yet
+          # (the Tiltfile is still loading), so use our own poller that waits for
+          # the resource to APPEAR and reach a ready status (and bails on error
+          # or if tilt dies). Shared with the register/init step via a sourced
+          # helper file.
+          cat > "${GITHUB_WORKSPACE}/tilt-helpers.sh" <<'SH'
+          wait_resource() {
+            local name="$1" timeout="$2" upd run deadline last=""
+            deadline=$(( $(date +%s) + timeout ))
+            echo "waiting for tilt resource '$name' (<= ${timeout}s)"
+            while :; do
+              if [ -f "${GITHUB_WORKSPACE}/tilt.pid" ] && ! kill -0 "$(cat "${GITHUB_WORKSPACE}/tilt.pid")" 2>/dev/null; then
+                echo "tilt process exited unexpectedly; tail of log:"; tail -n 80 "${GITHUB_WORKSPACE}/tilt-up.log" || true; return 1
+              fi
+              json=$(tilt get uiresource "$name" -o json 2>/dev/null || true)
+              upd=$(printf '%s' "$json" | jq -r '.status.updateStatus // empty' 2>/dev/null || true)
+              run=$(printf '%s' "$json" | jq -r '.status.runtimeStatus // empty' 2>/dev/null || true)
+              if [ "$upd $run" != "$last" ]; then echo "  $name: update=${upd:-<none>} runtime=${run:-<none>}"; last="$upd $run"; fi
+              if [ "$upd" = "error" ] || [ "$run" = "error" ]; then
+                echo "resource '$name' entered error state"; return 1
+              fi
+              if [ "$upd" = "ok" ] && { [ "$run" = "ok" ] || [ "$run" = "not_applicable" ] || [ "$run" = "none" ]; }; then
+                echo "resource '$name' is ready (update=$upd runtime=$run)"; return 0
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "timeout waiting for '$name' (update=${upd:-<none>} runtime=${run:-<none>})"; return 1
+              fi
+              sleep 5
+            done
+          }
+          SH
+          source "${GITHUB_WORKSPACE}/tilt-helpers.sh"
+
           echo "Waiting for the kcp + hub + provider stack to become Ready..."
-          tilt wait --timeout 30m --for=condition=Ready uiresource/kedge-hub
-          tilt wait --timeout 10m --for=condition=Ready uiresource/kro-mgmt-up
-          tilt wait --timeout 10m --for=condition=Ready uiresource/infrastructure
+          # Generous: covers Tiltfile load (cert-manager/operator/kcp install) +
+          # hub image build + in-cluster deploy before kedge-hub even appears.
+          wait_resource kedge-hub 1800
+          wait_resource kro-mgmt-up 600
+          wait_resource infrastructure 600
 
       # The provider's CatalogEntry registration + workspace bootstrap are MANUAL
       # Tilt resources in local dev (devs click ▶). In CI we trigger them and
@@ -142,14 +177,17 @@ jobs:
         working-directory: kedge
         run: |
           set -euo pipefail
+          source "${GITHUB_WORKSPACE}/tilt-helpers.sh"
+
           tilt trigger infrastructure-register
-          tilt wait --timeout 5m --for=condition=Ready uiresource/infrastructure-register
+          wait_resource infrastructure-register 300
 
           tilt trigger infrastructure-init
-          tilt wait --timeout 5m --for=condition=Ready uiresource/infrastructure-init
+          wait_resource infrastructure-init 300
 
           # Provider restarts on the runtime-kubeconfig write; wait for it back.
-          tilt wait --timeout 5m --for=condition=Ready uiresource/infrastructure
+          # (The CatalogEntry reconcile gate below is the real readiness check.)
+          wait_resource infrastructure 300
 
       # The suite reads kcp state directly and fails fast (no Eventually/retry),
       # so block until kcp has actually reconciled the provider's CatalogEntry to

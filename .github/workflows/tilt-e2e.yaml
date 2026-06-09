@@ -177,6 +177,45 @@ jobs:
           wait_resource kro-mgmt-up 600
           wait_resource infrastructure 600
 
+      # Host-side access to kcp goes through the envoy gateway on
+      # kcp.localhost:8443. Upstream kcp's Tilt `ingress` resource
+      # (contrib/tilt/port-forward.bash) is supposed to provide that forward,
+      # but it's racy on CI — its `kubectl wait gateway/eg --for=create` can hit
+      # "the server doesn't have a resource type gateway" before the Gateway CRD
+      # is established, leaving nothing on :8443. The host-side kubectl
+      # (register/init) AND the e2e suite both need kcp.localhost:8443, so run
+      # our own self-healing port-forward to the gateway service instead.
+      - name: Port-forward the kcp gateway to localhost:8443
+        working-directory: kedge
+        run: |
+          set -euo pipefail
+          echo "waiting for the envoy gateway service..."
+          svc=""
+          for i in $(seq 1 60); do
+            svc=$(kubectl -n envoy-gateway-system get svc \
+              -l gateway.envoyproxy.io/owning-gateway-name=eg \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            [ -n "$svc" ] && break
+            sleep 5
+          done
+          [ -n "$svc" ] || { echo "envoy gateway service never appeared"; kubectl -n envoy-gateway-system get svc || true; exit 1; }
+          echo "envoy gateway service: $svc"
+
+          # Self-healing: kubectl port-forward can drop; the wrapper reconnects
+          # so :8443 stays up across register/init + the CatalogEntry gate + e2e.
+          nohup bash -c "while true; do kubectl -n envoy-gateway-system port-forward svc/$svc 8443:8443 --address 127.0.0.1; echo 'port-forward dropped; reconnecting'; sleep 2; done" \
+            > "${GITHUB_WORKSPACE}/port-forward-8443.log" 2>&1 &
+          echo $! > "${GITHUB_WORKSPACE}/pf8443.pid"
+
+          echo "waiting for :8443 to accept connections..."
+          for i in $(seq 1 60); do
+            if timeout 3 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8443' 2>/dev/null; then
+              echo ":8443 is reachable"; exit 0
+            fi
+            sleep 2
+          done
+          echo ":8443 never became reachable; port-forward log:"; cat "${GITHUB_WORKSPACE}/port-forward-8443.log" || true; exit 1
+
       # The provider's CatalogEntry registration + workspace bootstrap are MANUAL
       # Tilt resources in local dev (devs click ▶). In CI we trigger them and
       # wait for each one-shot job to finish. init writes the runtime kubeconfig
@@ -278,5 +317,7 @@ jobs:
         working-directory: kedge
         run: |
           tilt down -f Tiltfile.cluster -- --kcp-dir="${GITHUB_WORKSPACE}/kcp" || true
+          [ -f "${GITHUB_WORKSPACE}/pf8443.pid" ] && kill "$(cat "${GITHUB_WORKSPACE}/pf8443.pid")" 2>/dev/null || true
+          pkill -f "port-forward.*8443" 2>/dev/null || true
           [ -f "${GITHUB_WORKSPACE}/tilt.pid" ] && kill "$(cat "${GITHUB_WORKSPACE}/tilt.pid")" 2>/dev/null || true
           kind delete cluster --name kcp-tilt || true

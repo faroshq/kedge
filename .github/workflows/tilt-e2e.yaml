@@ -100,6 +100,15 @@ jobs:
           kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
           kind export kubeconfig --name kcp-tilt
 
+          # The Tilt `portal-build` resource copies the built SPA with
+          # `cp -r portal/dist pkg/hub/portal/`. On a fresh checkout
+          # pkg/hub/portal/ doesn't exist (it's untracked), so cp would create
+          # it AS a copy of dist — landing files at pkg/hub/portal/* instead of
+          # pkg/hub/portal/dist/*, which breaks the hub's `//go:embed
+          # portal/dist/*` (tags portal_embed). Pre-create the dir so the cp
+          # nests correctly. (Locally this dir already exists from prior runs.)
+          mkdir -p pkg/hub/portal/dist
+
           nohup tilt up -f Tiltfile.cluster --stream=true --port 10350 -- \
             --kcp-dir="${GITHUB_WORKSPACE}/kcp" \
             > "${GITHUB_WORKSPACE}/tilt-up.log" 2>&1 &

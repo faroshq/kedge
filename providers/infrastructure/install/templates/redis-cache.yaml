@@ -54,12 +54,14 @@ spec:
           stringData:
             host: ${schema.spec.name}
             port: "6379"
-      # Password generation, in-graph (no external operator). A one-shot
-      # Job mints a random password and patches it (plus a complete
-      # redis://:<pw>@host:port URI) into the credentials Secret — once;
-      # it no-ops if the password key already exists, so re-reconciles
-      # don't rotate it. kro never sees the value (the Job runs the shell);
-      # status only ever references the Secret.
+      # Password generation runs as an init container on the redis pod
+      # itself (see statefulset below), NOT a standalone Job. Co-locating it
+      # with the consumer makes ordering deterministic: the init container
+      # mints + patches the password before the redis container starts, so
+      # redis never comes up against a credentials Secret missing its
+      # password key (a standalone Job races the StatefulSet and wedges redis
+      # if it fails). The SA/Role/RoleBinding below grant that init container
+      # get+patch on the Secret; kro never sees the value.
       - id: pwgenAccount
         template:
           apiVersion: v1
@@ -93,37 +95,6 @@ spec:
             - kind: ServiceAccount
               name: ${pwgenAccount.metadata.name}
               namespace: default
-      - id: pwgen
-        template:
-          apiVersion: batch/v1
-          kind: Job
-          metadata:
-            name: ${schema.spec.name}-pwgen
-            namespace: default
-          spec:
-            backoffLimit: 5
-            ttlSecondsAfterFinished: 600
-            template:
-              spec:
-                serviceAccountName: ${pwgenAccount.metadata.name}
-                restartPolicy: OnFailure
-                containers:
-                  - name: pwgen
-                    image: bitnami/kubectl
-                    command:
-                      - /bin/sh
-                      - -c
-                      - |
-                        set -eu
-                        SECRET="${credentials.metadata.name}"
-                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.password}' 2>/dev/null)" ]; then
-                          PW="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 24)"
-                          kubectl patch secret "$SECRET" --type merge \
-                            -p "{\"stringData\":{\"password\":\"$PW\",\"uri\":\"redis://:$PW@${schema.spec.name}:6379\"}}"
-                          echo "generated credentials for $SECRET"
-                        else
-                          echo "credentials already present for $SECRET"
-                        fi
       - id: statefulset
         template:
           apiVersion: apps/v1
@@ -141,7 +112,36 @@ spec:
               metadata:
                 labels:
                   app: ${schema.spec.name}
+                annotations:
+                  # Force kro to apply the RoleBinding (and the SA/Role it
+                  # references) before this pod: the reference makes the
+                  # StatefulSet a DAG-dependent of pwgenBinding, so the init
+                  # container always has get+patch on the Secret when it runs.
+                  kedge.faros.sh/rbac: ${pwgenBinding.metadata.name}
               spec:
+                serviceAccountName: ${pwgenAccount.metadata.name}
+                initContainers:
+                  # Mint the password in-graph, before redis starts. Idempotent:
+                  # no-ops if the password key is already set, so pod restarts
+                  # and re-reconciles don't rotate it. Patches a complete
+                  # redis://:<pw>@host:port URI alongside the password so
+                  # consumers get a ready-to-use connection string.
+                  - name: pwgen
+                    image: bitnami/kubectl
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -eu
+                        SECRET="${credentials.metadata.name}"
+                        if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.password}' 2>/dev/null)" ]; then
+                          PW="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 24)"
+                          kubectl patch secret "$SECRET" --type merge \
+                            -p "{\"stringData\":{\"password\":\"$PW\",\"uri\":\"redis://:$PW@${schema.spec.name}:6379\"}}"
+                          echo "generated credentials for $SECRET"
+                        else
+                          echo "credentials already present for $SECRET"
+                        fi
                 containers:
                   - name: redis
                     image: redis:${schema.spec.version}

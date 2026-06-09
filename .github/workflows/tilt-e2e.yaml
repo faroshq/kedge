@@ -100,10 +100,33 @@ jobs:
           kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
           kind export kubeconfig --name kcp-tilt
 
-          nohup tilt up -f Tiltfile.cluster --port 10350 -- \
+          nohup tilt up -f Tiltfile.cluster --stream=true --port 10350 -- \
             --kcp-dir="${GITHUB_WORKSPACE}/kcp" \
             > "${GITHUB_WORKSPACE}/tilt-up.log" 2>&1 &
           echo $! > "${GITHUB_WORKSPACE}/tilt.pid"
+          tilt_pid=$(cat "${GITHUB_WORKSPACE}/tilt.pid")
+
+          # `tilt up` needs a few seconds to bring up its apiserver on :10350;
+          # `tilt wait` errors with "No tilt apiserver found" until then. Poll
+          # until the apiserver answers (or the process dies), then proceed.
+          echo "Waiting for the Tilt apiserver to come up..."
+          for i in $(seq 1 90); do
+            if ! kill -0 "$tilt_pid" 2>/dev/null; then
+              echo "tilt up exited before its apiserver came up; log:"
+              cat "${GITHUB_WORKSPACE}/tilt-up.log" || true
+              exit 1
+            fi
+            if tilt get uiresources >/dev/null 2>&1; then
+              echo "Tilt apiserver is up."
+              break
+            fi
+            sleep 2
+          done
+          tilt get uiresources >/dev/null 2>&1 || {
+            echo "Tilt apiserver never came up; log:"
+            cat "${GITHUB_WORKSPACE}/tilt-up.log" || true
+            exit 1
+          }
 
           echo "Waiting for the kcp + hub + provider stack to become Ready..."
           tilt wait --timeout 30m --for=condition=Ready uiresource/kedge-hub

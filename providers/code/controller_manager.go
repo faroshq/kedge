@@ -40,7 +40,6 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/faroshq/faros-kedge/providers/code/backend"
-	githubbackend "github.com/faroshq/faros-kedge/providers/code/backend/github"
 	"github.com/faroshq/faros-kedge/providers/code/controller/collaborator"
 	"github.com/faroshq/faros-kedge/providers/code/controller/connection"
 	"github.com/faroshq/faros-kedge/providers/code/controller/deploykey"
@@ -58,10 +57,11 @@ const endpointSliceName = install.APIExportEndpointSliceName
 // lives in (root:kedge:providers:<name>). Overridable via CODE_WORKSPACE_PATH.
 const defaultWorkspacePath = "root:kedge:providers:code"
 
-// startControllerManager builds the multicluster manager, registers the git
-// backends, and starts the four reconcilers. A nil config means "skip the
-// manager, run REST/MCP-only".
-func startControllerManager(ctx context.Context, config *rest.Config) error {
+// startControllerManager builds the multicluster manager and starts the four
+// reconcilers, dispatching through the shared backend registry (built in
+// runServe so the HTTP packages handler shares it). A nil config means "skip
+// the manager, run REST/MCP-only".
+func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry) error {
 	if config == nil {
 		return errControllerDisabled
 	}
@@ -93,14 +93,6 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 	})
 	if err != nil {
 		return fmt.Errorf("creating multicluster manager: %w", err)
-	}
-
-	registry := backend.NewRegistry()
-	// The real GitHub backend. It holds no global credential — every Connection
-	// authenticates as its own PAT account — so it needs no config here. The
-	// stub backend remains available for tests (backend/stub).
-	if err := registry.Register(githubbackend.New()); err != nil {
-		return fmt.Errorf("register github backend: %w", err)
 	}
 
 	if err := (&connection.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {

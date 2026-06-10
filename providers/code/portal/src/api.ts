@@ -13,6 +13,7 @@ import type {
   Connection,
   DeployKey,
   ErrorResponse,
+  PackagesResult,
   Repository,
 } from './types'
 
@@ -50,6 +51,7 @@ function apisBase(): string {
 interface KCPMetadata {
   name: string
   uid?: string
+  resourceVersion?: string
   creationTimestamp?: string
 }
 interface KCPCondition {
@@ -67,9 +69,9 @@ interface RawCR {
   status?: { conditions?: KCPCondition[] } & Record<string, unknown>
 }
 
-async function kcpFetch<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function kcpFetch<T>(method: string, path: string, body?: unknown, contentType?: string): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' }
-  if (body) headers['Content-Type'] = 'application/json'
+  if (body) headers['Content-Type'] = contentType || 'application/json'
   if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
   const res = await fetch(path, {
     method,
@@ -173,6 +175,43 @@ function dns1123(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 253) || 'x'
 }
 
+// createOrGet POSTs body to a collection and, if the object already exists,
+// fetches the existing one instead — so connecting is idempotent.
+async function createOrGet(collectionPath: string, name: string, body: unknown): Promise<RawCR> {
+  try {
+    return await kcpFetch<RawCR>('POST', collectionPath, body)
+  } catch (e) {
+    if ((e as ErrorResponse).reason === 'AlreadyExists') {
+      return await kcpFetch<RawCR>('GET', collectionPath + '/' + encodeURIComponent(name))
+    }
+    throw e
+  }
+}
+
+// upsertSecret writes the token Secret, adopting and overwriting a leftover one
+// from a prior connection rather than failing on AlreadyExists. owner is an
+// ownerReference to the Connection so kcp GC removes the Secret with it.
+async function upsertSecret(secretName: string, token: string, owner: Record<string, unknown>): Promise<void> {
+  const collection = clusterBase() + `/api/v1/namespaces/${CRED_NAMESPACE}/secrets`
+  const body: Record<string, unknown> = {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: { name: secretName, namespace: CRED_NAMESPACE, ownerReferences: [owner] },
+    type: 'Opaque',
+    stringData: { [TOKEN_KEY]: token },
+  }
+  try {
+    await kcpFetch<unknown>('POST', collection, body)
+  } catch (e) {
+    if ((e as ErrorResponse).reason !== 'AlreadyExists') throw e
+    // Adopt the existing Secret: carry its resourceVersion into the replace so
+    // the update is accepted, and overwrite the token + ownerReferences.
+    const existing = await kcpFetch<RawCR>('GET', collection + '/' + encodeURIComponent(secretName))
+    ;(body.metadata as Record<string, unknown>).resourceVersion = existing.metadata.resourceVersion
+    await kcpFetch<unknown>('PUT', collection + '/' + encodeURIComponent(secretName), body)
+  }
+}
+
 export const api = {
   // ── Connections ──────────────────────────────────────────────────────────
   async listConnections(): Promise<Connection[]> {
@@ -180,25 +219,16 @@ export const api = {
     return (l.items ?? []).map(connFromCR)
   },
 
-  // connect creates the token Secret then the Connection that references it.
-  // type is 'pat' for a pasted token or 'oauth' for one obtained via the GitHub
-  // connect flow — same storage, the credential's origin just differs.
+  // connect creates the Connection, then the token Secret it references — in
+  // that order so the Secret can own-reference the Connection and be garbage-
+  // collected with it. type is 'pat' for a pasted token or 'oauth' for one from
+  // the GitHub connect flow — same storage, only the credential's origin differs.
+  // Idempotent: an existing Connection is adopted and its Secret overwritten,
+  // so reconnecting never trips over leftovers from a prior connection.
   async connect(input: { name: string; owner: string; token: string; baseURL?: string; type?: 'pat' | 'oauth' }): Promise<Connection> {
     const name = dns1123(input.name)
     const secretName = name + '-token'
-    // 1) Secret holding the token.
-    await kcpFetch<unknown>(
-      'POST',
-      clusterBase() + `/api/v1/namespaces/${CRED_NAMESPACE}/secrets`,
-      {
-        apiVersion: 'v1',
-        kind: 'Secret',
-        metadata: { name: secretName, namespace: CRED_NAMESPACE },
-        type: 'Opaque',
-        stringData: { [TOKEN_KEY]: input.token },
-      },
-    )
-    // 2) Connection referencing it.
+    // 1) Connection referencing the (not-yet-created) Secret.
     const spec: Record<string, unknown> = {
       provider: 'github',
       type: input.type ?? 'pat',
@@ -206,17 +236,40 @@ export const api = {
       secretRef: { name: secretName, namespace: CRED_NAMESPACE, key: TOKEN_KEY },
     }
     if (input.baseURL) spec.baseURL = input.baseURL
-    const created = await kcpFetch<RawCR>('POST', apisBase() + '/connections', {
+    const conn = await createOrGet(apisBase() + '/connections', name, {
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Connection',
       metadata: { name },
       spec,
     })
-    return connFromCR(created)
+    // 2) Secret holding the token, owned by the Connection.
+    await upsertSecret(secretName, input.token, {
+      apiVersion: `${GROUP}/${VERSION}`,
+      kind: 'Connection',
+      name,
+      uid: conn.metadata.uid,
+    })
+    return connFromCR(conn)
   },
 
   async deleteConnection(name: string): Promise<void> {
+    // Resolve the credential Secret first so we can remove it explicitly. The
+    // ownerReference would let GC reclaim it, but deleting it here makes cleanup
+    // immediate and guarantees the name is free for the next connection.
+    let secretName = name + '-token'
+    try {
+      const conn = await kcpFetch<RawCR>('GET', apisBase() + '/connections/' + encodeURIComponent(name))
+      const ref = conn.spec?.secretRef as Record<string, unknown> | undefined
+      if (ref?.name) secretName = String(ref.name)
+    } catch {
+      // connection already gone — fall back to the naming convention
+    }
     await kcpFetch<unknown>('DELETE', apisBase() + '/connections/' + encodeURIComponent(name))
+    try {
+      await kcpFetch<unknown>('DELETE', clusterBase() + `/api/v1/namespaces/${CRED_NAMESPACE}/secrets/` + encodeURIComponent(secretName))
+    } catch (e) {
+      if ((e as ErrorResponse).reason !== 'NotFound') throw e
+    }
   },
 
   // oauthConfig probes the provider backend (via the hub /services proxy) for
@@ -272,6 +325,19 @@ export const api = {
 
   async deleteRepository(name: string): Promise<void> {
     await kcpFetch<unknown>('DELETE', apisBase() + '/repositories/' + encodeURIComponent(name))
+  },
+
+  // updateRepositoryConnection repoints an existing Repository at a different
+  // Connection via a merge-patch on spec.connectionRef. The controller re-resolves
+  // the new credential/owner on the next reconcile.
+  async updateRepositoryConnection(name: string, connectionRef: string): Promise<Repository> {
+    const updated = await kcpFetch<RawCR>(
+      'PATCH',
+      apisBase() + '/repositories/' + encodeURIComponent(name),
+      { spec: { connectionRef } },
+      'application/merge-patch+json',
+    )
+    return repoFromCR(updated)
   },
 
   // ── Deploy keys ──────────────────────────────────────────────────────────
@@ -332,6 +398,40 @@ export const api = {
 
   async deleteCollaborator(name: string): Promise<void> {
     await kcpFetch<unknown>('DELETE', apisBase() + '/collaborators/' + encodeURIComponent(name))
+  },
+
+  // ── Packages (read-only) ─────────────────────────────────────────────────
+  // Packages are observed host state the browser can't read from kcp, so this
+  // hits the provider backend through the hub /services proxy (like oauthConfig)
+  // rather than kcpFetch. The current workspace is passed explicitly because the
+  // proxy's injected tenant reflects the user's home workspace, not the one the
+  // portal is viewing; authorization is still the caller's own token.
+  async listPackages(repositoryRef: string): Promise<PackagesResult> {
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
+    const params = new URLSearchParams({ repo: repositoryRef })
+    if (clusterName) params.set('tenant', clusterName)
+    const res = await fetch('/services/providers/code/packages?' + params.toString(), {
+      headers,
+      credentials: 'same-origin',
+    })
+    const text = await res.text()
+    if (!res.ok) {
+      let reason = 'HTTPError'
+      let message = text || res.statusText
+      try {
+        const parsed = JSON.parse(text) as { reason?: string; message?: string }
+        if (parsed && (parsed.reason || parsed.message)) {
+          reason = parsed.reason || reason
+          message = parsed.message || message
+        }
+      } catch {
+        // non-JSON body — keep raw text
+      }
+      throw <ErrorResponse>{ reason, message }
+    }
+    const data = (text ? JSON.parse(text) : {}) as Partial<PackagesResult>
+    return { supported: Boolean(data.supported), packages: data.packages ?? [] }
   },
 }
 

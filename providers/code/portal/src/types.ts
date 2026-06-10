@@ -64,3 +64,22 @@ export interface Collaborator {
   ready: boolean
   message?: string
 }
+
+// Package is a read-only view of an artifact published under a repository on the
+// host (container image, npm/maven package, …). It is observed state served by
+// the provider backend, not a CRD — hence no readiness/conditions.
+export interface Package {
+  name: string
+  type: string
+  visibility?: string
+  htmlURL?: string
+  versionCount?: number
+  updatedAt?: string
+}
+
+// PackagesResult wraps the list with whether the connection's provider supports
+// package listing at all, so the view distinguishes "none" from "unsupported".
+export interface PackagesResult {
+  supported: boolean
+  packages: Package[]
+}

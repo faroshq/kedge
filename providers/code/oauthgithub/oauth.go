@@ -257,7 +257,8 @@ var callbackTmpl = template.Must(template.New("cb").Parse(`<!doctype html>
 (function(){
   var payload = {{ .Payload }};
   try {
-    if (window.opener) { window.opener.postMessage(payload, {{ .Origin | printf "%q" }}); }
+    // {{ .Origin }} is rendered by html/template as a quoted JS string literal.
+    if (window.opener) { window.opener.postMessage(payload, {{ .Origin }}); }
   } catch (e) {}
   document.getElementById('m').textContent = payload.error ? ('Failed: ' + payload.error) : 'Connected — you can close this window.';
   setTimeout(function(){ window.close(); }, payload.error ? 4000 : 600);

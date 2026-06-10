@@ -66,8 +66,9 @@ export interface Collaborator {
 }
 
 // Package is a read-only view of an artifact published under a repository on the
-// host (container image, npm/maven package, …). It is observed state served by
-// the provider backend, not a CRD — hence no readiness/conditions.
+// host (container image, npm/maven package, …). The code provider's crawler
+// mirrors each into a Package CR (status subresource); the portal reads them via
+// the GraphQL gateway. Observed state only — no readiness/conditions.
 export interface Package {
   name: string
   type: string
@@ -77,9 +78,8 @@ export interface Package {
   updatedAt?: string
 }
 
-// PackagesResult wraps the list with whether the connection's provider supports
-// package listing at all, so the view distinguishes "none" from "unsupported".
-export interface PackagesResult {
-  supported: boolean
-  packages: Package[]
+// PackageRow is a Package plus its owning repository, for the workspace-wide
+// Packages tab that lists artifacts across every repository.
+export interface PackageRow extends Package {
+  repositoryRef: string
 }

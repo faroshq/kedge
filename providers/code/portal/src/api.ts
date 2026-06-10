@@ -13,7 +13,8 @@ import type {
   Connection,
   DeployKey,
   ErrorResponse,
-  PackagesResult,
+  Package,
+  PackageRow,
   Repository,
 } from './types'
 
@@ -60,9 +61,6 @@ interface KCPCondition {
   reason?: string
   message?: string
 }
-interface KCPList<T> {
-  items: T[]
-}
 interface RawCR {
   metadata: KCPMetadata
   spec?: Record<string, unknown>
@@ -97,6 +95,34 @@ async function kcpFetch<T>(method: string, path: string, body?: unknown, content
     throw <ErrorResponse>{ reason, message }
   }
   return (text ? JSON.parse(text) : null) as T
+}
+
+// graphqlQuery runs a query against the hub's embedded GraphQL gateway at
+// /graphql/<cluster> (same origin as the portal). The gateway serves every CRD
+// bound in the tenant workspace — including the code provider's — so read-only
+// views can pull CRs without a custom REST endpoint. Auth is the caller's own
+// bearer token; the workspace is the path segment.
+async function graphqlQuery<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  if (!clusterName) {
+    throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
+  }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
+  if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
+  const res = await fetch('/graphql/' + clusterName, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers,
+    body: JSON.stringify({ query, variables }),
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    throw <ErrorResponse>{ reason: res.status === 404 ? 'NotFound' : 'HTTPError', message: text || res.statusText }
+  }
+  const body = (text ? JSON.parse(text) : {}) as { data?: T; errors?: { message: string }[] }
+  if (body.errors && body.errors.length) {
+    throw <ErrorResponse>{ reason: 'GraphQLError', message: body.errors.map(e => e.message).join('; ') }
+  }
+  return (body.data ?? {}) as T
 }
 
 function condTrue(cr: RawCR, type: string): boolean {
@@ -157,6 +183,24 @@ function keyFromCR(cr: RawCR): DeployKey {
   }
 }
 
+function pkgFromCR(cr: RawCR): Package {
+  const status = cr.status ?? {}
+  return {
+    name: String(status.packageName ?? ''),
+    type: String(status.type ?? ''),
+    visibility: status.visibility ? String(status.visibility) : undefined,
+    htmlURL: status.htmlURL ? String(status.htmlURL) : undefined,
+    versionCount: typeof status.versionCount === 'number' ? status.versionCount : undefined,
+    updatedAt: status.updatedAt ? String(status.updatedAt) : undefined,
+  }
+}
+
+// pkgRowFromCR is pkgFromCR plus the owning repository, for the all-packages
+// view that spans every repository in the workspace.
+function pkgRowFromCR(cr: RawCR): PackageRow {
+  return { ...pkgFromCR(cr), repositoryRef: String((cr.spec ?? {}).repositoryRef ?? '') }
+}
+
 function collabFromCR(cr: RawCR): Collaborator {
   const spec = cr.spec ?? {}
   return {
@@ -212,11 +256,48 @@ async function upsertSecret(secretName: string, token: string, owner: Record<str
   }
 }
 
+// ── GraphQL read helpers ───────────────────────────────────────────────────
+// The gateway returns each CR as a metadata/spec/status object — the same shape
+// the kcp REST proxy does — so the *FromCR mappers consume GraphQL items as-is.
+// We select the full spec/status the mappers read; the group code.kedge.faros.sh
+// is the GraphQL field code_kedge_faros_sh (dots → underscores), list fields are
+// the capitalised plural (Connections), single-get is the capitalised singular
+// (Connection(name: …)).
+const GQL_META = 'metadata { name uid resourceVersion creationTimestamp }'
+const GQL_COND = 'conditions { type status reason message }'
+const F_CONNECTION = `${GQL_META} spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes ${GQL_COND} }`
+const F_REPOSITORY = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch autoInit } status { repoID htmlURL cloneURL sshURL ${GQL_COND} }`
+const F_DEPLOYKEY = `${GQL_META} spec { repositoryRef title publicKey readOnly } status { keyID secretRef { name } ${GQL_COND} }`
+const F_COLLABORATOR = `${GQL_META} spec { repositoryRef username permission } status { invitationID ${GQL_COND} }`
+const F_PACKAGE = `${GQL_META} spec { repositoryRef } status { packageName type visibility htmlURL versionCount updatedAt ${GQL_COND} }`
+
+// gqlList queries a resource's list field and returns the RawCR-shaped items. An
+// optional labelselector narrows the set server-side.
+async function gqlList(kind: string, fields: string, labelselector?: string): Promise<RawCR[]> {
+  const decl = labelselector !== undefined ? '($sel: String!)' : ''
+  const arg = labelselector !== undefined ? '(labelselector: $sel)' : ''
+  const query = `query${decl} { code_kedge_faros_sh { v1alpha1 { ${kind}${arg} { items { ${fields} } } } } }`
+  const data = await graphqlQuery<{ code_kedge_faros_sh?: { v1alpha1?: Record<string, { items?: RawCR[] }> } }>(
+    query,
+    labelselector !== undefined ? { sel: labelselector } : {},
+  )
+  return data.code_kedge_faros_sh?.v1alpha1?.[kind]?.items ?? []
+}
+
+// gqlGet fetches a single named object (capitalised-singular field). Throws a
+// NotFound ErrorResponse when the gateway returns null.
+async function gqlGet(kind: string, name: string, fields: string): Promise<RawCR> {
+  const query = `query($n: String!) { code_kedge_faros_sh { v1alpha1 { ${kind}(name: $n) { ${fields} } } } }`
+  const data = await graphqlQuery<{ code_kedge_faros_sh?: { v1alpha1?: Record<string, RawCR | null> } }>(query, { n: name })
+  const obj = data.code_kedge_faros_sh?.v1alpha1?.[kind]
+  if (!obj) throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} "${name}" not found` }
+  return obj
+}
+
 export const api = {
   // ── Connections ──────────────────────────────────────────────────────────
   async listConnections(): Promise<Connection[]> {
-    const l = await kcpFetch<KCPList<RawCR>>('GET', apisBase() + '/connections')
-    return (l.items ?? []).map(connFromCR)
+    return (await gqlList('Connections', F_CONNECTION)).map(connFromCR)
   },
 
   // connect creates the Connection, then the token Secret it references — in
@@ -289,13 +370,11 @@ export const api = {
 
   // ── Repositories ─────────────────────────────────────────────────────────
   async listRepositories(): Promise<Repository[]> {
-    const l = await kcpFetch<KCPList<RawCR>>('GET', apisBase() + '/repositories')
-    return (l.items ?? []).map(repoFromCR)
+    return (await gqlList('Repositories', F_REPOSITORY)).map(repoFromCR)
   },
 
   async getRepository(name: string): Promise<Repository> {
-    const cr = await kcpFetch<RawCR>('GET', apisBase() + '/repositories/' + encodeURIComponent(name))
-    return repoFromCR(cr)
+    return repoFromCR(await gqlGet('Repository', name, F_REPOSITORY))
   },
 
   async createRepository(input: {
@@ -342,8 +421,7 @@ export const api = {
 
   // ── Deploy keys ──────────────────────────────────────────────────────────
   async listDeployKeys(repositoryRef: string): Promise<DeployKey[]> {
-    const l = await kcpFetch<KCPList<RawCR>>('GET', apisBase() + '/deploykeys')
-    return (l.items ?? []).map(keyFromCR).filter(k => k.repositoryRef === repositoryRef)
+    return (await gqlList('DeployKeys', F_DEPLOYKEY)).map(keyFromCR).filter(k => k.repositoryRef === repositoryRef)
   },
 
   async createDeployKey(input: {
@@ -372,8 +450,7 @@ export const api = {
 
   // ── Collaborators ────────────────────────────────────────────────────────
   async listCollaborators(repositoryRef: string): Promise<Collaborator[]> {
-    const l = await kcpFetch<KCPList<RawCR>>('GET', apisBase() + '/collaborators')
-    return (l.items ?? []).map(collabFromCR).filter(c => c.repositoryRef === repositoryRef)
+    return (await gqlList('Collaborators', F_COLLABORATOR)).map(collabFromCR).filter(c => c.repositoryRef === repositoryRef)
   },
 
   async createCollaborator(input: {
@@ -401,39 +478,24 @@ export const api = {
   },
 
   // ── Packages (read-only) ─────────────────────────────────────────────────
-  // Packages are observed host state the browser can't read from kcp, so this
-  // hits the provider backend through the hub /services proxy (like oauthConfig)
-  // rather than kcpFetch. The current workspace is passed explicitly because the
-  // proxy's injected tenant reflects the user's home workspace, not the one the
-  // portal is viewing; authorization is still the caller's own token.
-  async listPackages(repositoryRef: string): Promise<PackagesResult> {
-    const headers: Record<string, string> = { Accept: 'application/json' }
-    if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
-    const params = new URLSearchParams({ repo: repositoryRef })
-    if (clusterName) params.set('tenant', clusterName)
-    const res = await fetch('/services/providers/code/packages?' + params.toString(), {
-      headers,
-      credentials: 'same-origin',
-    })
-    const text = await res.text()
-    if (!res.ok) {
-      let reason = 'HTTPError'
-      let message = text || res.statusText
-      try {
-        const parsed = JSON.parse(text) as { reason?: string; message?: string }
-        if (parsed && (parsed.reason || parsed.message)) {
-          reason = parsed.reason || reason
-          message = parsed.message || message
-        }
-      } catch {
-        // non-JSON body — keep raw text
-      }
-      throw <ErrorResponse>{ reason, message }
-    }
-    const data = (text ? JSON.parse(text) : {}) as Partial<PackagesResult>
-    return { supported: Boolean(data.supported), packages: data.packages ?? [] }
+  // Packages are observed host state the code provider's crawler mirrors into
+  // Package CRs (one per artifact, owned by the Repository). We read them via
+  // the GraphQL gateway — like every other CR — instead of hitting the host on
+  // every page view (which GitHub rate-limits). listPackages narrows to one
+  // repository by the label the crawler stamps; listAllPackages spans the
+  // workspace for the Packages tab.
+  async listPackages(repositoryRef: string): Promise<Package[]> {
+    return (await gqlList('Packages', F_PACKAGE, `${PACKAGE_REPO_LABEL}=${repositoryRef}`)).map(pkgFromCR)
+  },
+
+  async listAllPackages(): Promise<PackageRow[]> {
+    return (await gqlList('Packages', F_PACKAGE)).map(pkgRowFromCR)
   },
 }
+
+// PACKAGE_REPO_LABEL mirrors codev1alpha1.LabelRepository — the crawler stamps
+// it on every Package so we can list one repository's packages by selector.
+const PACKAGE_REPO_LABEL = 'code.kedge.faros.sh/repository'
 
 function shortRand(): string {
   // Browser crypto for a short suffix; avoids name collisions without Date/Math.random concerns.

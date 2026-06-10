@@ -13,19 +13,21 @@ provider's controllers reconcile those into real GitHub state.
 | Surface | Where |
 |---|---|
 | Git host backend | `backend/` — the `GitBackend` seam + `backend/github/` (go-github) |
-| Controllers | `controller/{connection,repository,deploykey,collaborator}/` — one multicluster manager across all tenant workspaces |
-| Tenant API types | `apis/v1alpha1/` — Connection / Repository / DeployKey / Collaborator CRDs |
-| HTTP read API | `httpapi/` — `GET /packages` (read-only host package list) |
+| Controllers | `controller/{connection,repository,deploykey,collaborator,packages}/` — one multicluster manager across all tenant workspaces |
+| API types | `apis/v1alpha1/` — Connection / Repository / DeployKey / Collaborator (tenant-authored) + Package (crawler-authored) CRDs |
 | MCP transport | `mcpserver/` — `/mcp`, `/mcp/sse` (list + write tools) |
 | GitHub OAuth | `oauthgithub/` — the "Connect with GitHub" popup flow |
 | Portal micro-frontend | `portal/` — Vue 3 connections, repositories, repo detail (deploy keys, collaborators, packages) |
 | Helm chart | `deploy/chart/` — provider Deployment + Service + CatalogEntry |
 | CatalogEntry (raw) | `manifest.yaml` — same content the chart renders, for `kubectl apply` |
 
-The four CRDs are **cluster-scoped** and live in the tenant's workspace,
-projected there via the provider's APIExport. The single `permissionClaim` is
-`secrets` (`get,list,watch,create,update,patch,delete`, `tenantScoped: true`) so
-the controllers can read the credential Secret a Connection references, and the
+The CRDs are **cluster-scoped** and live in the tenant's workspace, projected
+there via the provider's APIExport. Connection / Repository / DeployKey /
+Collaborator are tenant-authored; **Package** is read-only observed state the
+crawler writes (one CR per published artifact, owned by its Repository). The
+single `permissionClaim` is `secrets`
+(`get,list,watch,create,update,patch,delete`, `tenantScoped: true`) so the
+controllers can read the credential Secret a Connection references, and the
 portal can store it.
 
 ## Architecture
@@ -34,27 +36,28 @@ portal can store it.
 Browser / MCP client
    │  bearer
    ▼
-hub /services/providers/code/{mcp, mcp/sse, packages, oauth/github/*}
+hub /services/providers/code/{mcp, mcp/sse, oauth/github/*}
    │  proxy injects X-Kedge-Tenant + X-Kedge-User
    ▼
-this provider pod ──────────────────────────────────────────────┐
-   │                                                             │
-   │  controllers (as the provider SA, via the APIExport VW)     │
-   │    Connection  → validate credential against GitHub         │
-   │    Repository  → ensure repo exists on the host             │
-   │    DeployKey   → register/generate keys                     │
-   │    Collaborator→ invite/manage access                       │
+this provider pod
+   │
+   │  controllers (as the provider SA, via the APIExport VW)
+   │    Connection  → validate credential against GitHub
+   │    Repository  → ensure repo exists on the host
+   │    DeployKey   → register/generate keys
+   │    Collaborator→ invite/manage access
+   │    Package     → crawl host packages on a timer → Package CRs
    │      └ kubeconfig: /var/run/secrets/kedge/kedge-provider-kubeconfig
-   │                                                             │
-   └  read API + MCP (AS THE CALLER, caller's own bearer token)  │
-        /packages → resolve Repo→Connection→credential, list ◄───┘
-                    GitHub Packages for the repo
+   │
+   └  MCP (AS THE CALLER, caller's own bearer token)
 ```
 
-Most CRUD does **not** go through this pod's HTTP surface: the portal drives the
-four CRDs straight against kcp with the user's token. The pod's HTTP surface is
-only for what the browser can't get from kcp — the live Packages list, the MCP
-tools, and the GitHub OAuth callback.
+Reads do **not** go through this pod's HTTP surface: the portal reads every CR —
+Connections, Repositories, DeployKeys, Collaborators, and the crawled Packages —
+through the hub's GraphQL gateway at `/graphql/<workspace>` (`code_kedge_faros_sh
+{ v1alpha1 { … } }`). Writes still use the kcp REST proxy with the user's token
+(create/patch/delete + the credential Secret). The pod's HTTP surface is only for
+the MCP tools and the GitHub OAuth callback.
 
 ## Run locally
 
@@ -183,10 +186,16 @@ CRD-native, so the controllers do the host work).
 The repository detail page lists the GitHub Packages published under a repo
 (container/npm/maven/…). This is **observed state** — packages appear when
 artifacts are pushed (`docker push`, `npm publish`), so there is no create here.
-The browser can't read it from kcp (it has no GitHub credential), so the portal
-calls `GET /services/providers/code/packages?repo=<name>&tenant=<ws>`; the
-provider resolves Repo→Connection→credential **as the caller** and queries
-GitHub. Listing requires the token's `read:packages` scope.
+
+Rather than hitting GitHub on every page view (GitHub has no per-repo packages
+API and rate-limits the per-ecosystem listing hard), the **packages controller**
+crawls each Repository on a timer (`CODE_PACKAGE_CRAWL_INTERVAL`, default 2m) and
+reconciles one **Package CR** per artifact, owned by the Repository (so they're
+garbage-collected with it) and labelled `code.kedge.faros.sh/repository=<repo>`.
+The portal then reads those CRs through the hub's GraphQL gateway
+(`/graphql/<workspace>`, `code_kedge_faros_sh { v1alpha1 { Packages(labelselector: …) } }`)
+like any other CRD — no provider round-trip, no throttling. Crawling still needs
+the connection token's `read:packages` scope.
 
 ## Env vars
 

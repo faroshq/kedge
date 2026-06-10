@@ -17,9 +17,8 @@ const selectedConn = ref('')
 const changingConn = ref(false)
 const connError = ref<string | null>(null)
 
-// packages (read-only; fetched from the provider backend, best-effort)
+// packages (read-only; crawled into Package CRs, read via GraphQL, best-effort)
 const packages = ref<Package[]>([])
-const packagesSupported = ref(true)
 const packagesError = ref<string | null>(null)
 
 const currentConn = computed(() => connections.value.find(c => c.name === repo.value?.connectionRef))
@@ -72,17 +71,15 @@ async function load() {
     const err = e as ErrorResponse
     if (err.reason !== 'TenantMissing') error.value = `${err.reason}: ${err.message}`
   }
-  // Packages are best-effort: a failure here (provider unreachable, token lacks
-  // read:packages) must not blank the rest of the page.
+  // Packages are best-effort: a failure here (gateway unreachable, not yet
+  // crawled) must not blank the rest of the page.
   await loadPackages()
 }
 
 async function loadPackages() {
   packagesError.value = null
   try {
-    const res = await api.listPackages(props.name)
-    packages.value = res.packages
-    packagesSupported.value = res.supported
+    packages.value = await api.listPackages(props.name)
   } catch (e) {
     const err = e as ErrorResponse
     if (err.reason !== 'TenantMissing') packagesError.value = `${err.reason}: ${err.message}`
@@ -307,7 +304,6 @@ onUnmounted(() => window.clearInterval(timer))
         <span class="muted">{{ packages.length }}</span>
       </div>
       <p v-if="packagesError" class="error">{{ packagesError }}</p>
-      <p v-else-if="!packagesSupported" class="empty">This connection's provider does not expose packages.</p>
       <p v-else-if="!packages.length" class="empty">No packages published to this repository yet.</p>
       <table v-else class="table">
         <thead>

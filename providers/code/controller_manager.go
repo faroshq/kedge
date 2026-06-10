@@ -43,6 +43,7 @@ import (
 	"github.com/faroshq/faros-kedge/providers/code/controller/collaborator"
 	"github.com/faroshq/faros-kedge/providers/code/controller/connection"
 	"github.com/faroshq/faros-kedge/providers/code/controller/deploykey"
+	"github.com/faroshq/faros-kedge/providers/code/controller/packages"
 	"github.com/faroshq/faros-kedge/providers/code/controller/repository"
 	"github.com/faroshq/faros-kedge/providers/code/install"
 	codescheme "github.com/faroshq/faros-kedge/providers/code/scheme"
@@ -106,6 +107,9 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 	}
 	if err := (&collaborator.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("collaborator controller: %w", err)
+	}
+	if err := (&packages.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("packages controller: %w", err)
 	}
 
 	go func() {

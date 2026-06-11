@@ -49,8 +49,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
+          # The v1.0.1 tarball stores the binary as ./splitsh-lite (leading
+          # ./), so GNU tar won't match a bare `splitsh-lite` member name.
           curl -fsSL "https://github.com/splitsh/lite/releases/download/${SPLITSH_VERSION}/lite_linux_amd64.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin" splitsh-lite
+            | tar -xz -C "$HOME/.local/bin" ./splitsh-lite
           chmod +x "$HOME/.local/bin/splitsh-lite"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 

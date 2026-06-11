@@ -51,16 +51,22 @@ import (
 	"strings"
 )
 
-// components maps a friendly name to its tag prefix. The version is appended
-// directly: prefix "v" + "0.0.73" = "v0.0.73"; prefix "providers/quickstart/v"
-// + "0.0.2" = "providers/quickstart/v0.0.2". Order matters for `all`.
+// component describes a release line: its tag prefix (the version is appended
+// directly, e.g. prefix "v" + "0.0.73" = "v0.0.73") and a one-line summary of
+// what cutting the tag sets in motion — shown in the plan so a dry-run makes the
+// downstream effect obvious. Order in componentOrder matters for `all`.
+type component struct {
+	prefix   string
+	triggers string
+}
+
 var componentOrder = []string{"hub", "quickstart", "infrastructure", "code"}
 
-var components = map[string]string{
-	"hub":            "v",
-	"quickstart":     "providers/quickstart/v",
-	"infrastructure": "providers/infrastructure/v",
-	"code":           "providers/code/v",
+var components = map[string]component{
+	"hub":            {"v", "goreleaser CLI release + hub/agent/provider images + Helm charts (ghcr.io/faroshq)"},
+	"quickstart":     {"providers/quickstart/v", "split → faroshq/provider-quickstart; the mirror builds its image + chart"},
+	"infrastructure": {"providers/infrastructure/v", "tag only — no split/release workflow wired up yet"},
+	"code":           {"providers/code/v", "tag only — no split/release workflow wired up yet"},
 }
 
 func main() {
@@ -134,11 +140,11 @@ func run(args []string) error {
 	branch, _ := gitOut("rev-parse", "--abbrev-ref", "HEAD")
 
 	// Build the plan.
-	type plan struct{ name, from, fullTag string }
+	type plan struct{ name, from, fullTag, triggers string }
 	var plans []plan
 	for _, name := range names {
-		prefix := components[name]
-		latest, hasLatest, err := latestTag(prefix)
+		comp := components[name]
+		latest, hasLatest, err := latestTag(comp.prefix)
 		if err != nil {
 			return err
 		}
@@ -156,23 +162,27 @@ func run(args []string) error {
 			next = version{0, 0, 1, ""} // first release
 		}
 
-		full := prefix + strings.TrimPrefix(next.String(), "v")
+		full := comp.prefix + strings.TrimPrefix(next.String(), "v")
 		from := "(none)"
 		if hasLatest {
-			from = prefix + strings.TrimPrefix(latest.String(), "v")
+			from = comp.prefix + strings.TrimPrefix(latest.String(), "v")
 		}
-		plans = append(plans, plan{name, from, full})
+		plans = append(plans, plan{name, from, full, comp.triggers})
 	}
 
-	// Show the plan.
+	// Show the plan: the version step and what each tag sets in motion.
 	fmt.Printf("Tagging commit %s (%s):\n\n", commit, branch)
 	for _, p := range plans {
 		fmt.Printf("  %-15s %s  ->  %s\n", p.name, p.from, p.fullTag)
+		fmt.Printf("  %-15s   ↳ %s\n", "", p.triggers)
 	}
 	fmt.Println()
 
 	if opts.dryRun {
-		fmt.Println("dry-run: no tags created.")
+		fmt.Println("dry-run — would run:")
+		for _, p := range plans {
+			fmt.Printf("  git tag %s %s && git push origin %s\n", p.fullTag, opts.ref, p.fullTag)
+		}
 		return nil
 	}
 

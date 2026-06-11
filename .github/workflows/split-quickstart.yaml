@@ -7,10 +7,9 @@ name: Split quickstart provider
 # the same source always splits to the same commit sha1s, so pushes normally
 # fast-forward. Runs on every push to main (mirrors the branch) and on
 # per-provider release tags (see below). workflow_dispatch is provided for the
-# initial seed / manual re-sync. It also runs on PRs that touch the split surface
-# — and these DO publish: the split is deterministic and the mirror is a
-# read-only reflection, so pushing the same content from a PR (which splits the
-# PR's merge with main) is safe and lets the full flow be validated on the PR.
+# initial seed / manual re-sync. It also runs on PRs that touch the split
+# surface, but those only validate (install + split) — the deploy-key and push
+# steps are gated to non-PR events, so a PR never writes to the mirror.
 #
 # Releases are tagged per-provider in the monorepo as
 # `providers/quickstart/vX.Y.Z`; the prefix is stripped on the way out, so the
@@ -70,6 +69,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Set up SSH deploy key
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -106,6 +106,7 @@ jobs:
           echo "SPLIT_SHA=${SHA}" >> "$GITHUB_ENV"
 
       - name: Push to mirror
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           SHA="${SPLIT_SHA}"

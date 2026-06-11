@@ -211,8 +211,13 @@ async function refreshIndex(): Promise<InfraIndex> {
     else if (f.typeName === 'String') continue // <Kind>Yaml fields
     else resourceTypeByKind.set(f.name, f.typeName) // single field: name === Kind
   }
+  // Only map kinds that are actual Template instances — the schema also exposes
+  // Template (and other) resources whose status has no phase/message, and which
+  // must not be swept into the instance list.
+  const instanceKinds = new Set(templates.map(t => t.kind).filter(Boolean))
   const listFieldByKind = new Map<string, string>()
   for (const [kind, resourceType] of resourceTypeByKind) {
+    if (!instanceKinds.has(kind)) continue
     const lf = listByResourceType.get(resourceType)
     if (lf) listFieldByKind.set(kind, lf)
   }

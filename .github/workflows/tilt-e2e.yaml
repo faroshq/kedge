@@ -143,26 +143,46 @@ jobs:
           # or if tilt dies). Shared with the register/init step via a sourced
           # helper file.
           cat > "${GITHUB_WORKSPACE}/tilt-helpers.sh" <<'SH'
+          # dump_diag prints why a resource is stuck: the resource's own Tilt
+          # logs (e.g. the hub's klog stdout, which reveals where bootstrap
+          # stalls), plus a cluster-wide pod/event snapshot. Wrapped in a
+          # collapsible ::group:: so it doesn't drown the main log.
+          dump_diag() {
+            local name="$1"
+            echo "::group::diagnostics for stuck resource '$name'"
+            echo "----- tilt logs '$name' (last 400 lines) -----"
+            tilt logs "$name" 2>/dev/null | tail -n 400 || true
+            echo "----- kubectl get pods -A -----"
+            kubectl get pods -A -o wide 2>/dev/null || true
+            echo "----- describe + logs for non-Running pods -----"
+            kubectl get pods -A --no-headers 2>/dev/null | awk '$4 != "Running" && $4 != "Completed" {print $1" "$2}' | while read -r ns pod; do
+              echo "===== $ns/$pod describe ====="; kubectl -n "$ns" describe pod "$pod" 2>/dev/null | tail -n 60 || true
+              echo "===== $ns/$pod logs (all containers, tail 200) ====="; kubectl -n "$ns" logs "$pod" --all-containers --tail=200 2>/dev/null || true
+            done
+            echo "----- recent events (all namespaces) -----"
+            kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -n 60 || true
+            echo "::endgroup::"
+          }
           wait_resource() {
             local name="$1" timeout="$2" upd run deadline last=""
             deadline=$(( $(date +%s) + timeout ))
             echo "waiting for tilt resource '$name' (<= ${timeout}s)"
             while :; do
               if [ -f "${GITHUB_WORKSPACE}/tilt.pid" ] && ! kill -0 "$(cat "${GITHUB_WORKSPACE}/tilt.pid")" 2>/dev/null; then
-                echo "tilt process exited unexpectedly; tail of log:"; tail -n 80 "${GITHUB_WORKSPACE}/tilt-up.log" || true; return 1
+                echo "tilt process exited unexpectedly; tail of log:"; tail -n 80 "${GITHUB_WORKSPACE}/tilt-up.log" || true; dump_diag "$name"; return 1
               fi
               json=$(tilt get uiresource "$name" -o json 2>/dev/null || true)
               upd=$(printf '%s' "$json" | jq -r '.status.updateStatus // empty' 2>/dev/null || true)
               run=$(printf '%s' "$json" | jq -r '.status.runtimeStatus // empty' 2>/dev/null || true)
               if [ "$upd $run" != "$last" ]; then echo "  $name: update=${upd:-<none>} runtime=${run:-<none>}"; last="$upd $run"; fi
               if [ "$upd" = "error" ] || [ "$run" = "error" ]; then
-                echo "resource '$name' entered error state"; return 1
+                echo "resource '$name' entered error state"; dump_diag "$name"; return 1
               fi
               if [ "$upd" = "ok" ] && { [ "$run" = "ok" ] || [ "$run" = "not_applicable" ] || [ "$run" = "none" ]; }; then
                 echo "resource '$name' is ready (update=$upd runtime=$run)"; return 0
               fi
               if [ "$(date +%s)" -ge "$deadline" ]; then
-                echo "timeout waiting for '$name' (update=${upd:-<none>} runtime=${run:-<none>})"; return 1
+                echo "timeout waiting for '$name' (update=${upd:-<none>} runtime=${run:-<none>})"; dump_diag "$name"; return 1
               fi
               sleep 5
             done

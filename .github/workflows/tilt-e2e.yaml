@@ -30,6 +30,12 @@ permissions:
 # the image the operator deploys.
 env:
   KCP_REF: main
+  # Skip the observability stack (grafana/loki/promtail/prometheus) in the
+  # kcp Tilt setup — read by contrib/tilt/Tiltfile.static via os.getenv. Those
+  # pods are pure overhead on CI and add CPU/memory pressure to the single
+  # kind node (the multi-shard job has hit "Insufficient cpu" scheduling the
+  # theseus shard); we don't assert on dashboards/metrics here.
+  KCP_OBSERVABILITY_ENABLED: "false"
 
 jobs:
   e2e-tilt-cluster:

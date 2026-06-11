@@ -7,7 +7,8 @@ name: Split quickstart provider
 # the same source always splits to the same commit sha1s, so pushes normally
 # fast-forward. Runs on every push to main (mirrors the branch) and on v* tags
 # (mirrors the tag). workflow_dispatch is provided for the initial seed / manual
-# re-sync.
+# re-sync. PRs that touch the split surface run install + split only (no deploy
+# key, no push) so the workflow can be validated without writing to the mirror.
 #
 # Required secret: QUICKSTART_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
@@ -17,6 +18,14 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # On PRs that touch the split surface, validate install + split WITHOUT
+  # publishing (the deploy-key + push steps are gated to non-PR events below),
+  # so this workflow can be exercised without writing to the mirror.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'providers/quickstart/**'
+      - '.github/workflows/split-quickstart.yaml'
   workflow_dispatch:
 
 permissions:
@@ -57,6 +66,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Set up SSH deploy key
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -73,15 +83,23 @@ jobs:
           EOF
           chmod 600 ~/.ssh/config
 
-      - name: Split and push to mirror
+      - name: Compute split
         run: |
           set -euo pipefail
 
           # Deterministic split of the provider subtree. The resulting commit
           # objects are written into the local object store, so they can be
-          # pushed directly by sha.
+          # pushed directly by sha. Runs on every event (incl. PRs) so it
+          # validates the install + split end-to-end without publishing.
           SHA="$(splitsh-lite --prefix="${PREFIX}" --origin="${GITHUB_SHA}")"
           echo "Split sha: ${SHA}"
+          echo "SPLIT_SHA=${SHA}" >> "$GITHUB_ENV"
+
+      - name: Push to mirror
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          SHA="${SPLIT_SHA}"
 
           git remote add mirror "${TARGET_REPO}"
 

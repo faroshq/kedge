@@ -91,7 +91,14 @@ jobs:
           # objects are written into the local object store, so they can be
           # pushed directly by sha. Runs on every event (incl. PRs) so it
           # validates the install + split end-to-end without publishing.
-          SHA="$(splitsh-lite --prefix="${PREFIX}" --origin="${GITHUB_SHA}")"
+          #
+          # --origin takes a git REF, not a raw commit hash; HEAD is the
+          # checked-out commit (the pushed tip, or the PR merge commit) and
+          # resolves cleanly where a bare ${GITHUB_SHA} does not. Capture via a
+          # file so splitsh-lite's own output isn't swallowed by $(...) on error.
+          splitsh-lite --prefix="${PREFIX}" --origin=HEAD | tee /tmp/split-sha
+          SHA="$(tail -n1 /tmp/split-sha)"
+          [ -n "${SHA}" ] || { echo "split produced no sha"; exit 1; }
           echo "Split sha: ${SHA}"
           echo "SPLIT_SHA=${SHA}" >> "$GITHUB_ENV"
 

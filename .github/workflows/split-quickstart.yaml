@@ -5,12 +5,17 @@ name: Split quickstart provider
 #
 # Uses splitsh-lite (https://github.com/splitsh/lite) which is deterministic:
 # the same source always splits to the same commit sha1s, so pushes normally
-# fast-forward. Runs on every push to main (mirrors the branch) and on v* tags
-# (mirrors the tag). workflow_dispatch is provided for the initial seed / manual
-# re-sync. It also runs on PRs that touch the split surface — and these DO
-# publish: the split is deterministic and the mirror is a read-only reflection,
-# so pushing the same content from a PR (which splits the PR's merge with main)
-# is safe and lets the full flow be validated end-to-end on the PR.
+# fast-forward. Runs on every push to main (mirrors the branch) and on
+# per-provider release tags (see below). workflow_dispatch is provided for the
+# initial seed / manual re-sync. It also runs on PRs that touch the split surface
+# — and these DO publish: the split is deterministic and the mirror is a
+# read-only reflection, so pushing the same content from a PR (which splits the
+# PR's merge with main) is safe and lets the full flow be validated on the PR.
+#
+# Releases are tagged per-provider in the monorepo as
+# `providers/quickstart/vX.Y.Z`; the prefix is stripped on the way out, so the
+# mirror receives a plain `vX.Y.Z` tag (which then triggers its own image/chart
+# release workflows). A repo-wide `vX.Y.Z` tag does NOT release the mirror.
 #
 # Required secret: QUICKSTART_DEPLOY_KEY
 #   An SSH private key whose public half is added as a *write* deploy key on
@@ -19,7 +24,7 @@ name: Split quickstart provider
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['providers/quickstart/v*']
   pull_request:
     branches: [main]
     paths:
@@ -108,8 +113,12 @@ jobs:
           git remote add mirror "${TARGET_REPO}"
 
           if [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            echo "Publishing tag ${TAG} -> ${TARGET_REPO}"
+            # Per-provider tag: refs/tags/providers/quickstart/vX.Y.Z. Strip the
+            # path prefix (everything up to the last '/') so the mirror gets a
+            # plain vX.Y.Z tag.
+            FULL_TAG="${GITHUB_REF#refs/tags/}"
+            TAG="${FULL_TAG##*/}"
+            echo "Publishing tag ${FULL_TAG} -> ${TARGET_REPO} as ${TAG}"
             # Tags are immutable; push without force so an accidental re-tag fails loudly.
             git push mirror "${SHA}:refs/tags/${TAG}"
           else

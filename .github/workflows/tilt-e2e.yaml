@@ -143,14 +143,27 @@ jobs:
           # or if tilt dies). Shared with the register/init step via a sourced
           # helper file.
           cat > "${GITHUB_WORKSPACE}/tilt-helpers.sh" <<'SH'
-          # dump_diag prints why a resource is stuck: the resource's own Tilt
-          # logs (e.g. the hub's klog stdout, which reveals where bootstrap
-          # stalls), plus a cluster-wide pod/event snapshot. Wrapped in a
-          # collapsible ::group:: so it doesn't drown the main log.
+          # dump_diag prints why a resource is stuck. A resource at
+          # update=pending never STARTED — it's blocked behind an upstream
+          # resource_dep (for kedge-hub: hub-kcp-secrets → 'kcp-admin extract'
+          # → the operator's rootshard/front-proxy). So `tilt logs <name>` is
+          # empty in that case; the signal lives in the OTHER resources. We
+          # therefore dump: (1) the status of EVERY tilt resource (pinpoints
+          # which upstream dep is the real blocker), (2) the full tilt-up.log
+          # tail (all resources' build output, incl. the operator/extract), and
+          # (3) the named resource's own logs + a cluster-wide pod/event
+          # snapshot. Wrapped in a collapsible ::group:: so it doesn't drown
+          # the main log.
           dump_diag() {
             local name="$1"
             echo "::group::diagnostics for stuck resource '$name'"
-            echo "----- tilt logs '$name' (last 400 lines) -----"
+            echo "----- all tilt resources (which upstream dep is blocking?) -----"
+            tilt get uiresources -o json 2>/dev/null \
+              | jq -r '.items[] | "  \(.metadata.name): update=\(.status.updateStatus // "<none>") runtime=\(.status.runtimeStatus // "<none>")"' 2>/dev/null \
+              || tilt get uiresources 2>/dev/null || true
+            echo "----- tilt-up.log (last 300 lines: operator / kcp-admin extract / build output) -----"
+            tail -n 300 "${GITHUB_WORKSPACE}/tilt-up.log" 2>/dev/null || true
+            echo "----- tilt logs '$name' (last 400 lines; empty if it never started) -----"
             tilt logs "$name" 2>/dev/null | tail -n 400 || true
             echo "----- kubectl get pods -A -----"
             kubectl get pods -A -o wide 2>/dev/null || true

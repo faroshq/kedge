@@ -1,10 +1,12 @@
 name: Chart
 
 # Packages the Helm chart (deploy/chart) and publishes it to GHCR as an OCI
-# artifact, scoped to this repo so it does not collide with the kedge monorepo's
-# own chart publish (ghcr.io/<owner>/charts):
+# artifact under a dedicated `charts/` namespace, so it's clearly distinct from
+# the container image (ghcr.io/<owner>/provider-quickstart) and doesn't collide
+# with the kedge monorepo's own chart publish (ghcr.io/<owner>/charts):
 #
-#   oci://ghcr.io/<owner>/provider-quickstart/kedge-quickstart-provider
+#   image: ghcr.io/<owner>/provider-quickstart
+#   chart: ghcr.io/<owner>/provider-quickstart/charts/kedge-quickstart-provider
 #
 # Like image.yaml, this runs only in the standalone mirror (see README).
 
@@ -51,5 +53,5 @@ jobs:
           sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" "${chart_dir}/Chart.yaml"
 
           helm package "${chart_dir}" --version "${CHART_VERSION}"
-          helm push "${name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository }}"
-          echo "Pushed oci://ghcr.io/${{ github.repository }}/${name}:${CHART_VERSION}"
+          helm push "${name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository }}/charts"
+          echo "Pushed oci://ghcr.io/${{ github.repository }}/charts/${name}:${CHART_VERSION}"

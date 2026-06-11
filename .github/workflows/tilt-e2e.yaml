@@ -42,6 +42,12 @@ jobs:
     name: Tilt-cluster (operator multi-shard kcp + in-cluster hub)
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Non-blocking for now: the multi-shard stack over-subscribes the single
+    # 2-vCPU runner (root-kcp won't schedule, shards/proxies crash-loop on
+    # probe timeouts), so this job flakes. continue-on-error keeps it visible
+    # (it still runs and reports) without failing the PR. Remove once the stack
+    # is trimmed to fit (shared etcd ✓, observability off ✓, replicas=1 TODO).
+    continue-on-error: true
     steps:
       - name: Checkout kedge
         uses: actions/checkout@v4

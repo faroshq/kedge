@@ -44,6 +44,11 @@ require (
 )
 
 replace (
+	// kubernetes-graphql-gateway v1.14.0 requires the real apimachinery/v2 v2.31.2
+	// release, whose reflector expects cache APIs (HasSyncedChecker, two-arg
+	// PopBatch) that the pinned kcp-dev/kubernetes client-go fork doesn't have.
+	// Pin back to the pseudo-version the rest of the kcp ecosystem builds against.
+	github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.31.2-0.20260505083940-abda469632ba
 	github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260518141734-ea6103f11755
 	github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.20260504075209-315ebd35273b

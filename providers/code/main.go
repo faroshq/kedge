@@ -35,7 +35,6 @@ import (
 
 	"github.com/faroshq/faros-kedge/providers/code/backend"
 	githubbackend "github.com/faroshq/faros-kedge/providers/code/backend/github"
-	"github.com/faroshq/faros-kedge/providers/code/httpapi"
 	"github.com/faroshq/faros-kedge/providers/code/mcpserver"
 	"github.com/faroshq/faros-kedge/providers/code/oauthgithub"
 	"github.com/faroshq/faros-kedge/providers/code/server"
@@ -96,24 +95,22 @@ func runServe() {
 		log.Printf("kcp config unavailable (%v); tenant MCP tools + controller manager disabled", kcpErr)
 	}
 
-	// Git backends, registered once and shared by the controller manager (which
-	// reconciles CRs as the provider SA) and the read-only packages HTTP handler
-	// (which queries the host as the caller). The GitHub backend holds no global
-	// credential — every Connection authenticates as its own account.
+	// Git backends, registered once and used by the controller manager, which
+	// reconciles CRs as the provider SA (including the packages crawler that
+	// mirrors host packages into Package CRs). The GitHub backend holds no
+	// global credential — every Connection authenticates as its own account.
 	backends := backend.NewRegistry()
 	if err := backends.Register(githubbackend.New()); err != nil {
 		log.Fatalf("register github backend: %v", err)
 	}
 
-	// One caller-token client factory shared by the MCP tools and the packages
-	// handler: both act on the caller's behalf, never as the provider.
+	// Caller-token client factory for the MCP tools: they act on the caller's
+	// behalf, never as the provider.
 	tenantFactory := tenant.NewClientFactory(kcpConfig)
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
 		Tenant: tenantFactory,
 	})
-
-	packagesHandler := httpapi.NewPackagesHandler(tenantFactory, backends)
 
 	fileServer, distFS, err := portalHandler()
 	if err != nil {
@@ -133,7 +130,6 @@ func runServe() {
 
 	srv := server.New(server.Deps{
 		MCP:              mcpHandler,
-		Packages:         packagesHandler,
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,
 		ServePortalAsset: servePortalAsset,

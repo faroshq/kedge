@@ -14,16 +14,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package identity defines the synthetic identity encoding kedge uses when a
-// kcp ServiceAccount from one logical cluster is authorized in another.
+// Package identity builds the cross-workspace ServiceAccount identity kedge
+// authorizes foreign SAs under.
 //
-// kcp ServiceAccount identities are logical-cluster-scoped: the username
-// "system:serviceaccount:default:provider" means a DIFFERENT principal in
+// kcp ServiceAccount usernames ("system:serviceaccount:{ns}:{name}") are
+// logical-cluster-scoped — the same string means a DIFFERENT principal in
 // every workspace, so binding RBAC to it in a tenant workspace would also
-// match a same-named SA the tenant created themselves. Kedge therefore
-// qualifies foreign SAs with their verified home cluster before running a
-// SubjectAccessReview, and grants (e.g. the provider edges-proxy grant
-// created on tenant Enable) bind the qualified form.
+// match a same-named SA the tenant created themselves.
+//
+// kcp already defines the disambiguated form: the GlobalServiceAccount
+// feature gate (beta, default-on since kube 1.35 in the kcp fork) makes
+// kcp's RBAC resolution alias every SA to
+//
+//	system:kcp:serviceaccount:{cluster}:{ns}:{name}
+//
+// (see EffectiveUsers in the fork's pkg/registry/rbac/validation/kcp.go and
+// kcp's e2e TestAPIResourceSchemaVirtualWorkspaceAuthorization, which binds
+// exactly this subject across workspaces). Kedge emits the same format —
+// after verifying the home cluster via TokenReview — so the grant objects
+// created on tenant Enable use kcp-native subjects: the same binding that
+// satisfies kedge's delegated SAR also authorizes the SA on kcp-native
+// paths.
 //
 // Both sides — the SAR caller in pkg/virtual/builder and the grant writer in
 // pkg/hub/kcp — MUST use these helpers so the encodings cannot drift.
@@ -31,16 +42,16 @@ package identity
 
 import "strings"
 
-// qualifiedSAPrefix deliberately does not collide with any kcp- or
-// kubernetes-issued username prefix ("system:serviceaccount:",
-// "system:kcp:", ...) so the qualified form can never be minted by an
-// authenticator — only synthesized by kedge after a successful TokenReview.
-const qualifiedSAPrefix = "system:kedge:foreign-sa:"
+// globalSAPrefix is kcp's cross-workspace ServiceAccount username prefix.
+// kcp's authenticators never mint usernames under it directly (it is an
+// RBAC-resolution alias), so kedge synthesizing it after a successful
+// TokenReview cannot collide with or be forged through any token.
+const globalSAPrefix = "system:kcp:serviceaccount:"
 
 // QualifyServiceAccount converts a TokenReview-resolved ServiceAccount
 // username ("system:serviceaccount:{ns}:{name}") plus its verified home
-// logical cluster into the qualified form
-// "system:kedge:foreign-sa:{homeCluster}:{ns}:{name}".
+// logical cluster into kcp's global form
+// "system:kcp:serviceaccount:{homeCluster}:{ns}:{name}".
 //
 // Returns false when saUsername is not a ServiceAccount username.
 func QualifyServiceAccount(homeCluster, saUsername string) (string, bool) {
@@ -48,12 +59,12 @@ func QualifyServiceAccount(homeCluster, saUsername string) (string, bool) {
 	if !ok || homeCluster == "" || rest == "" {
 		return "", false
 	}
-	return qualifiedSAPrefix + homeCluster + ":" + rest, true
+	return globalSAPrefix + homeCluster + ":" + rest, true
 }
 
-// QualifiedServiceAccount builds the qualified username from parts. Used by
+// QualifiedServiceAccount builds the global username from parts. Used by
 // the grant writer, which knows the SA's coordinates rather than holding a
 // TokenReview result.
 func QualifiedServiceAccount(homeCluster, namespace, name string) string {
-	return qualifiedSAPrefix + homeCluster + ":" + namespace + ":" + name
+	return globalSAPrefix + homeCluster + ":" + namespace + ":" + name
 }

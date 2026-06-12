@@ -120,7 +120,9 @@ func TestAuthorize_ForeignSAToken(t *testing.T) {
 	if fake.sarCluster != targetCluster {
 		t.Errorf("SAR cluster = %q, want target cluster %q (the #68 invariant)", fake.sarCluster, targetCluster)
 	}
-	wantUser := "system:kedge:foreign-sa:" + homeCluster + ":default:provider"
+	// kcp.s native cross-workspace SA form (GlobalServiceAccount aliasing) —
+	// the same subject kcp.s own RBAC resolution would match.
+	wantUser := "system:kcp:serviceaccount:" + homeCluster + ":default:provider"
 	if fake.sarUser != wantUser {
 		t.Errorf("SAR user = %q, want qualified %q", fake.sarUser, wantUser)
 	}

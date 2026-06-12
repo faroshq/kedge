@@ -181,11 +181,16 @@ cluster). Extend authorize() the same way:
 
 1. If the token parses as an SA token, TokenReview in the SA's **home cluster** (kcp
    verifies the signature there, so the home cluster is verified, not just claimed).
-2. SAR in the tenant workspace with a **cluster-qualified synthetic identity**, e.g.
-   `system:kedge:provider-sa:{homeCluster}:{ns}:{name}`. A bare
+2. SAR in the tenant workspace with **kcp's native cross-workspace SA identity**
+   `system:kcp:serviceaccount:{homeCluster}:{ns}:{name}`. A bare
    `system:serviceaccount:{ns}:{name}` is ambiguous — any tenant could create a same-named
-   SA in their own workspace and satisfy the binding. kedge controls both the SAR call and
-   the grant objects, so it can choose an unforgeable encoding.
+   SA in their own workspace and satisfy the binding. The qualified format is not invented:
+   kcp's **GlobalServiceAccount** feature gate (beta, default-on since kube 1.35 in the kcp
+   fork) makes kcp's own RBAC resolution alias every SA to exactly this form
+   (`EffectiveUsers` in the fork's `pkg/registry/rbac/validation/kcp.go`; proven
+   cross-workspace by kcp's e2e `TestAPIResourceSchemaVirtualWorkspaceAuthorization`).
+   Emitting the same format means the Enable-time grant binding also authorizes the
+   provider SA on kcp-native paths, not just kedge's delegated SAR.
 
 **Authz — materialize the grant on Enable.**
 

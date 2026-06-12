@@ -1492,6 +1492,16 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 		"kind":       "ClusterRole",
 		"metadata":   map[string]any{"name": name},
 		"rules": []any{
+			// Workspace access: kcp's workspaceContentAuthorizer requires
+			// the "access" verb on "/" before any resource RBAC is even
+			// consulted, and a foreign SA is not covered by the tenant
+			// workspace's system:authenticated grants (kedge's SAR also
+			// drops its groups). Same pairing kcp's own cross-workspace SA
+			// e2e uses (TestAPIResourceSchemaVirtualWorkspaceAuthorization).
+			map[string]any{
+				"nonResourceURLs": []any{"/"},
+				"verbs":           []any{"access"},
+			},
 			map[string]any{
 				"apiGroups": []any{"kedge.faros.sh"},
 				"resources": []any{"edges"},

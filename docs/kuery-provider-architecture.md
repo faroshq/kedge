@@ -199,8 +199,13 @@ cluster). Extend authorize() the same way:
   your edges" — same consent model as tenant-scoped claims.
 - The existing server-side Enable endpoint (`pkg/hub/restapi/providers_enable.go`, which
   already creates the APIBinding) additionally applies in the tenant workspace:
-  - ClusterRole `kedge:provider:{name}:edges-proxy` — group `kedge.faros.sh`, resource
-    `edges`, verb `proxy`
+  - ClusterRole `kedge:provider:{name}:edges-proxy` — **two rules**: verb `proxy` on
+    `edges.kedge.faros.sh`, plus verb `access` on nonResourceURL `/`. The second is
+    required: kcp's workspaceContentAuthorizer checks `access` before any resource RBAC,
+    and a foreign SA is not covered by the tenant workspace's `system:authenticated`
+    grants (the SAR also drops its groups). kcp's own cross-workspace SA e2e pairs the
+    rules the same way. Verified end-to-end by
+    `TestIEdgeProxyGrantAuthorizesProviderSA` in `test/e2e/suites/provider`.
   - ClusterRoleBinding to the qualified subject above
 - Disable deletes both. Out-of-band APIBindings (kubectl) don't get the grant in v1; a
   reconciling binding-watcher can come later if needed.

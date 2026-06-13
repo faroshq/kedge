@@ -25,19 +25,24 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"sync"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 )
+
+// maxCachedClients bounds the per-(tenant, token) client cache so a
+// long-running provider can't grow without bound as tokens rotate.
+const maxCachedClients = 1024
 
 // ClientFactory builds per-(tenant, caller) dynamic clients.
 type ClientFactory struct {
 	baseHost string
 	baseTLS  rest.TLSClientConfig
 
-	mu  sync.RWMutex
-	hot map[string]dynamic.Interface
+	// hot is an LRU keyed by (tenantPath, full token hash); it is internally
+	// synchronized, so no extra mutex is needed.
+	hot *lru.Cache[string, dynamic.Interface]
 }
 
 // NewClientFactory reuses base for host + TLS only; the bearer token (and any
@@ -56,10 +61,12 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 	tls.CertFile = ""
 	tls.KeyData = nil
 	tls.KeyFile = ""
+	// lru.New only errors on a non-positive size, which maxCachedClients never is.
+	hot, _ := lru.New[string, dynamic.Interface](maxCachedClients)
 	return &ClientFactory{
 		baseHost: baseHost,
 		baseTLS:  tls,
-		hot:      make(map[string]dynamic.Interface),
+		hot:      hot,
 	}
 }
 
@@ -71,10 +78,7 @@ func (f *ClientFactory) For(tenantPath, token string) (dynamic.Interface, error)
 	}
 	key := tenantPath + ":" + hashToken(token)
 
-	f.mu.RLock()
-	dyn, ok := f.hot[key]
-	f.mu.RUnlock()
-	if ok {
+	if dyn, ok := f.hot.Get(key); ok {
 		return dyn, nil
 	}
 
@@ -88,18 +92,15 @@ func (f *ClientFactory) For(tenantPath, token string) (dynamic.Interface, error)
 		return nil, fmt.Errorf("dynamic client for tenant %q: %w", tenantPath, err)
 	}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if existing, ok := f.hot[key]; ok {
-		return existing, nil
-	}
-	f.hot[key] = d
+	// A concurrent caller may have built an equivalent client for the same key;
+	// LRU.Add is safe either way and the loser is simply discarded.
+	f.hot.Add(key, d)
 	return d, nil
 }
 
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:8])
+	return hex.EncodeToString(sum[:])
 }
 
 func stripClusterSuffix(host string) (string, error) {

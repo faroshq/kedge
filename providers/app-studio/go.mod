@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/lib/pq v1.10.9
 	golang.org/x/oauth2 v0.36.0
 	k8s.io/apimachinery v0.36.1

@@ -31,6 +31,8 @@ export const RELATION_COLORS: Record<string, string> = {
   'selected-by': '#e07a4f',
   'linked+': '#e0519b',
   grouped: '#8a93a8',
+  namespace: '#5fae7a',
+  namespaced: '#5fae7a',
 }
 
 // Short legend labels (the impact list uses longer titles).
@@ -42,6 +44,8 @@ export const RELATION_LABELS: Record<string, string> = {
   'selected-by': 'selected-by',
   'linked+': 'linked',
   grouped: 'grouped',
+  namespace: 'namespace',
+  namespaced: 'contains',
 }
 
 export interface BuildResult {
@@ -75,6 +79,94 @@ export function buildElements(anchor: ObjectResult): BuildResult {
       pushNode(elements, nodeIndex, seen, id, it, false)
       elements.push({ data: { id: `${anchorId}|${rel}|${id}`, source: anchorId, target: id, rel } })
     })
+  }
+  return { elements, nodeIndex }
+}
+
+// buildTopologyElements turns a clusters-rooted query result (each cluster
+// with its `members` relation) into a fleet tree: Edge → Namespace → object,
+// with cluster-scoped objects hanging straight off the Edge. Structural edges
+// all use rel "namespace" so they share the containment color.
+//
+// A namespace's tier node IS the real `Namespace` object when one was synced
+// (so it carries children AND is clickable → its `namespaced` impact), rather
+// than rendering the Namespace both as a synthetic group and a childless leaf.
+// Falls back to a synthetic tier when the Namespace object isn't in the set.
+export function buildTopologyElements(
+  clusters: ObjectResult[],
+  opts?: { kind?: string; namespace?: string },
+): BuildResult {
+  const elements: cytoscape.ElementDefinition[] = []
+  const nodeIndex: Record<string, ObjectResult> = {}
+  const nodes = new Set<string>()
+  const edges = new Set<string>()
+  const wantKind = opts?.kind || ''
+  const wantNs = opts?.namespace || ''
+
+  const addNode = (id: string, data: Record<string, unknown>) => {
+    if (nodes.has(id)) return
+    nodes.add(id)
+    elements.push({ data: { id, ...data } })
+  }
+  const addEdge = (source: string, target: string) => {
+    const id = `${source}>${target}`
+    if (edges.has(id)) return
+    edges.add(id)
+    elements.push({ data: { id, source, target, rel: 'namespace' } })
+  }
+
+  for (const c of clusters) {
+    const cname = c.cluster || c.object?.metadata?.name || 'cluster'
+    const cid = `cluster:${cname}`
+    addNode(cid, { label: edgeOf(cname), tier: 'cluster', anchor: 'true', kind: 'Cluster', name: edgeOf(cname) })
+
+    const members = c.relations?.members ?? []
+
+    // Index the real Namespace objects so a tier can adopt one as its node.
+    const nsObjByName = new Map<string, ObjectResult>()
+    for (const mem of members) {
+      if (mem.object?.kind === 'Namespace') nsObjByName.set(mem.object.metadata?.name || '', mem)
+    }
+    // ensureNs returns the tier node id for a namespace, creating it (and the
+    // Edge→Namespace edge) on first use. Uses the real Namespace object's id
+    // when available so the tier is the object itself.
+    const ensureNs = (nsName: string): string => {
+      const real = nsObjByName.get(nsName)
+      const nid = real?.id || `ns:${cname}/${nsName}`
+      if (!nodes.has(nid)) {
+        addNode(nid, { label: nsName, tier: 'namespace', kind: 'Namespace', name: nsName })
+        if (real) nodeIndex[nid] = real
+        addEdge(cid, nid)
+      }
+      return nid
+    }
+
+    // Show every namespace as a tier — even empty ones — unless filtering to a
+    // different kind.
+    if (!wantKind || wantKind === 'Namespace') {
+      for (const nsName of nsObjByName.keys()) {
+        if (!nsName) continue
+        if (wantNs && nsName !== wantNs) continue
+        ensureNs(nsName)
+      }
+    }
+
+    for (const mem of members) {
+      const o = mem.object ?? {}
+      const kind = o.kind || '?'
+      if (kind === 'Namespace') continue // already represented as a tier node
+      const name = o.metadata?.name || '?'
+      const ns = o.metadata?.namespace || ''
+      // Client-side facet filters. Namespace "" (cluster-scoped) is excluded
+      // when a specific namespace is selected.
+      if (wantKind && kind !== wantKind) continue
+      if (wantNs && ns !== wantNs) continue
+      const oid = mem.id || `${cname}/${kind}/${ns}/${name}`
+      const parent = ns ? ensureNs(ns) : cid
+      addNode(oid, { label: `${kind}\n${name}`, tier: 'object', kind, name, edge: edgeOf(mem.cluster) })
+      nodeIndex[oid] = mem
+      addEdge(parent, oid)
+    }
   }
   return { elements, nodeIndex }
 }
@@ -148,6 +240,22 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
         'font-weight': 700,
       },
     },
+    // Topology tiers: the Edge (cluster) anchors as a hexagon; Namespaces are
+    // muted diamonds; objects keep the default round-rectangle.
+    {
+      selector: 'node[tier = "cluster"]',
+      style: { shape: 'hexagon', width: 44, height: 44 },
+    },
+    {
+      selector: 'node[tier = "namespace"]',
+      style: { shape: 'diamond', 'background-color': muted, 'border-color': border, width: 30, height: 30, 'font-size': 9 },
+    },
+    // Drilled nodes get an accent ring so you can see how far the net is
+    // already expanded vs. what's still collapsed.
+    {
+      selector: 'node[expanded = "true"]',
+      style: { 'border-color': accent, 'border-width': 3 },
+    },
     {
       selector: 'node:active',
       style: { 'overlay-color': accent, 'overlay-opacity': 0.15 },
@@ -172,6 +280,48 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
 
 export interface GraphHandle {
   destroy(): void
+  // add merges new nodes/edges into the live graph, skipping ids already
+  // present (so an object reached from two parents becomes one node with two
+  // edges — the real dependency net). Returns the elements actually added.
+  add(elements: cytoscape.ElementDefinition[]): cytoscape.ElementDefinition[]
+  hasNode(id: string): boolean
+  // markExpanded flags a node as already drilled so the UI can style it and
+  // skip re-querying. collapseFrom removes the subtree reachable only through
+  // the given node (leaves shared nodes alone).
+  markExpanded(id: string, expanded: boolean): void
+  isExpanded(id: string): boolean
+  collapseFrom(id: string): void
+  // relayout re-runs the layout after the graph grows/shrinks.
+  relayout(layout?: Record<string, unknown>): void
+  // Viewport controls for keyboard nav / fullscreen.
+  panBy(dx: number, dy: number): void
+  zoomBy(factor: number): void
+  fit(): void
+  nodeCount(): number
+}
+
+// relationElements builds the child nodes/edges for one already-placed node
+// (anchorId) from an impact result's relations. It does NOT emit the anchor
+// itself. Child node ids are the objects' stable kuery ids, so re-expanding or
+// reaching the same object from elsewhere dedupes to a single node. Edge ids
+// are per (parent, rel, child) so parallel relations stay distinct.
+export function relationElements(anchorId: string, anchor: ObjectResult): BuildResult {
+  const elements: cytoscape.ElementDefinition[] = []
+  const nodeIndex: Record<string, ObjectResult> = {}
+  const rels = anchor.relations ?? {}
+  for (const [rel, items] of Object.entries(rels)) {
+    ;(items ?? []).forEach((it, i) => {
+      const id = it.id || `${anchorId}:${rel}:${i}`
+      const o = it.object ?? {}
+      const kind = o.kind || '?'
+      elements.push({
+        data: { id, label: `${kind}\n${shortName(it)}`, tier: 'object', kind, name: shortName(it), edge: edgeOf(it.cluster) },
+      })
+      nodeIndex[id] = it
+      elements.push({ data: { id: `${anchorId}|${rel}|${id}`, source: anchorId, target: id, rel } })
+    })
+  }
+  return { elements, nodeIndex }
 }
 
 let _libPromise: Promise<typeof cytoscape> | null = null
@@ -206,28 +356,78 @@ export async function mountGraph(
   style: cytoscape.StylesheetStyle[],
   onNodeTap: (id: string) => void,
   libUrl: string,
+  // Loose object so callers can pass any built-in layout config (tree, radial,
+  // circle, force) without importing Cytoscape's layout union; cast below.
+  layout?: Record<string, unknown>,
 ): Promise<GraphHandle> {
   const cytoscape = await loadCytoscape(libUrl)
   const cy = cytoscape({
     container,
     elements,
     style,
-    layout: {
+    layout: (layout ?? {
       name: 'concentric',
       concentric: (node: cytoscape.NodeSingular) => (node.data('anchor') === 'true' ? 2 : 1),
       levelWidth: () => 1,
       minNodeSpacing: 34,
       padding: 16,
-    },
+    }) as unknown as cytoscape.LayoutOptions,
     wheelSensitivity: 0.2,
-    minZoom: 0.2,
+    // Allow zooming far out so a fully-expanded net still fits on screen.
+    minZoom: 0.02,
     maxZoom: 3,
   })
-  cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
-    const n = evt.target
-    if (n.data('anchor') !== 'true') onNodeTap(n.id())
-  })
-  return { destroy: () => cy.destroy() }
+  // Every node is tappable; the caller decides what (if anything) to do — for
+  // the explorer that's expand/collapse, for the impact view it re-anchors.
+  cy.on('tap', 'node', (evt: cytoscape.EventObject) => onNodeTap(evt.target.id()))
+
+  return {
+    destroy: () => cy.destroy(),
+    hasNode: (id) => cy.getElementById(id).nonempty(),
+    isExpanded: (id) => cy.getElementById(id).data('expanded') === 'true',
+    markExpanded: (id, expanded) => {
+      const n = cy.getElementById(id)
+      if (n.nonempty()) n.data('expanded', expanded ? 'true' : 'false')
+    },
+    add: (els) => {
+      const fresh = els.filter((e) => {
+        const id = e.data?.id as string | undefined
+        return !!id && cy.getElementById(id).empty()
+      })
+      if (fresh.length) cy.add(fresh)
+      return fresh
+    },
+    collapseFrom: (id) => {
+      const root = cy.getElementById(id)
+      if (root.empty()) return
+      // Cut this node's outgoing edges, then cascade-remove any node left with
+      // no incoming edge (its exclusive subtree). Shared nodes keep an edge
+      // from elsewhere and survive; cluster roots are never removed.
+      cy.remove(root.connectedEdges().filter((e: cytoscape.EdgeSingular) => e.source().id() === id))
+      let changed = true
+      while (changed) {
+        changed = false
+        cy.nodes().forEach((n: cytoscape.NodeSingular) => {
+          if (n.id() === id || n.data('tier') === 'cluster') return
+          if (n.incomers('edge').empty()) {
+            cy.remove(n)
+            changed = true
+          }
+        })
+      }
+      root.data('expanded', 'false')
+    },
+    relayout: (layout) => {
+      cy.layout((layout ?? { name: 'breadthfirst', directed: true, spacingFactor: 1.0, padding: 20 }) as unknown as cytoscape.LayoutOptions).run()
+    },
+    panBy: (dx, dy) => cy.panBy({ x: dx, y: dy }),
+    zoomBy: (factor) => cy.zoom({ level: cy.zoom() * factor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }),
+    fit: () => {
+      cy.resize()
+      cy.fit(undefined, 24)
+    },
+    nodeCount: () => cy.nodes().length,
+  }
 }
 
 function shortName(o: ObjectResult): string {

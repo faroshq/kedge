@@ -249,6 +249,34 @@ kedge-provider-kuery .kuery-graph {
   border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
   border-radius: 8px;
   background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
+  outline: none;
+}
+
+/* Fullscreen: the panel fills the viewport and the graph grows to match. */
+kedge-provider-kuery .panel.kuery-full {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  margin: 0;
+  border-radius: 0;
+  overflow: auto;
+  background: var(--color-surface-overlay, var(--color-surface-base, #1b1b20));
+}
+
+kedge-provider-kuery .panel.kuery-full .kuery-graph {
+  height: calc(100vh - 150px);
+}
+
+/* Fullscreen API path: the panel itself is the fullscreen element. Give it a
+   solid background (the API default is black) and let the graph fill it. */
+kedge-provider-kuery .panel:fullscreen {
+  overflow: auto;
+  padding: 16px;
+  background: var(--color-surface-overlay, var(--color-surface-base, #1b1b20));
+}
+
+kedge-provider-kuery .panel:fullscreen .kuery-graph {
+  height: calc(100vh - 150px);
 }
 
 kedge-provider-kuery .legend {

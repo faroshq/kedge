@@ -49,7 +49,7 @@ type impactOutput struct {
 // impactRelations is the relation set the impact view expands: everything
 // that DECLARES coupling to the object. Events excluded by default — they
 // are blacklisted from sync.
-var impactRelations = []string{"descendants+", "references", "selects", "selected-by", "owners", "linked+", "grouped"}
+var impactRelations = []string{"descendants+", "references", "selects", "selected-by", "owners", "linked+", "grouped", "namespace", "namespaced"}
 
 func registerTools(srv *mcp.Server, deps Deps, r *http.Request) {
 	ident := queryapi.IdentityFromRequest(r)

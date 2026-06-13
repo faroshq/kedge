@@ -1,4 +1,4 @@
-// IIFE entry loaded by the host portal. Reuses the shared App Studio
-// portal source from providers/projects/portal/src.
+// IIFE entry loaded by the host portal. Registers
+// <kedge-provider-app-studio> as a side effect.
 
-import '../../../projects/portal/src/main'
+import './element'

@@ -502,7 +502,11 @@ local_resource(
 local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
-    serve_cmd='make run-provider-app-studio',
+    # The tenant client needs the kcp front-proxy host+TLS (it drops the
+    # credential and acts as the caller). In the in-cluster hub flow the
+    # provider runs on the host, so point it at the operator-issued admin
+    # kubeconfig (kcp.localhost:8443).
+    serve_cmd='KEDGE_PROVIDER_KUBECONFIG={kc} make run-provider-app-studio'.format(kc=KCP_ADMIN_KUBECONFIG),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',

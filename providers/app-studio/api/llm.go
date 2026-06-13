@@ -38,6 +38,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -90,12 +91,12 @@ type googleServiceAccountCredential struct {
 }
 
 type chatCompletionRequest struct {
-	Model       string            `json:"model"`
-	Messages    []chatMessage     `json:"messages"`
-	Temperature float64           `json:"temperature,omitempty"`
-	Tools       []chatTool        `json:"tools,omitempty"`
-	ToolChoice  string            `json:"tool_choice,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Temperature float64       `json:"temperature,omitempty"`
+	Tools       []chatTool    `json:"tools,omitempty"`
+	ToolChoice  string        `json:"tool_choice,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
 }
 
 type chatMessage struct {
@@ -447,6 +448,11 @@ func callProjectChatCompletionStream(
 		if detail == "" {
 			detail = resp.Status
 		}
+		// Surfaces upstream LLM rejections (auth, model, request-shape) so a
+		// failing chat is debuggable from the provider logs without guessing
+		// whether it's the provider or the LLM endpoint.
+		klog.FromContext(ctx).Error(nil, "LLM API returned non-2xx",
+			"endpoint", endpoint, "model", reqBody.Model, "status", resp.Status, "detail", detail)
 		return projectAssistantReply{}, fmt.Errorf("LLM API returned %s: %s", resp.Status, detail)
 	}
 

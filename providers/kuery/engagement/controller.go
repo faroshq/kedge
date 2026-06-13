@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,6 +40,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/kcp-dev/multicluster-provider/apiexport"
+	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -68,11 +71,19 @@ const clusterTTLSeconds = 3600
 // Config wires the engagement controller.
 type Config struct {
 	// ProviderConfig is the minted provider kubeconfig's rest.Config. Its
-	// host is the hub front-proxy scoped to the provider workspace; its
-	// bearer token is the provider SA token the edges-proxy grant
-	// authorizes. Both the APIExport VW discovery and the per-edge proxy
-	// configs derive from it.
+	// host is scoped to the provider workspace (/clusters/...) and must
+	// reach the kcp API — the APIExport VW discovery and the apiexport
+	// multicluster provider's APIExportEndpointSlice cache are built from
+	// it. Its bearer token (the provider SA token) also authorizes the
+	// per-edge edges-proxy data path.
 	ProviderConfig *rest.Config
+	// HubBaseURL is the kedge hub root that serves the edges-proxy virtual
+	// workspace (/services/edges-proxy/...). When the hub and the kcp API
+	// share one front-proxy host (in-cluster production) this is empty and
+	// the base is derived from ProviderConfig.Host; in host-binary/Tilt dev
+	// the kcp API (kcp front proxy) and the edges-proxy (hub) are split
+	// across two ports, so the hub URL is passed explicitly via KEDGE_HUB_URL.
+	HubBaseURL string
 	// APIExportName is the provider's APIExport ("kuery.providers.kedge.faros.sh").
 	APIExportName string
 	// Sync is the kuery sync controller clusters are engaged into.
@@ -89,7 +100,19 @@ type Controller struct {
 	mgr mcmanager.Manager
 
 	mu      sync.Mutex
-	engaged map[string]context.CancelFunc // "{tenantCluster}/{edgeName}" → informer cancel
+	engaged map[string]engagedEdge // "{tenantCluster}/{edgeName}" → engagement handle
+}
+
+// engagedEdge tracks one engaged edge. The map key stays cluster-based
+// ("{tenantCluster}/{edgeName}") so it's computable on delete (when the Edge —
+// and its status.workspacePath — is already gone), but the tenant identity
+// queries scope by is the workspace PATH the hub stamped onto the Edge status,
+// which is what X-Kedge-Tenant carries. Keeping both decouples the data-path
+// key (cluster) from the tenant-scoping key (path).
+type engagedEdge struct {
+	cancel   context.CancelFunc
+	tenant   string // workspace path, used as the kuery cluster label + TenantEdges scope
+	edgeName string
 }
 
 // New builds the multicluster manager (APIExport VW) and registers the
@@ -99,13 +122,28 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("engagement: ProviderConfig, Sync, and Store are required")
 	}
 
-	c := &Controller{
-		cfg:     cfg,
-		hubBase: stripClusterSuffix(cfg.ProviderConfig.Host),
-		engaged: map[string]context.CancelFunc{},
+	// edges-proxy lives on the hub, which in dev is a different host than
+	// the kcp API ProviderConfig points at — prefer the explicit hub URL,
+	// fall back to the ProviderConfig host for the unified production case.
+	hubBase := strings.TrimRight(cfg.HubBaseURL, "/")
+	if hubBase == "" {
+		hubBase = stripClusterSuffix(cfg.ProviderConfig.Host)
 	}
 
-	scheme := runtime.NewScheme() // Edge is read unstructured; no typed registration needed
+	c := &Controller{
+		cfg:     cfg,
+		hubBase: hubBase,
+		engaged: map[string]engagedEdge{},
+	}
+
+	// Edge objects are read unstructured, but the apiexport multicluster
+	// provider builds a typed cache over APIExportEndpointSlice (v1alpha1)
+	// and APIExport (v1alpha2) to discover virtual-workspace URLs — those
+	// kinds must be registered or the cache fails with "no kind is
+	// registered for the type ... APIExportEndpointSlice".
+	scheme := runtime.NewScheme()
+	utilruntime.Must(apiskcpv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(apiskcpv1alpha2.AddToScheme(scheme))
 
 	provider, err := apiexport.New(cfg.ProviderConfig, cfg.APIExportName, apiexport.Options{Scheme: scheme})
 	if err != nil {
@@ -145,15 +183,16 @@ func (c *Controller) EngagedCount() int {
 }
 
 // TenantEdges lists the edge names currently engaged for one tenant —
-// the portal's edge selector. Engaged keys are "{tenantCluster}/{edge}".
+// the portal's edge selector. The tenant key is the workspace PATH (matching
+// the X-Kedge-Tenant the hub injects), stored per-entry rather than parsed
+// from the cluster-based map key.
 func (c *Controller) TenantEdges(tenant string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var edges []string
-	prefix := tenant + "/"
-	for key := range c.engaged {
-		if strings.HasPrefix(key, prefix) {
-			edges = append(edges, strings.TrimPrefix(key, prefix))
+	for _, e := range c.engaged {
+		if e.tenant == tenant {
+			edges = append(edges, e.edgeName)
 		}
 	}
 	sort.Strings(edges)
@@ -193,18 +232,45 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if err := c.engage(ctx, key, tenantCluster, req.Name); err != nil {
+	// Tenant identity is the workspace PATH, stamped onto the Edge status by
+	// the hub (status.workspacePath) so it matches the X-Kedge-Tenant the hub
+	// injects on portal queries. Until the hub has stamped it, fall back to the
+	// logical-cluster name and requeue so we re-label once the path appears —
+	// otherwise queries scoped by path would never see this edge.
+	tenant, _, _ := unstructured.NestedString(edge.Object, "status", "workspacePath")
+	requeuePath := false
+	if tenant == "" {
+		tenant = tenantCluster
+		requeuePath = true
+	}
+
+	if err := c.engage(ctx, key, tenantCluster, req.Name, tenant); err != nil {
 		logger.Error(err, "engaging edge")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	if requeuePath {
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
 }
 
 // engage builds the edges-proxy cluster client and hands it to kuery,
-// then asserts the tenant label used for query scoping.
-func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName string) error {
+// then asserts the tenant label used for query scoping. tenant is the
+// workspace path used as the kuery cluster label and TenantEdges scope.
+func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, tenant string) error {
 	c.mu.Lock()
-	if _, ok := c.engaged[key]; ok {
+	if existing, ok := c.engaged[key]; ok {
+		// Already engaged. The only thing that can have changed is the tenant
+		// label — e.g. the first engage happened before the hub stamped
+		// status.workspacePath, so we labelled with the cluster-name fallback
+		// and a requeue is now retrying with the real path. Re-assert the label
+		// and update the entry without churning the informer.
+		if existing.tenant != tenant {
+			existing.tenant = tenant
+			c.engaged[key] = existing
+			c.mu.Unlock()
+			return c.assertTenantLabel(ctx, key, tenant)
+		}
 		c.mu.Unlock()
 		return nil // already engaged; reconnects surface as connected=false first
 	}
@@ -242,32 +308,38 @@ func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName st
 	}
 
 	// Engage upserted the cluster row with empty labels — re-assert the
-	// tenant label synchronously so queries scope correctly. Same TTL and
-	// status as Engage wrote.
-	now := time.Now()
-	if err := c.cfg.Store.UpsertCluster(ctx, &kuerystore.ClusterModel{
-		Name:      key,
-		Status:    "active",
-		LastSeen:  now,
-		EngagedAt: &now,
-		TTL:       clusterTTLSeconds,
-		Labels:    tenantLabelsJSON(tenantCluster),
-	}); err != nil {
+	// tenant label synchronously so queries scope correctly.
+	if err := c.assertTenantLabel(ctx, key, tenant); err != nil {
 		_ = c.cfg.Sync.Disengage(ctx, key)
 		cancel()
 		return fmt.Errorf("labelling cluster: %w", err)
 	}
 
 	c.mu.Lock()
-	c.engaged[key] = cancel
+	c.engaged[key] = engagedEdge{cancel: cancel, tenant: tenant, edgeName: edgeName}
 	c.mu.Unlock()
-	logger.Info("edge engaged")
+	logger.Info("edge engaged", "tenant", tenant)
 	return nil
+}
+
+// assertTenantLabel (re-)writes the kuery cluster row's tenant label. kuery's
+// own Engage upserts the row with empty labels, and the query API scopes by
+// this label, so it MUST carry the workspace path. Same TTL/status as Engage.
+func (c *Controller) assertTenantLabel(ctx context.Context, key, tenant string) error {
+	now := time.Now()
+	return c.cfg.Store.UpsertCluster(ctx, &kuerystore.ClusterModel{
+		Name:      key,
+		Status:    "active",
+		LastSeen:  now,
+		EngagedAt: &now,
+		TTL:       clusterTTLSeconds,
+		Labels:    tenantLabelsJSON(tenant),
+	})
 }
 
 func (c *Controller) disengage(ctx context.Context, key string) {
 	c.mu.Lock()
-	cancel, ok := c.engaged[key]
+	entry, ok := c.engaged[key]
 	if ok {
 		delete(c.engaged, key)
 	}
@@ -275,7 +347,7 @@ func (c *Controller) disengage(ctx context.Context, key string) {
 	if !ok {
 		return
 	}
-	cancel()
+	entry.cancel()
 	if err := c.cfg.Sync.Disengage(ctx, key); err != nil {
 		klog.FromContext(ctx).Error(err, "disengaging edge", "edge", key)
 	}
@@ -293,8 +365,8 @@ func edgeProxyURL(hubBase, cluster, edgeName string) string {
 
 // tenantLabelsJSON renders the cluster labels blob for the store. The map
 // has one fixed key, so marshalling cannot fail.
-func tenantLabelsJSON(tenantCluster string) []byte {
-	b, _ := json.Marshal(map[string]string{TenantLabel: tenantCluster})
+func tenantLabelsJSON(tenant string) []byte {
+	b, _ := json.Marshal(map[string]string{TenantLabel: tenant})
 	return b
 }
 

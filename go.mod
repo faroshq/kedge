@@ -56,6 +56,12 @@ replace (
 	// Pin back to the pseudo-version the rest of the kcp ecosystem builds against.
 	github.com/kcp-dev/apimachinery/v2 => github.com/kcp-dev/apimachinery/v2 v2.31.2-0.20260505083940-abda469632ba
 	github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260518141734-ea6103f11755
+	// The released v0.7.1 predates HasSyncedChecker on controller-runtime's
+	// cache.Informer, so it fails to build against controller-runtime v0.24.1.
+	// The pseudo-version is a PRE-release (sorts below v0.7.1), so a bare
+	// require can't hold it once anything pulls the v0.7.1 tag — force it here,
+	// matching the /client replace below (same commit).
+	github.com/kcp-dev/multicluster-provider => github.com/kcp-dev/multicluster-provider v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk => github.com/kcp-dev/sdk v0.28.1-0.20260504075209-315ebd35273b
 	// TODO: drop this once virtual-workspace-framework is synced from kcp staging.

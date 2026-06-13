@@ -96,7 +96,6 @@ type chatCompletionRequest struct {
 	Tools       []chatTool        `json:"tools,omitempty"`
 	ToolChoice  string            `json:"tool_choice,omitempty"`
 	Stream      bool              `json:"stream,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 type chatMessage struct {
@@ -299,11 +298,6 @@ func (s *Server) generateProjectAssistantStream(
 		if len(tools) > 0 {
 			reqBody.Tools = tools
 			reqBody.ToolChoice = "auto"
-		}
-		if shouldIncludeProjectLLMMetadata(settings) {
-			reqBody.Metadata = map[string]string{
-				"project": p.Name,
-			}
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
@@ -1234,14 +1228,6 @@ func projectMCPToolBaseName(name string) string {
 		}
 	}
 	return strings.TrimSpace(name)
-}
-
-func shouldIncludeProjectLLMMetadata(settings projectLLMSettings) bool {
-	if strings.EqualFold(strings.TrimSpace(settings.Provider), projectLLMProviderGoogle) {
-		return false
-	}
-	baseURL := strings.ToLower(strings.TrimSpace(settings.BaseURL))
-	return !strings.Contains(baseURL, "generativelanguage.googleapis.com")
 }
 
 func appendMemoryList(b *strings.Builder, label string, items []string) {

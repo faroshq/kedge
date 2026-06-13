@@ -232,51 +232,49 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Tenant identity is the workspace PATH, stamped onto the Edge status by
-	// the hub (status.workspacePath) so it matches the X-Kedge-Tenant the hub
-	// injects on portal queries. Until the hub has stamped it, fall back to the
-	// logical-cluster name and requeue so we re-label once the path appears —
-	// otherwise queries scoped by path would never see this edge.
+	// Tenant identity is the workspace PATH the hub stamps onto the Edge status
+	// (status.workspacePath). Both the kuery cluster row's NAME and its tenant
+	// LABEL are keyed by it so tenant-scoped queries match — the list query
+	// scopes by label, and the impact query re-pins the path prefix onto the
+	// cluster name (queryapi.ScopeToTenant). Until the hub has stamped it,
+	// requeue rather than engage under the logical-cluster name: that would
+	// create a store row the portal — which only ever sends the path — could
+	// never match (impact would report "object not found").
 	tenant, _, _ := unstructured.NestedString(edge.Object, "status", "workspacePath")
-	requeuePath := false
 	if tenant == "" {
-		tenant = tenantCluster
-		requeuePath = true
+		logger.V(4).Info("workspacePath not yet stamped by hub; requeuing")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	if err := c.engage(ctx, key, tenantCluster, req.Name, tenant); err != nil {
 		logger.Error(err, "engaging edge")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if requeuePath {
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
 	return ctrl.Result{}, nil
 }
 
 // engage builds the edges-proxy cluster client and hands it to kuery,
 // then asserts the tenant label used for query scoping. tenant is the
-// workspace path used as the kuery cluster label and TenantEdges scope.
+// workspace path.
+//
+// Two distinct identifiers are at play:
+//   - key ("{logicalCluster}/{edge}") is the internal engaged-map key. It's
+//     derived purely from the reconcile request so it stays computable on
+//     delete, when the Edge (and its status.workspacePath) is already gone.
+//   - storeName ("{workspacePath}/{edge}") is the name kuery records the
+//     cluster under. queryapi.ScopeToTenant rebuilds exactly this form from
+//     the caller's tenant + edge for impact queries, so the store name MUST
+//     be path-based or those lookups miss.
 func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, tenant string) error {
 	c.mu.Lock()
-	if existing, ok := c.engaged[key]; ok {
-		// Already engaged. The only thing that can have changed is the tenant
-		// label — e.g. the first engage happened before the hub stamped
-		// status.workspacePath, so we labelled with the cluster-name fallback
-		// and a requeue is now retrying with the real path. Re-assert the label
-		// and update the entry without churning the informer.
-		if existing.tenant != tenant {
-			existing.tenant = tenant
-			c.engaged[key] = existing
-			c.mu.Unlock()
-			return c.assertTenantLabel(ctx, key, tenant)
-		}
+	if _, ok := c.engaged[key]; ok {
 		c.mu.Unlock()
 		return nil // already engaged; reconnects surface as connected=false first
 	}
 	c.mu.Unlock()
 
-	logger := klog.FromContext(ctx).WithValues("edge", key)
+	storeName := tenant + "/" + edgeName
+	logger := klog.FromContext(ctx).WithValues("edge", storeName)
 	logger.Info("engaging edge into kuery")
 
 	cfg := rest.CopyConfig(c.cfg.ProviderConfig)
@@ -299,18 +297,18 @@ func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, t
 	}()
 	if !cl.GetCache().WaitForCacheSync(clusterCtx) {
 		cancel()
-		return fmt.Errorf("cache sync failed for edge %s", key)
+		return fmt.Errorf("cache sync failed for edge %s", storeName)
 	}
 
-	if err := c.cfg.Sync.Engage(clusterCtx, key, cl); err != nil {
+	if err := c.cfg.Sync.Engage(clusterCtx, storeName, cl); err != nil {
 		cancel()
 		return fmt.Errorf("kuery engage: %w", err)
 	}
 
 	// Engage upserted the cluster row with empty labels — re-assert the
 	// tenant label synchronously so queries scope correctly.
-	if err := c.assertTenantLabel(ctx, key, tenant); err != nil {
-		_ = c.cfg.Sync.Disengage(ctx, key)
+	if err := c.assertTenantLabel(ctx, storeName, tenant); err != nil {
+		_ = c.cfg.Sync.Disengage(ctx, storeName)
 		cancel()
 		return fmt.Errorf("labelling cluster: %w", err)
 	}
@@ -324,11 +322,12 @@ func (c *Controller) engage(ctx context.Context, key, tenantCluster, edgeName, t
 
 // assertTenantLabel (re-)writes the kuery cluster row's tenant label. kuery's
 // own Engage upserts the row with empty labels, and the query API scopes by
-// this label, so it MUST carry the workspace path. Same TTL/status as Engage.
-func (c *Controller) assertTenantLabel(ctx context.Context, key, tenant string) error {
+// this label, so it MUST carry the workspace path. storeName is the path-based
+// cluster name (see engage). Same TTL/status as Engage.
+func (c *Controller) assertTenantLabel(ctx context.Context, storeName, tenant string) error {
 	now := time.Now()
 	return c.cfg.Store.UpsertCluster(ctx, &kuerystore.ClusterModel{
-		Name:      key,
+		Name:      storeName,
 		Status:    "active",
 		LastSeen:  now,
 		EngagedAt: &now,
@@ -348,10 +347,13 @@ func (c *Controller) disengage(ctx context.Context, key string) {
 		return
 	}
 	entry.cancel()
-	if err := c.cfg.Sync.Disengage(ctx, key); err != nil {
-		klog.FromContext(ctx).Error(err, "disengaging edge", "edge", key)
+	// kuery recorded the cluster under the path-based store name (see engage),
+	// not the cluster-based map key — disengage the same name.
+	storeName := entry.tenant + "/" + entry.edgeName
+	if err := c.cfg.Sync.Disengage(ctx, storeName); err != nil {
+		klog.FromContext(ctx).Error(err, "disengaging edge", "edge", storeName)
 	}
-	klog.FromContext(ctx).Info("edge disengaged", "edge", key)
+	klog.FromContext(ctx).Info("edge disengaged", "edge", storeName)
 }
 
 // edgeProxyURL mirrors pkg/apiurl.EdgeProxyURL in the kedge monorepo —

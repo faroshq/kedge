@@ -54,6 +54,12 @@ const (
 	defaultProjectLLMModel         = "gpt-4o-mini"
 	projectLLMProviderGoogle       = "google-ai-studio"
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
+
+	// maxAssistantToolTurns bounds how many tool-call/round-trips a single
+	// assistant generation may take before the final turn is forced to answer
+	// in text (tool_choice=none). It guards against a model that loops on
+	// failing or disallowed tool calls.
+	maxAssistantToolTurns = 8
 )
 
 var (
@@ -289,7 +295,22 @@ func (s *Server) generateProjectAssistantStream(
 		})
 	}
 
-	for i := 0; i < 5; i++ {
+	logger := klog.FromContext(ctx)
+
+	// seenToolCalls tracks each (name, args) signature the model has already
+	// requested. A model that re-issues an identical call is looping rather
+	// than making progress, so we stop offering tools and force a text answer
+	// instead of grinding through every turn and dying with a generic error.
+	seenToolCalls := map[string]int{}
+	forceTextAnswer := false
+
+	for i := 0; i < maxAssistantToolTurns; i++ {
+		// On the last allowed turn (or once we have detected a loop) set
+		// tool_choice=none so the model MUST produce a final text answer. This
+		// turns "exceeded safe turn limit" into a graceful explanation of why
+		// the assistant could not complete the request.
+		finalTurn := forceTextAnswer || i == maxAssistantToolTurns-1
+
 		reqBody := chatCompletionRequest{
 			Model:       settings.Model,
 			Messages:    messages,
@@ -298,7 +319,11 @@ func (s *Server) generateProjectAssistantStream(
 		}
 		if len(tools) > 0 {
 			reqBody.Tools = tools
-			reqBody.ToolChoice = "auto"
+			if finalTurn {
+				reqBody.ToolChoice = "none"
+			} else {
+				reqBody.ToolChoice = "auto"
+			}
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
@@ -306,7 +331,18 @@ func (s *Server) generateProjectAssistantStream(
 		if err != nil {
 			return "", err
 		}
-		if len(reply.ToolCalls) > 0 {
+		if len(reply.ToolCalls) > 0 && !finalTurn {
+			repeated := false
+			for _, tc := range reply.ToolCalls {
+				sig := tc.Function.Name + "\x00" + tc.Function.Arguments
+				seenToolCalls[sig]++
+				if seenToolCalls[sig] > 1 {
+					repeated = true
+				}
+				logger.V(2).Info("project assistant requested tool call",
+					"turn", i, "tool", tc.Function.Name, "args", tc.Function.Arguments)
+			}
+
 			messages = append(messages, chatMessage{
 				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 				ToolCalls: reply.ToolCalls,
@@ -316,6 +352,12 @@ func (s *Server) generateProjectAssistantStream(
 				return "", callErr
 			}
 			messages = append(messages, nextMessages...)
+
+			if repeated {
+				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
+					"turn", i, "project", p.Name)
+				forceTextAnswer = true
+			}
 			continue
 		}
 
@@ -573,9 +615,11 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 
 	var toolMessages []chatMessage
 	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
+	logger := klog.FromContext(ctx)
 
 	for _, tc := range toolCalls {
 		if tc.Function.Name == "" {
+			logger.Info("project assistant tool call rejected", "reason", "missing function name")
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -584,6 +628,7 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 			continue
 		}
 		if !projectMCPToolAllowed(tc.Function.Name) {
+			logger.Info("project assistant tool call rejected", "reason", "disallowed MCP tool name", "tool", tc.Function.Name)
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -596,6 +641,7 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 			tc.Type = "function"
 		}
 		if tc.Type != "function" {
+			logger.Info("project assistant tool call rejected", "reason", "unsupported tool call type", "tool", tc.Function.Name, "type", tc.Type)
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -607,6 +653,7 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 		args := map[string]any{}
 		if strings.TrimSpace(tc.Function.Arguments) != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "args", tc.Function.Arguments, "err", err.Error())
 				toolMessages = append(toolMessages, chatMessage{
 					Role:       "tool",
 					Name:       tc.Function.Name,
@@ -618,6 +665,7 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 		}
 		resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
 		if err != nil {
+			logger.Error(err, "project assistant MCP tool call failed", "tool", tc.Function.Name, "endpoint", mcpEndpoint)
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -626,6 +674,7 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 			})
 			continue
 		}
+		logger.V(2).Info("project assistant MCP tool call succeeded", "tool", tc.Function.Name, "responseBytes", len(resp))
 		toolMessages = append(toolMessages, chatMessage{
 			Role:       "tool",
 			Name:       tc.Function.Name,

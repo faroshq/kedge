@@ -717,10 +717,17 @@ export class KueryElement extends HTMLElement {
   private _toggleFull(): void {
     const panel = this.querySelector('.panel') as HTMLElement | null
     if (!panel) return
+    // Exit whichever fullscreen mode is currently active first.
     if (document.fullscreenElement) {
       void document.exitFullscreen?.()
       return
     }
+    if (this._topoFull) {
+      // CSS-overlay fallback is active (no fullscreenElement) — exit it.
+      this._toggleFullCSS(panel)
+      return
+    }
+    // Enter: prefer the real Fullscreen API, fall back to the CSS overlay.
     if (panel.requestFullscreen) {
       panel.requestFullscreen().catch(() => this._toggleFullCSS(panel))
       return

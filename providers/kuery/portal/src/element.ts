@@ -15,6 +15,7 @@ import {
   mountGraph,
   RELATION_COLORS,
   RELATION_LABELS,
+  RELATION_DIR,
   type GraphHandle,
 } from './graph'
 
@@ -665,7 +666,7 @@ export class KueryElement extends HTMLElement {
             <span class="badge ${this._edges.length ? 'ok' : 'warn'}">${this._edges.length} edge${this._edges.length === 1 ? '' : 's'} engaged</span>
           </div>
         </div>
-        <p class="meta">Click a node to expand its dependencies, again to collapse; <b>Expand all</b> walks the whole net. Pan with arrow keys or WASD, zoom with +/−, <b>F</b> toggles full screen.</p>
+        <p class="meta">Click a node to expand, again to collapse; <b>Expand all</b> walks the whole net. Arrows show impact flow: <b>A→B</b> means deleting A breaks B — so a Namespace/owner points <i>into</i> its pods, not out. Pan with arrows/WASD, zoom +/−, <b>F</b> full screen.</p>
         <div class="toolbar">
           <select id="t-layout" title="layout">${layoutOptions}</select>
           <select id="f-edge" title="edge">${edgeOptions}</select>
@@ -926,15 +927,28 @@ export class KueryElement extends HTMLElement {
 
   private _renderImpactList(): string {
     const rels = this._impact?.relations ?? {}
-    const sections = IMPACT_RELATIONS.filter((r) => (rels[r] ?? []).length > 0).map((r) => {
+    const present = (r: string) => (rels[r] ?? []).length > 0
+    const section = (r: string) => {
       const items = (rels[r] ?? []).map((rr) => {
         const ro = rr.object ?? {}
         const rm = ro.metadata ?? {}
         return `<li><code>${esc(edgeOf(rr.cluster))}</code> ${esc(ro.kind || '?')} <span class="name">${esc(rm.namespace ? rm.namespace + '/' : '')}${esc(rm.name || '?')}</span></li>`
       }).join('')
       return `<h3 class="rel-title">${esc(RELATION_TITLES[r] ?? r)} <span class="muted">(${(rels[r] ?? []).length})</span></h3><ul class="rel-list">${items}</ul>`
-    })
-    return sections.join('')
+    }
+    // Two branches: what can break THIS object (upstream) vs what THIS object's
+    // deletion breaks (downstream). Lateral relations are peers.
+    const group = (dir: string) => IMPACT_RELATIONS.filter((r) => present(r) && (RELATION_DIR[r] ?? 'down') === dir)
+    const up = group('up')
+    const down = group('down')
+    const lat = group('lateral')
+    const block = (title: string, rs: string[]) =>
+      rs.length ? `<div class="rel-group"><h4 class="rel-group-title">${title}</h4>${rs.map(section).join('')}</div>` : ''
+    return (
+      block('Impacted by (delete these → breaks this)', up) +
+      block('Impacts (delete this → breaks these)', down) +
+      block('Associated', lat)
+    )
   }
 }
 

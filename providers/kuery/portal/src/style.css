@@ -279,6 +279,21 @@ kedge-provider-kuery .panel:fullscreen .kuery-graph {
   height: calc(100vh - 150px);
 }
 
+kedge-provider-kuery .rel-group {
+  margin: 0 0 14px;
+}
+
+kedge-provider-kuery .rel-group-title {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted, #9aa0ad);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
+  padding-bottom: 3px;
+}
+
 kedge-provider-kuery .legend {
   display: flex;
   flex-wrap: wrap;

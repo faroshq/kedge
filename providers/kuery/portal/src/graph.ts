@@ -48,6 +48,41 @@ export const RELATION_LABELS: Record<string, string> = {
   namespaced: 'contains',
 }
 
+// Impact direction per relation, from the anchor's point of view. An edge is
+// always drawn so the arrow means "deleting source impacts target":
+//   - 'up'   : the related object is UPSTREAM — deleting it impacts the anchor
+//              (anchor depends on it). Drawn related → anchor. e.g. a Pod's
+//              owners, references, the namespace it lives in.
+//   - 'down' : the related object is DOWNSTREAM — deleting the anchor impacts
+//              it (blast radius). Drawn anchor → related. e.g. a Deployment's
+//              descendants, a Namespace's members, who selects the anchor.
+//   - 'lateral': peer association with no clear deletion direction.
+// This is what keeps a Namespace as a Pod's PARENT (it impacts the pod), not a
+// child, splitting the graph into "impacted-by" vs "impacts" branches.
+//
+// Mirror of kuery's engine.RelationDirections (pkg/engine/relations.go) — the
+// authority. Keep in lockstep: up = engine "upstream", down = "downstream".
+export type RelDir = 'up' | 'down' | 'lateral'
+export const RELATION_DIR: Record<string, RelDir> = {
+  owners: 'up',
+  references: 'up',
+  selects: 'up',
+  namespace: 'up',
+  descendants: 'down',
+  'descendants+': 'down',
+  'selected-by': 'down',
+  namespaced: 'down',
+  linked: 'lateral',
+  'linked+': 'lateral',
+  grouped: 'lateral',
+}
+
+// orientEdge returns [source, target] for an edge between the anchor and a
+// related node, per the relation's impact direction (see RELATION_DIR).
+function orientEdge(anchorId: string, relatedId: string, rel: string): [string, string] {
+  return (RELATION_DIR[rel] ?? 'down') === 'up' ? [relatedId, anchorId] : [anchorId, relatedId]
+}
+
 export interface BuildResult {
   elements: cytoscape.ElementDefinition[]
   // nodeId → the source ObjectResult, so a node tap can re-anchor the graph
@@ -77,7 +112,8 @@ export function buildElements(anchor: ObjectResult): BuildResult {
     ;(items ?? []).forEach((it, i) => {
       const id = it.id || `${rel}:${i}`
       pushNode(elements, nodeIndex, seen, id, it, false)
-      elements.push({ data: { id: `${anchorId}|${rel}|${id}`, source: anchorId, target: id, rel } })
+      const [source, target] = orientEdge(anchorId, id, rel)
+      elements.push({ data: { id: `${source}>${target}`, source, target, rel } })
     })
   }
   return { elements, nodeIndex }
@@ -318,7 +354,12 @@ export function relationElements(anchorId: string, anchor: ObjectResult): BuildR
         data: { id, label: `${kind}\n${shortName(it)}`, tier: 'object', kind, name: shortName(it), edge: edgeOf(it.cluster) },
       })
       nodeIndex[id] = it
-      elements.push({ data: { id: `${anchorId}|${rel}|${id}`, source: anchorId, target: id, rel } })
+      // Orient by impact direction: upstream relations point INTO the anchor
+      // (related → anchor), downstream out of it. Endpoint-based edge id so a
+      // pair reached twice (e.g. the namespace already linked in the base tree)
+      // dedupes to one edge.
+      const [source, target] = orientEdge(anchorId, id, rel)
+      elements.push({ data: { id: `${source}>${target}`, source, target, rel } })
     })
   }
   return { elements, nodeIndex }

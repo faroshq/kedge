@@ -18,6 +18,7 @@ import {
   RELATION_DIR,
   type GraphHandle,
 } from './graph'
+import { loadCodeMirror, collectSchemaWords, createEditor, EXAMPLES, type EditorHandle } from './playground'
 
 export interface KedgeContext {
   token?: string | null
@@ -80,7 +81,7 @@ export class KueryElement extends HTMLElement {
 
   // Top-level view. Topology (edge-centric fleet tree) is the landing view;
   // Inventory (flat table) is the alternate. Each loads its data lazily.
-  private _view: 'topology' | 'inventory' = 'topology'
+  private _view: 'topology' | 'inventory' | 'playground' = 'topology'
   private _inventoryLoaded = false
   private _topology: ObjectResult[] = []
   private _topologyError = ''
@@ -95,6 +96,15 @@ export class KueryElement extends HTMLElement {
   private _expandingAll = false
   private _boundKeyHandler = (ev: KeyboardEvent) => this._onKeyDown(ev)
   private _boundFsHandler = () => this._onFullscreenChange()
+
+  // Playground state: the live editor, last result/error, and the schema
+  // vocabulary that drives autocomplete (fetched once).
+  private _pgEditor: EditorHandle | null = null
+  private _pgResult = ''
+  private _pgError = ''
+  private _pgRunning = false
+  private _pgWords: string[] = []
+  private _pgDoc = JSON.stringify(EXAMPLES[0].spec, null, 2)
 
   // Impact drill-down state. null = inventory view.
   private _impactOf: ObjectResult | null = null
@@ -140,6 +150,8 @@ export class KueryElement extends HTMLElement {
     window.removeEventListener('keydown', this._boundKeyHandler)
     document.removeEventListener('fullscreenchange', this._boundFsHandler)
     this._destroyGraph()
+    this._pgEditor?.destroy()
+    this._pgEditor = null
   }
 
   // _boot waits for basePath (it can arrive on a later context push), then
@@ -448,8 +460,13 @@ export class KueryElement extends HTMLElement {
   // ── rendering ────────────────────────────────────────────────────────
 
   private _render(): void {
-    // Tear down any live graph before its container is replaced by innerHTML.
+    // Tear down any live graph/editor before innerHTML replaces their host.
     this._destroyGraph()
+    if (this._pgEditor) {
+      this._pgDoc = this._pgEditor.getValue() // keep the user's draft across renders
+      this._pgEditor.destroy()
+      this._pgEditor = null
+    }
 
     if (this._impactOf) {
       this.innerHTML = this._renderImpact()
@@ -468,22 +485,27 @@ export class KueryElement extends HTMLElement {
       if (this._topology.length && !this._topologyError && !this._loading) void this._mountTopologyGraph()
       return
     }
+    if (this._view === 'playground') {
+      this.innerHTML = this._renderPlayground()
+      this._bindPlayground()
+      void this._mountEditor()
+      return
+    }
     this.innerHTML = this._renderInventory()
     this._bindInventory()
   }
 
-  // _viewToggle is the top-level Topology/Inventory switch shown in both views.
+  // _viewToggle is the top-level Topology/Inventory/Playground switch.
   private _viewToggle(): string {
-    return `<div class="seg">
-      <button class="seg-btn${this._view === 'topology' ? ' on' : ''}" data-topview="topology">Topology</button>
-      <button class="seg-btn${this._view === 'inventory' ? ' on' : ''}" data-topview="inventory">Inventory</button>
-    </div>`
+    const btn = (v: string, label: string) =>
+      `<button class="seg-btn${this._view === v ? ' on' : ''}" data-topview="${v}">${label}</button>`
+    return `<div class="seg">${btn('topology', 'Topology')}${btn('inventory', 'Inventory')}${btn('playground', 'Playground')}</div>`
   }
 
   private _bindViewToggle(): void {
     this.querySelectorAll('[data-topview]').forEach((b) =>
       b.addEventListener('click', () => {
-        const v = (b as HTMLElement).dataset.topview as 'topology' | 'inventory' | undefined
+        const v = (b as HTMLElement).dataset.topview as 'topology' | 'inventory' | 'playground' | undefined
         if (!v || v === this._view) return
         this._view = v
         // Load the target view's data on first visit; otherwise just re-render.
@@ -782,6 +804,130 @@ export class KueryElement extends HTMLElement {
       default: handled = false
     }
     if (handled) ev.preventDefault()
+  }
+
+  // ── playground ────────────────────────────────────────────────────────
+
+  private _renderPlayground(): string {
+    const exampleOpts = ['<option value="">examples…</option>']
+      .concat(EXAMPLES.map((e, i) => `<option value="${i}">${esc(e.label)}</option>`))
+      .join('')
+    const results = this._pgError
+      ? `<pre class="pg-result error">${esc(this._pgError)}</pre>`
+      : `<pre class="pg-result">${esc(this._pgResult || '// results appear here')}</pre>`
+    return `
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Query playground</h2>
+          <div class="head-actions">${this._viewToggle()}</div>
+        </div>
+        <p class="meta">Write a kuery QuerySpec and run it against your fleet. Editor autocompletes from the schema (Ctrl/Cmd-Space). Every query is scoped to your workspace automatically.</p>
+        <div class="toolbar">
+          <select id="pg-example">${exampleOpts}</select>
+          <button id="pg-run">${this._pgRunning ? 'Running…' : 'Run ▸'}</button>
+          <button id="pg-docs-toggle" type="button">API &amp; access</button>
+        </div>
+        <div class="pg-split">
+          <div id="kuery-editor" class="pg-editor"></div>
+          ${results}
+        </div>
+        <details id="pg-docs" class="pg-docs">
+          <summary>Use this API from outside the portal</summary>
+          ${this._renderApiDocs()}
+        </details>
+      </div>
+    `
+  }
+
+  private _renderApiDocs(): string {
+    const base = this._apiBase()
+    const origin = location.origin
+    return `
+      <p>The same query API is reachable programmatically. The hub authenticates your bearer token and scopes the query to your workspace — you never send a tenant header yourself.</p>
+      <pre class="pg-result">curl -sS ${esc(origin)}${esc(base)}/api/query \\
+  -H "Authorization: Bearer $KEDGE_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"filter":{"objects":[{"groupKind":{"kind":"Deployment"}}]},"objects":{"cluster":true}}'</pre>
+      <ul class="rel-list">
+        <li><b>Endpoint</b>: <code>POST ${esc(base)}/api/query</code> (body = QuerySpec, response = QueryStatus)</li>
+        <li><b>Schema</b>: <code>GET ${esc(base)}/api/query-schema</code> (JSON Schema for the request body)</li>
+        <li><b>Auth</b>: an OIDC bearer token works today. Non-interactive service-account tokens are coming.</li>
+        <li><b>Relations</b> carry impact direction: upstream (owners, references, namespace, selects) vs downstream (descendants, selected-by, namespaced, members).</li>
+      </ul>`
+  }
+
+  private _bindPlayground(): void {
+    this._bindViewToggle()
+    this.querySelector('#pg-run')?.addEventListener('click', () => void this._runPlayground())
+    this.querySelector('#pg-example')?.addEventListener('change', (ev) => {
+      const i = Number((ev.target as HTMLSelectElement).value)
+      if (Number.isInteger(i) && EXAMPLES[i]) {
+        this._pgDoc = JSON.stringify(EXAMPLES[i].spec, null, 2)
+        this._pgEditor?.setValue(this._pgDoc)
+        this._pgEditor?.refresh()
+      }
+    })
+    this.querySelector('#pg-docs-toggle')?.addEventListener('click', () => {
+      const d = this.querySelector('#pg-docs') as HTMLDetailsElement | null
+      if (d) d.open = !d.open
+    })
+  }
+
+  // _mountEditor lazy-loads CodeMirror (and the schema vocabulary, once) and
+  // builds the editor into #kuery-editor. Falls back to a plain textarea if the
+  // vendored bundle can't load.
+  private async _mountEditor(): Promise<void> {
+    const host = this.querySelector('#kuery-editor') as HTMLElement | null
+    if (!host || this._pgEditor) return
+    const baseUI = (this._ctx?.basePath || '').replace(/\/?$/, '/')
+    try {
+      if (this._pgWords.length === 0) {
+        try {
+          const schema = await this._fetchJSON('/api/query-schema')
+          this._pgWords = collectSchemaWords(schema)
+        } catch {
+          this._pgWords = []
+        }
+      }
+      const CM = await loadCodeMirror(`${baseUI}codemirror.bundle.js`, `${baseUI}codemirror.bundle.css`)
+      if (!this.querySelector('#kuery-editor')) return // re-rendered while loading
+      this._pgEditor = createEditor(CM, host, this._pgDoc, this._pgWords)
+      this._pgEditor.refresh()
+    } catch {
+      host.innerHTML = `<textarea id="kuery-editor-fallback" class="pg-fallback">${esc(this._pgDoc)}</textarea>`
+    }
+  }
+
+  private async _runPlayground(): Promise<void> {
+    const raw = this._pgEditor
+      ? this._pgEditor.getValue()
+      : (this.querySelector('#kuery-editor-fallback') as HTMLTextAreaElement | null)?.value ?? this._pgDoc
+    this._pgDoc = raw
+    let spec: unknown
+    try {
+      spec = JSON.parse(raw)
+    } catch (e) {
+      this._pgError = `invalid JSON: ${e instanceof Error ? e.message : String(e)}`
+      this._pgResult = ''
+      this._render()
+      return
+    }
+    this._pgRunning = true
+    this._pgError = ''
+    this._render()
+    try {
+      const status = await this._fetchJSON('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spec),
+      })
+      this._pgResult = JSON.stringify(status, null, 2)
+    } catch (e) {
+      this._pgError = e instanceof Error ? e.message : String(e)
+      this._pgResult = ''
+    }
+    this._pgRunning = false
+    this._render()
   }
 
   private _renderInventory(): string {

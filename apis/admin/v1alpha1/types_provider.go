@@ -34,7 +34,7 @@ import (
 // extension needs to run: the per-provider sub-workspace
 // root:kedge:providers:<name>, a "provider" ServiceAccount with cluster-admin
 // inside that workspace, and a long-lived kubeconfig the provider pod mounts —
-// written into a Secret in root:kedge:providers (the same workspace this CR
+// written into a Secret in root:kedge:system:providers (the same workspace this CR
 // lives in). It also binds the providers.kedge.faros.sh APIExport (CatalogEntry)
 // into the new sub-workspace so the provider can self-register its CatalogEntry.
 //
@@ -44,8 +44,8 @@ import (
 // come from the provider's own `init` (running inside the sub-workspace with the
 // minted kubeconfig).
 //
-// Provider lives in the provisioning.kedge.faros.sh APIExport, bound ONLY in
-// root:kedge:providers — a provider cannot create a Provider from its own
+// Provider lives in the admin.kedge.faros.sh APIExport, bound ONLY in
+// root:kedge:system:providers — a provider cannot create a Provider from its own
 // sub-workspace, so it cannot bootstrap sibling providers.
 //
 // WARNING: deleting a Provider triggers FULL teardown — its finalizer deletes
@@ -73,7 +73,7 @@ type ProviderSpec struct {
 	DisplayName string `json:"displayName,omitempty"`
 
 	// SecretName overrides the name of the kubeconfig Secret the controller
-	// writes into root:kedge:providers. Defaults to "<name>-kubeconfig".
+	// writes into root:kedge:system:providers. Defaults to "<name>-kubeconfig".
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	SecretName string `json:"secretName,omitempty"`
@@ -99,7 +99,7 @@ type ProviderStatus struct {
 	WorkspaceCluster string `json:"workspaceCluster,omitempty"`
 
 	// SecretRef points at the kubeconfig Secret the controller wrote into
-	// root:kedge:providers.
+	// root:kedge:system:providers.
 	// +optional
 	SecretRef *ProviderSecretRef `json:"secretRef,omitempty"`
 
@@ -115,10 +115,10 @@ type ProviderStatus struct {
 }
 
 // ProviderSecretRef locates the minted kubeconfig Secret in
-// root:kedge:providers.
+// root:kedge:system:providers.
 type ProviderSecretRef struct {
 	// Namespace is the namespace the Secret lives in within
-	// root:kedge:providers. Typically "default".
+	// root:kedge:system:providers. Typically "default".
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 

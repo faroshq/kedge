@@ -36,13 +36,11 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 )
 
-// provisioner owns the side-effects the catalog controller performs against
-// kcp when a CatalogEntry is reconciled: creating the per-provider
-// sub-workspace, applying inline APIResourceSchemas, and applying the
-// APIExport that lets tenants bind.
-//
-// Phase 1B scope. Phase 1C will add the RBAC grant + MaximalPermissionPolicy
-// that gate tenant binds.
+// Provisioner owns the kcp-side side-effects of provisioning a provider:
+// creating the per-provider sub-workspace, the "provider" ServiceAccount, and
+// the minted kubeconfig Secret. It is driven by the Provider CR reconciler
+// (provider_controller.go); the provider's own APIExport/schemas come from its
+// `init`.
 type Provisioner struct {
 	kcpConfig *rest.Config
 }

@@ -14,7 +14,7 @@ import (
 	"log"
 	"os"
 
-	sdkinstall "github.com/faroshq/kedge-provider-sdk/install"
+	sdkinstall "github.com/faroshq/provider-sdk/install"
 
 	"github.com/faroshq/provider-code/install"
 )

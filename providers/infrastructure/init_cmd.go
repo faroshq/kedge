@@ -39,7 +39,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	sdkinstall "github.com/faroshq/kedge-provider-sdk/install"
+	sdkinstall "github.com/faroshq/provider-sdk/install"
 
 	"github.com/faroshq/provider-infrastructure/install"
 )

@@ -3,7 +3,7 @@ module github.com/faroshq/provider-quickstart
 go 1.26.3
 
 require (
-	github.com/faroshq/kedge-provider-sdk v0.0.0-00010101000000-000000000000
+	github.com/faroshq/provider-sdk v0.0.0-00010101000000-000000000000
 	k8s.io/client-go v0.36.1
 )
 
@@ -49,6 +49,6 @@ replace (
 )
 
 // Local shared provider bootstrap SDK (monorepo). Published as
-// github.com/faroshq/kedge-provider-sdk; release/mirror builds resolve it from
+// github.com/faroshq/provider-sdk; release/mirror builds resolve it from
 // the module proxy. TODO(sdk-publish): drop this replace once tagged.
-replace github.com/faroshq/kedge-provider-sdk => ../../provider-sdk
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

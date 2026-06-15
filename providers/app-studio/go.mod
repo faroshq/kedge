@@ -3,7 +3,7 @@ module github.com/faroshq/provider-app-studio
 go 1.26.3
 
 require (
-	github.com/faroshq/kedge-provider-sdk v0.0.0-00010101000000-000000000000
+	github.com/faroshq/provider-sdk v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -60,4 +60,4 @@ replace (
 )
 
 // Local shared provider bootstrap SDK (monorepo). TODO(sdk-publish): drop once tagged.
-replace github.com/faroshq/kedge-provider-sdk => ../../provider-sdk
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

@@ -1,4 +1,4 @@
-module github.com/faroshq/kedge-provider-sdk
+module github.com/faroshq/provider-sdk
 
 go 1.26.3
 

@@ -3,7 +3,7 @@ module github.com/faroshq/provider-code
 go 1.26.3
 
 require (
-	github.com/faroshq/kedge-provider-sdk v0.0.0-00010101000000-000000000000
+	github.com/faroshq/provider-sdk v0.0.0-00010101000000-000000000000
 	github.com/google/go-github/v66 v66.0.0
 	github.com/kcp-dev/multicluster-provider v0.7.1-0.20260515112510-8f4137891edf
 	github.com/kcp-dev/sdk v0.31.1
@@ -109,6 +109,6 @@ replace (
 )
 
 // Local shared provider bootstrap SDK (monorepo). The published module is
-// github.com/faroshq/kedge-provider-sdk; the mirror/release build resolves it
+// github.com/faroshq/provider-sdk; the mirror/release build resolves it
 // from the module proxy.
-replace github.com/faroshq/kedge-provider-sdk => ../../provider-sdk
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

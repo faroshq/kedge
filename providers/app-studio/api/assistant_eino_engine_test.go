@@ -38,12 +38,12 @@ func TestEinoAssistantEngineRequiresProject(t *testing.T) {
 	}
 }
 
-func TestEinoAssistantEngineDelegatesToCurrentEngine(t *testing.T) {
+func TestEinoAssistantEngineRunsBody(t *testing.T) {
 	engine, ok := NewEinoAssistantEngine(&Server{}).(projectEinoAssistantEngine)
 	if !ok {
 		t.Fatalf("engine = %T, want projectEinoAssistantEngine", NewEinoAssistantEngine(&Server{}))
 	}
-	engine.current = stubProjectAssistantEngine{result: projectAssistantRunResult{Content: "delegated"}}
+	engine.body = stubProjectAssistantEngine{result: projectAssistantRunResult{Content: "body result"}}
 	result, err := engine.StreamProjectAssistant(
 		context.Background(),
 		projectAssistantRunRequest{
@@ -54,29 +54,8 @@ func TestEinoAssistantEngineDelegatesToCurrentEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamProjectAssistant returned error: %v", err)
 	}
-	if result.Content != "delegated" {
-		t.Fatalf("content = %q, want delegated", result.Content)
-	}
-}
-
-func TestServerUsesConfiguredAssistantEngine(t *testing.T) {
-	server := &Server{}
-	server.UseAssistantEngine(stubProjectAssistantEngine{result: projectAssistantRunResult{Content: "shadow"}})
-	result, err := server.projectAssistantEngine().StreamProjectAssistant(
-		context.Background(),
-		projectAssistantRunRequest{},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("StreamProjectAssistant returned error: %v", err)
-	}
-	if result.Content != "shadow" {
-		t.Fatalf("content = %q, want configured engine result", result.Content)
-	}
-
-	server.UseAssistantEngine(nil)
-	if _, ok := server.projectAssistantEngine().(projectChatCompletionAssistantEngine); !ok {
-		t.Fatalf("engine = %T, want projectChatCompletionAssistantEngine", server.projectAssistantEngine())
+	if result.Content != "body result" {
+		t.Fatalf("content = %q, want body result", result.Content)
 	}
 }
 

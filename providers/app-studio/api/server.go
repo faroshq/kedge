@@ -38,15 +38,13 @@ import (
 // Server holds the dependencies the project handlers need. clients builds a
 // per-(tenant, caller) dynamic client; store persists chat transcripts; hubBase
 // locates the hub's MCP virtual workspace; mcpInsecureSkipTLSVerify relaxes TLS
-// for dev MCP calls; workspaces stores project files owned by App Studio;
-// assistantEngine runs project assistant turns.
+// for dev MCP calls; workspaces stores project files owned by App Studio.
 type Server struct {
 	clients                  *tenant.ClientFactory
 	store                    store.Store
 	workspaces               *workspace.FileStore
 	hubBase                  string
 	mcpInsecureSkipTLSVerify bool
-	assistantEngine          projectAssistantEngine
 }
 
 // New constructs a Server.
@@ -56,31 +54,13 @@ func New(clients *tenant.ClientFactory, msgStore store.Store, hubBase string, mc
 
 // NewWithWorkspace constructs a Server with an explicit project workspace store.
 func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
-	s := &Server{
+	return &Server{
 		clients:                  clients,
 		store:                    msgStore,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 	}
-	s.assistantEngine = projectChatCompletionAssistantEngine{server: s}
-	return s
-}
-
-// UseAssistantEngine replaces the assistant execution engine. Passing nil
-// restores the current chat-completion engine.
-func (s *Server) UseAssistantEngine(engine projectAssistantEngine) {
-	if engine == nil {
-		engine = projectChatCompletionAssistantEngine{server: s}
-	}
-	s.assistantEngine = engine
-}
-
-func (s *Server) projectAssistantEngine() projectAssistantEngine {
-	if s.assistantEngine == nil {
-		s.assistantEngine = projectChatCompletionAssistantEngine{server: s}
-	}
-	return s.assistantEngine
 }
 
 // Register mounts the project routes onto r. The hub backend proxy strips the

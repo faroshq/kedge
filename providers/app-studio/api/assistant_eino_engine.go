@@ -24,18 +24,17 @@ import (
 )
 
 type projectEinoAssistantEngine struct {
-	current projectAssistantEngine
-	runner  *adk.Runner
+	body   projectAssistantEngine
+	runner *adk.Runner
 }
 
-// NewEinoAssistantEngine returns the opt-in Eino shadow engine. The engine
-// proves the Eino ADK runtime can be constructed in production code while the
-// current App Studio chat loop remains the behavior source until the default
-// engine flips later in the stack.
+// NewEinoAssistantEngine returns an Eino-backed assistant engine construction
+// proof. Later stack slices route normal assistant execution through this
+// runtime.
 func NewEinoAssistantEngine(server *Server) projectAssistantEngine {
 	return projectEinoAssistantEngine{
-		current: projectChatCompletionAssistantEngine{server: server},
-		runner:  adk.NewRunner(context.Background(), adk.RunnerConfig{EnableStreaming: true}),
+		body:   projectChatCompletionAssistantEngine{server: server},
+		runner: adk.NewRunner(context.Background(), adk.RunnerConfig{EnableStreaming: true}),
 	}
 }
 
@@ -50,8 +49,8 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	if e.runner == nil {
 		return projectAssistantRunResult{}, errors.New("eino runner is not configured")
 	}
-	if e.current == nil {
-		return projectAssistantRunResult{}, errors.New("current assistant engine is not configured")
+	if e.body == nil {
+		return projectAssistantRunResult{}, errors.New("assistant body is not configured")
 	}
-	return e.current.StreamProjectAssistant(ctx, req, sink)
+	return e.body.StreamProjectAssistant(ctx, req, sink)
 }

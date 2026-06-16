@@ -156,20 +156,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	totalConnected := kubeConnected + linuxConnected
 
+	// The MCPServer is an aggregate endpoint: it serves regardless of how
+	// many edges currently match the selector. Tools simply report "no
+	// targets" when nothing is connected. So readiness reflects whether the
+	// endpoint is provisioned (URL + identity below), not the edge count.
+	// Connected-edge counts are informational and surfaced in the message
+	// and in status.KubernetesEdges / status.LinuxEdges.
 	readyCondition := metav1.Condition{
 		Type:               "Ready",
 		ObservedGeneration: srv.Generation,
 		LastTransitionTime: metav1.Now(),
-	}
-	if totalConnected > 0 {
-		readyCondition.Status = metav1.ConditionTrue
-		readyCondition.Reason = "EdgesConnected"
-		readyCondition.Message = fmt.Sprintf("%d edge(s) connected (kube=%d, linux=%d)",
-			totalConnected, kubeConnected, linuxConnected)
-	} else {
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = "NoEdgesConnected"
-		readyCondition.Message = "No edges matching the selector are currently connected"
+		Status:             metav1.ConditionTrue,
+		Reason:             "EndpointReady",
+		Message: fmt.Sprintf("endpoint ready; %d edge(s) connected (kube=%d, linux=%d)",
+			totalConnected, kubeConnected, linuxConnected),
 	}
 
 	// Ensure the per-MCPServer ServiceAccount + long-lived (legacy) token

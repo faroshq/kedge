@@ -132,6 +132,10 @@ func runServe() {
 		os.Getenv("KEDGE_HUB_URL"),
 		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true",
 	)
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_STUDIO_ASSISTANT_ENGINE")), "eino") {
+		log.Printf("app studio assistant engine: eino")
+		apiServer.UseAssistantEngine(api.NewEinoAssistantEngine(apiServer))
+	}
 
 	handler, err := newHandler(apiServer)
 	if err != nil {

@@ -187,8 +187,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	srv.Status.LinuxEdges = linuxConnected
 	srv.Status.TokenSecretRef = tokenRef
 
+	// Refresh the condition whenever any observable field drifts (status,
+	// reason, message or the observed generation) so the edge counts and
+	// ObservedGeneration don't go stale as edges connect/disconnect. Keep
+	// LastTransitionTime stable unless Status actually flips — per the
+	// metav1.Condition contract, transition time tracks Status changes only.
 	if existing := findCondition(srv.Status.Conditions, "Ready"); existing == nil ||
-		existing.Status != readyCondition.Status || existing.Reason != readyCondition.Reason {
+		existing.Status != readyCondition.Status ||
+		existing.Reason != readyCondition.Reason ||
+		existing.Message != readyCondition.Message ||
+		existing.ObservedGeneration != readyCondition.ObservedGeneration {
+		if existing != nil && existing.Status == readyCondition.Status {
+			readyCondition.LastTransitionTime = existing.LastTransitionTime
+		}
 		srv.Status.Conditions = setCondition(srv.Status.Conditions, readyCondition)
 	}
 

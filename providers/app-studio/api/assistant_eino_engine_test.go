@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -107,7 +109,7 @@ func TestEinoAssistantEngineRequiresRunnerOutput(t *testing.T) {
 		newTools: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
 			return nil, nil
 		},
-		newRunner: func(context.Context, adk.Agent) projectEinoAssistantRunner {
+		newRunner: func(context.Context, adk.Agent, adk.CheckPointStore) projectEinoAssistantRunner {
 			return emptyProjectEinoAssistantRunner{}
 		},
 	}
@@ -173,6 +175,7 @@ func TestEinoAssistantEngineStopsToolBatchAfterPermissionRequest(t *testing.T) {
 		},
 	}}
 	engine := projectEinoAssistantEngine{
+		server: server,
 		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
 			return chatModel, nil
 		},
@@ -216,6 +219,88 @@ func TestEinoAssistantEngineStopsToolBatchAfterPermissionRequest(t *testing.T) {
 	}
 	if projectToolEventsWithStatus(toolEvents, "permission_required") != 1 {
 		t.Fatalf("tool events = %#v, want exactly one permission-required tool event", toolEvents)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name), permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint returned error: %v", err)
+	}
+	if checkpoint.Eino == nil || len(checkpoint.Eino.Checkpoint) == 0 || checkpoint.Eino.InterruptID == "" {
+		t.Fatalf("checkpoint eino state = %#v, want runner checkpoint and interrupt id", checkpoint.Eino)
+	}
+}
+
+func TestEinoAssistantEngineResumesApprovedToolThroughRunner(t *testing.T) {
+	messages := store.NewMemoryStore()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	writeTool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing")
+	}
+	chatModel := &resumePermissionEinoChatModel{}
+	engine := projectEinoAssistantEngine{
+		server: server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return chatModel, nil
+		},
+		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return []einotool.BaseTool{newProjectEinoAssistantServerTool(server, writeTool, req, state)}, nil
+		},
+		newRunner: newProjectEinoAssistantRunner,
+	}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	req := projectAssistantRunRequest{
+		Identity:       id,
+		HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+		Project:        project,
+		WorkspaceScope: projectWorkspaceScope(id, project.Name),
+		MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+		Workspace:      workspaces,
+	}
+	_, err := engine.StreamProjectAssistant(context.Background(), req, nil)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("StreamProjectAssistant error = %v, want permission required", err)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), req.MessageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint returned error: %v", err)
+	}
+
+	result, err := engine.ResumeProjectAssistant(
+		context.Background(),
+		req,
+		projectAssistantResumeRequest{
+			RequestID: permissionErr.RequestID,
+			Decision:  string(projectAssistantPermissionAllow),
+		},
+		checkpoint,
+	)
+	if err != nil {
+		t.Fatalf("ResumeProjectAssistant returned error: %v", err)
+	}
+	if result.Content != "write completed" {
+		t.Fatalf("content = %q, want resumed model response", result.Content)
+	}
+	read, err := workspaces.ReadFile(context.Background(), req.WorkspaceScope, workspace.ReadOptions{Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if read.Content != "approved\n" {
+		t.Fatalf("content = %q, want approved write", read.Content)
+	}
+	if len(chatModel.inputs) != 2 || !einoMessagesContainToolResult(chatModel.inputs[1], "call-write", "src/App.tsx") {
+		t.Fatalf("model inputs = %#v, want resumed Eino tool result", chatModel.inputs)
 	}
 }
 
@@ -298,6 +383,17 @@ func (emptyProjectEinoAssistantRunner) Run(
 	return iter
 }
 
+func (emptyProjectEinoAssistantRunner) ResumeWithParams(
+	context.Context,
+	string,
+	*adk.ResumeParams,
+	...adk.AgentRunOption,
+) (*adk.AsyncIterator[*adk.AgentEvent], error) {
+	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Close()
+	return iter, nil
+}
+
 type scriptedEinoChatModel struct {
 	inputs    [][]*schema.Message
 	toolNames [][]string
@@ -350,6 +446,36 @@ func (m *unknownToolEinoChatModel) Generate(ctx context.Context, input []*schema
 }
 
 func (m *unknownToolEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+}
+
+type resumePermissionEinoChatModel struct {
+	inputs [][]*schema.Message
+}
+
+func (m *resumePermissionEinoChatModel) Generate(ctx context.Context, input []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.inputs = append(m.inputs, cloneEinoMessagesForTest(input))
+	if len(m.inputs) == 1 {
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-write",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+			},
+		}}), nil
+	}
+	return schema.AssistantMessage("write completed", nil), nil
+}
+
+func (m *resumePermissionEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	msg, err := m.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, err

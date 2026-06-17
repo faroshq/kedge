@@ -19,7 +19,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,12 +94,11 @@ func TestProjectRuntimeWorkerRequiresApprovalWithWorker(t *testing.T) {
 	}
 	adapter := newProjectEinoAssistantServerTool(server, tool, req, newProjectEinoAssistantRunState()).(projectEinoAssistantTool)
 	_, err := adapter.InvokableRun(context.Background(), `{"command":["npm","test"],"timeoutSeconds":30}`)
-	var permissionErr *projectAssistantPermissionRequiredError
 	if !strings.Contains(projectAssistantPermissionReason(tool.Spec()), "runtime command") {
 		t.Fatalf("permission reason = %q, want runtime command context", projectAssistantPermissionReason(tool.Spec()))
 	}
-	if !errors.As(err, &permissionErr) {
-		t.Fatalf("InvokableRun error = %v, want permission required", err)
+	if err == nil || !strings.Contains(err.Error(), "interrupt signal") {
+		t.Fatalf("InvokableRun error = %v, want Eino permission interrupt", err)
 	}
 	if worker.calls != 0 {
 		t.Fatalf("worker calls = %d, want no start before approval", worker.calls)

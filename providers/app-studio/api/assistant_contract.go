@@ -37,6 +37,12 @@ type projectAssistantEngine interface {
 		projectAssistantRunRequest,
 		projectAssistantEventSink,
 	) (projectAssistantRunResult, error)
+	ResumeProjectAssistant(
+		context.Context,
+		projectAssistantRunRequest,
+		projectAssistantResumeRequest,
+		projectAssistantCheckpointState,
+	) (projectAssistantRunResult, error)
 }
 
 type projectAssistantRunRequest struct {
@@ -54,6 +60,7 @@ type projectAssistantRunRequest struct {
 	MCPInsecureSkipTLSVerify bool
 	StreamCallbacks          projectAssistantStreamCallbacks
 	Continuation             *projectAssistantCheckpointState
+	AssistantRun             *store.AssistantRun
 }
 
 type projectAssistantRunResult struct {

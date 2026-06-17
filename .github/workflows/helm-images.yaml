@@ -91,6 +91,15 @@ jobs:
               sed -i "s/^version:.*/version: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"
               sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" "${chart_dir}Chart.yaml"
 
+              # Lint first: `helm package` only tars the chart and does NOT
+              # render templates, so a broken template would still package
+              # cleanly. `helm lint` renders the templates against the chart's
+              # default values, so a PR fails on template errors (the whole
+              # point of building charts here). All current charts — platform
+              # and provider — lint cleanly with their defaults (the platform
+              # charts' `required` values are defaulted in values.yaml).
+              helm lint "$chart_dir"
+
               # Package the chart
               helm package "$chart_dir" --version "${CHART_VERSION}"
 

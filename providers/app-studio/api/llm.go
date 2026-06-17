@@ -333,6 +333,250 @@ func (s *Server) generateProjectAssistantStream(
 	return result.Content, nil
 }
 
+func (s *Server) runProjectAssistantChatLoop(ctx context.Context, req projectAssistantRunRequest) (string, error) {
+	settings := req.LLM
+	projectRepositoryRef := projectLinkedRepositoryRef(req.Project)
+	messages := projectPromptMessages(req.Project, req.Repository, req.History)
+	tools, toolsErr := s.loadProjectMCPTools(req.HTTPRequest, req.Identity, settings)
+	if toolsErr == nil {
+		if toolPrompt := projectMCPToolsPrompt(tools); toolPrompt != "" {
+			messages = append(messages, chatMessage{
+				Role:    "system",
+				Content: toolPrompt,
+			})
+		}
+	} else {
+		messages = append(messages, chatMessage{
+			Role:    "system",
+			Content: projectMCPToolsFailurePrompt(toolsErr),
+		})
+	}
+	state := projectAssistantCheckpointState{
+		Messages:             messages,
+		ProjectRepositoryRef: strings.TrimSpace(projectRepositoryRef),
+		SeenToolCalls:        map[string]int{},
+	}
+	return s.runProjectAssistantChatLoopWithState(ctx, req, state, tools)
+}
+
+func (s *Server) runProjectAssistantChatLoopFromCheckpoint(ctx context.Context, req projectAssistantRunRequest, state projectAssistantCheckpointState) (string, error) {
+	if len(state.Messages) == 0 {
+		return s.runProjectAssistantChatLoop(ctx, req)
+	}
+	if strings.TrimSpace(state.ProjectRepositoryRef) == "" {
+		state.ProjectRepositoryRef = projectLinkedRepositoryRef(req.Project)
+	}
+	tools, err := s.loadProjectMCPTools(req.HTTPRequest, req.Identity, req.LLM)
+	if err != nil {
+		tools = nil
+	}
+	return s.runProjectAssistantChatLoopWithState(ctx, req, state, tools)
+}
+
+func (s *Server) runProjectAssistantChatLoopWithState(ctx context.Context, req projectAssistantRunRequest, state projectAssistantCheckpointState, tools []chatTool) (string, error) {
+	settings := req.LLM
+	logger := klog.FromContext(ctx)
+
+	// seenToolCalls tracks each (name, args) signature the model has already
+	// requested. A model that re-issues an identical call is looping rather
+	// than making progress, so we stop offering tools and force a text answer
+	// instead of grinding through every turn and dying with a generic error.
+	if state.SeenToolCalls == nil {
+		state.SeenToolCalls = map[string]int{}
+	}
+	messages := cloneChatMessages(state.Messages)
+	lastToolMessages := cloneChatMessages(state.LastToolMessages)
+
+	for i := state.Turn; i < maxAssistantToolTurns; i++ {
+		// On the last allowed turn (or once we have detected a loop), stop
+		// offering tools so the model must produce a final text answer. This
+		// turns "exceeded safe turn limit" into a graceful explanation of why
+		// the assistant could not complete the request.
+		finalTurn := state.ForceTextAnswer || i == maxAssistantToolTurns-1
+
+		reqBody := chatCompletionRequest{
+			Model:       settings.Model,
+			Messages:    messages,
+			Temperature: 0.2,
+			Stream:      true,
+		}
+		if len(tools) > 0 && !finalTurn {
+			reqBody.Tools = tools
+			reqBody.ToolChoice = "auto"
+		}
+		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
+
+		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, req.StreamCallbacks.OnChunk, req.StreamCallbacks.OnStatus)
+		if err != nil {
+			if state.RepeatedToolLoop && errors.Is(err, errProjectLLMNoStreamedChoice) {
+				return projectRepeatedToolLoopFallback(lastToolMessages), nil
+			}
+			if finalTurn && len(lastToolMessages) > 0 && errors.Is(err, errProjectLLMNoStreamedChoice) {
+				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
+			}
+			return "", err
+		}
+		if len(reply.ToolCalls) > 0 && !finalTurn {
+			ensureProjectToolCallIDs(reply.ToolCalls)
+			repeated := false
+			for _, tc := range reply.ToolCalls {
+				sig := tc.Function.Name + "\x00" + tc.Function.Arguments
+				state.SeenToolCalls[sig]++
+				if state.SeenToolCalls[sig] > 1 {
+					repeated = true
+				}
+				logger.V(2).Info("project assistant requested tool call",
+					"turn", i, "tool", tc.Function.Name, "args", summarizeProjectToolArguments(tc.Function.Name, tc.Function.Arguments))
+			}
+
+			messages = append(messages, chatMessage{
+				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
+				ToolCalls: reply.ToolCalls,
+			})
+			nextState := state
+			nextState.Messages = cloneChatMessages(messages)
+			nextState.SeenToolCalls = cloneProjectAssistantSeenToolCalls(state.SeenToolCalls)
+			nextState.LastToolMessages = cloneChatMessages(lastToolMessages)
+			nextState.Turn = i + 1
+			nextMessages, callErr := s.resolveProjectToolCallsWithPermissions(ctx, req, nextState, reply.ToolCalls)
+			if callErr != nil {
+				return "", callErr
+			}
+			lastToolMessages = nextMessages
+			messages = append(messages, nextMessages...)
+			state.Messages = cloneChatMessages(messages)
+			state.LastToolMessages = cloneChatMessages(lastToolMessages)
+			state.Turn = i + 1
+
+			if commitReply, ok := projectCommitToolReply(nextMessages); ok {
+				logger.Info("project assistant completed a project commit handoff attempt; forcing a final text answer",
+					"turn", i, "project", req.Project.Name)
+				return commitReply, nil
+			}
+			if repeated {
+				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
+					"turn", i, "project", req.Project.Name)
+				state.ForceTextAnswer = true
+				state.RepeatedToolLoop = true
+			}
+			continue
+		}
+
+		if strings.TrimSpace(reply.Content) == "" {
+			if state.RepeatedToolLoop {
+				return projectRepeatedToolLoopFallback(lastToolMessages), nil
+			}
+			if finalTurn && len(lastToolMessages) > 0 {
+				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
+			}
+			return "", errors.New("LLM API returned an empty assistant message")
+		}
+		return reply.Content, nil
+	}
+
+	return "", errors.New("LLM tool loop exceeded safe turn limit")
+}
+
+func (s *Server) resolveProjectToolCallsWithPermissions(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	state projectAssistantCheckpointState,
+	toolCalls []chatToolCall,
+) ([]chatMessage, error) {
+	if len(toolCalls) == 0 {
+		return nil, nil
+	}
+	registry := s.projectAssistantToolRegistry()
+	var toolMessages []chatMessage
+	for i, tc := range toolCalls {
+		tool, ok := registry.Get(tc.Function.Name)
+		if !ok {
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, state.ProjectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+			state.Messages = append(state.Messages, nextMessages...)
+			state.LastToolMessages = cloneChatMessages(nextMessages)
+			continue
+		}
+		args, err := projectAssistantToolCallArguments(tc)
+		if err != nil {
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, state.ProjectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+			state.Messages = append(state.Messages, nextMessages...)
+			state.LastToolMessages = cloneChatMessages(nextMessages)
+			continue
+		}
+		spec := tool.Spec()
+		switch projectAssistantPermissionForTool(spec) {
+		case projectAssistantPermissionAllow:
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, state.ProjectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+			state.Messages = append(state.Messages, nextMessages...)
+			state.LastToolMessages = cloneChatMessages(nextMessages)
+		case projectAssistantPermissionAsk:
+			if req.StreamCallbacks.OnToolCall != nil {
+				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "permission_required",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Summary:   projectAssistantPermissionReason(spec),
+				})
+			}
+			permissionErr, permission, checkpoint, err := s.saveProjectAssistantPermissionCheckpointForState(ctx, req, tool, state, toolCalls, i)
+			if err != nil {
+				return nil, err
+			}
+			if req.StreamCallbacks.OnAssistantEvent != nil {
+				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+					Type:       projectAssistantEventPermissionNeeded,
+					Permission: &permission,
+				})
+				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+					Type:       projectAssistantEventCheckpointSaved,
+					Checkpoint: &checkpoint,
+				})
+			}
+			return nil, permissionErr
+		case projectAssistantPermissionDeny:
+			reason := "unknown tool risk"
+			if req.StreamCallbacks.OnToolCall != nil {
+				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "rejected",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Error:     reason,
+				})
+			}
+			msg := projectAssistantPermissionDeniedToolMessage(tc, reason)
+			toolMessages = append(toolMessages, msg)
+			state.Messages = append(state.Messages, msg)
+			state.LastToolMessages = []chatMessage{msg}
+		}
+	}
+	return toolMessages, nil
+}
+
+func projectAssistantToolCallArguments(tc chatToolCall) (map[string]any, error) {
+	args := map[string]any{}
+	if strings.TrimSpace(tc.Function.Arguments) == "" {
+		return args, nil
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return nil, err
+	}
+	return args, nil
+}
+
 func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
 	return projectToolLoopFallback(toolMessages, "repeated the same action")
 }

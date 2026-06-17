@@ -19,33 +19,21 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 
 	"github.com/cloudwego/eino/adk"
-	einomodel "github.com/cloudwego/eino/components/model"
-	einotool "github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
 type projectEinoAssistantEngine struct {
-	newModel  projectEinoAssistantModelFactory
-	newTools  projectEinoAssistantToolsFactory
+	body      projectEinoAssistantBody
 	newRunner projectEinoAssistantRunnerFactory
 }
 
-type projectEinoAssistantModelFactory func(
+type projectEinoAssistantBody func(
 	context.Context,
 	projectAssistantRunRequest,
-	*projectEinoAssistantRunState,
-) (einomodel.BaseChatModel, error)
-
-type projectEinoAssistantToolsFactory func(
-	context.Context,
-	projectAssistantRunRequest,
-	*projectEinoAssistantRunState,
-) ([]einotool.BaseTool, error)
+	projectAssistantEventSink,
+) (projectAssistantRunResult, error)
 
 type projectEinoAssistantRunner interface {
 	Run(context.Context, []adk.Message, ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent]
@@ -54,13 +42,37 @@ type projectEinoAssistantRunner interface {
 type projectEinoAssistantRunnerFactory func(context.Context, adk.Agent) projectEinoAssistantRunner
 
 // NewEinoAssistantEngine returns the Eino-backed assistant engine. The App
-// Studio assistant uses Eino's ChatModelAgent as the only chat/tool execution
-// loop; App Studio adapters stay at model, tool, storage, and event boundaries.
+// Studio chat and tool loop runs as the body of an Eino ADK agent so execution
+// goes through Eino's runner pipeline.
 func NewEinoAssistantEngine(server *Server) projectAssistantEngine {
 	return projectEinoAssistantEngine{
-		newModel:  newProjectEinoAssistantModelFactory(server),
-		newTools:  newProjectEinoAssistantToolsFactory(server),
+		body:      newProjectEinoAssistantBody(server),
 		newRunner: newProjectEinoAssistantRunner,
+	}
+}
+
+func newProjectEinoAssistantBody(server *Server) projectEinoAssistantBody {
+	return func(ctx context.Context, req projectAssistantRunRequest, sink projectAssistantEventSink) (projectAssistantRunResult, error) {
+		_ = sink
+		if server == nil {
+			return projectAssistantRunResult{}, errors.New("server is not configured")
+		}
+		if err := ctx.Err(); err != nil {
+			return projectAssistantRunResult{}, err
+		}
+		var (
+			reply string
+			err   error
+		)
+		if req.Continuation != nil {
+			reply, err = server.runProjectAssistantChatLoopFromCheckpoint(ctx, req, *req.Continuation)
+		} else {
+			reply, err = server.runProjectAssistantChatLoop(ctx, req)
+		}
+		if err != nil {
+			return projectAssistantRunResult{}, err
+		}
+		return projectAssistantRunResult{Content: reply}, nil
 	}
 }
 
@@ -79,53 +91,22 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	if req.Project == nil {
 		return projectAssistantRunResult{}, errors.New("project is required")
 	}
-	if e.newModel == nil {
-		return projectAssistantRunResult{}, errors.New("eino model factory is not configured")
-	}
-	if e.newTools == nil {
-		return projectAssistantRunResult{}, errors.New("eino tool factory is not configured")
+	if e.body == nil {
+		return projectAssistantRunResult{}, errors.New("assistant body is not configured")
 	}
 	if e.newRunner == nil {
 		return projectAssistantRunResult{}, errors.New("eino runner is not configured")
 	}
-	_ = sink
-
-	runState := newProjectEinoAssistantRunState()
-	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
-
-	tools, err := e.newTools(ctx, req, runState)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
-	chatModel, err := e.newModel(ctx, req, runState)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
-	input, err := projectEinoAssistantInputMessages(req, runState)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
-	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Name:        "app-studio-project-assistant",
-		Description: "Runs App Studio project assistant turns.",
-		Model:       chatModel,
-		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               tools,
-				UnknownToolsHandler: projectEinoUnknownToolHandler(req, runState),
-				ExecuteSequentially: true,
-			},
-		},
-		MaxIterations: maxAssistantToolTurns,
-	})
-	if err != nil {
-		return projectAssistantRunResult{}, fmt.Errorf("create eino assistant agent: %w", err)
+	agent := projectEinoAssistantAgent{
+		body: e.body,
+		req:  req,
+		sink: sink,
 	}
 	runner := e.newRunner(ctx, agent)
 	if runner == nil {
 		return projectAssistantRunResult{}, errors.New("eino runner is not configured")
 	}
-	iter := runner.Run(ctx, input)
+	iter := runner.Run(ctx, []adk.Message{schema.UserMessage(projectEinoAssistantPrompt(req))})
 	if iter == nil {
 		return projectAssistantRunResult{}, errors.New("eino runner returned no event stream")
 	}
@@ -140,9 +121,6 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 			continue
 		}
 		if event.Err != nil {
-			if projectEinoAssistantMaxIterationsExceeded(event.Err) {
-				return projectAssistantRunResult{Content: runState.ToolLoopFallback()}, nil
-			}
 			return projectAssistantRunResult{}, event.Err
 		}
 		if event.Output == nil {
@@ -160,7 +138,7 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 		if err != nil {
 			return projectAssistantRunResult{}, err
 		}
-		if msg != nil && msg.Role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
+		if msg != nil {
 			result.Content = msg.Content
 			receivedOutput = true
 		}
@@ -171,37 +149,55 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	return result, nil
 }
 
-func projectEinoAssistantInputMessages(req projectAssistantRunRequest, runState *projectEinoAssistantRunState) ([]adk.Message, error) {
-	var chatMessages []chatMessage
-	if req.Continuation != nil && len(req.Continuation.Messages) > 0 {
-		chatMessages = cloneChatMessages(req.Continuation.Messages)
-	} else {
-		chatMessages = projectPromptMessages(req.Project, req.Repository, req.History)
-		if prompt := runState.ToolPrompt(); prompt != "" {
-			chatMessages = append(chatMessages, chatMessage{Role: "system", Content: prompt})
+type projectEinoAssistantAgent struct {
+	body projectEinoAssistantBody
+	req  projectAssistantRunRequest
+	sink projectAssistantEventSink
+}
+
+func (a projectEinoAssistantAgent) Name(context.Context) string {
+	return "app-studio-project-assistant"
+}
+
+func (a projectEinoAssistantAgent) Description(context.Context) string {
+	return "Runs App Studio project assistant turns."
+}
+
+func (a projectEinoAssistantAgent) Run(
+	ctx context.Context,
+	input *adk.AgentInput,
+	options ...adk.AgentRunOption,
+) *adk.AsyncIterator[*adk.AgentEvent] {
+	_ = input
+	_ = options
+	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	go func() {
+		defer gen.Close()
+		if a.body == nil {
+			gen.Send(&adk.AgentEvent{Err: errors.New("assistant body is not configured")})
+			return
 		}
-	}
-	messages, err := projectChatMessagesToEino(chatMessages)
-	if err != nil {
-		return nil, err
-	}
-	input := make([]adk.Message, 0, len(messages))
-	for _, msg := range messages {
-		input = append(input, msg)
-	}
-	return input, nil
+		result, err := a.body(ctx, a.req, a.sink)
+		if err != nil {
+			gen.Send(&adk.AgentEvent{Err: err})
+			return
+		}
+		gen.Send(&adk.AgentEvent{
+			Output: &adk.AgentOutput{
+				MessageOutput: &adk.MessageVariant{
+					Message: schema.AssistantMessage(result.Content, nil),
+					Role:    schema.Assistant,
+				},
+				CustomizedOutput: result,
+			},
+		})
+	}()
+	return iter
 }
 
-func projectEinoAssistantProjectRepositoryRef(req projectAssistantRunRequest) string {
-	if req.Continuation != nil && strings.TrimSpace(req.Continuation.ProjectRepositoryRef) != "" {
-		return strings.TrimSpace(req.Continuation.ProjectRepositoryRef)
+func projectEinoAssistantPrompt(req projectAssistantRunRequest) string {
+	if req.Project != nil && req.Project.Name != "" {
+		return "Run the App Studio project assistant for " + req.Project.Name + "."
 	}
-	return projectLinkedRepositoryRef(req.Project)
-}
-
-func projectEinoAssistantMaxIterationsExceeded(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "exceeds max iterations")
+	return "Run the App Studio project assistant."
 }

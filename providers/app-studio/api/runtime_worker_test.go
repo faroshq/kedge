@@ -87,20 +87,30 @@ func TestProjectRuntimeWorkerRequiresApprovalWithWorker(t *testing.T) {
 		t.Fatalf("permission = %q, want ask", got)
 	}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	req := projectAssistantRunRequest{
-		Identity:       id,
-		HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
-		WorkspaceScope: projectWorkspaceScope(id, "demo"),
-		MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, "demo"),
-	}
-	adapter := newProjectEinoAssistantServerTool(server, tool, req, newProjectEinoAssistantRunState()).(projectEinoAssistantTool)
-	_, err := adapter.InvokableRun(context.Background(), `{"command":["npm","test"],"timeoutSeconds":30}`)
+	_, err := server.resolveProjectToolCallsWithPermissions(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:       id,
+			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+			WorkspaceScope: projectWorkspaceScope(id, "demo"),
+			MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, "demo"),
+		},
+		projectAssistantCheckpointState{},
+		[]chatToolCall{{
+			ID:   "call-runtime",
+			Type: "function",
+			Function: chatToolCallFunction{
+				Name:      projectToolRuntimeCommand,
+				Arguments: `{"command":["npm","test"],"timeoutSeconds":30}`,
+			},
+		}},
+	)
 	var permissionErr *projectAssistantPermissionRequiredError
 	if !strings.Contains(projectAssistantPermissionReason(tool.Spec()), "runtime command") {
 		t.Fatalf("permission reason = %q, want runtime command context", projectAssistantPermissionReason(tool.Spec()))
 	}
 	if !errors.As(err, &permissionErr) {
-		t.Fatalf("InvokableRun error = %v, want permission required", err)
+		t.Fatalf("resolveProjectToolCallsWithPermissions error = %v, want permission required", err)
 	}
 	if worker.calls != 0 {
 		t.Fatalf("worker calls = %d, want no start before approval", worker.calls)

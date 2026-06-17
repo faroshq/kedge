@@ -22,15 +22,17 @@ import (
 	"fmt"
 	"net/http"
 
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 type projectAssistantToolRisk string
 
 const (
-	projectAssistantToolRiskRead   projectAssistantToolRisk = "read"
-	projectAssistantToolRiskWrite  projectAssistantToolRisk = "write"
-	projectAssistantToolRiskCommit projectAssistantToolRisk = "commit"
+	projectAssistantToolRiskRead    projectAssistantToolRisk = "read"
+	projectAssistantToolRiskWrite   projectAssistantToolRisk = "write"
+	projectAssistantToolRiskCommit  projectAssistantToolRisk = "commit"
+	projectAssistantToolRiskRuntime projectAssistantToolRisk = "runtime"
 )
 
 type projectAssistantToolSpec struct {
@@ -53,6 +55,8 @@ func (s projectAssistantToolSpec) chatTool() chatTool {
 
 type projectAssistantToolCallRequest struct {
 	Identity             identity
+	Project              *aiv1alpha1.Project
+	Repository           *ProjectRepositoryView
 	WorkspaceScope       workspace.Scope
 	ProjectRepositoryRef string
 	MCPEndpoint          string

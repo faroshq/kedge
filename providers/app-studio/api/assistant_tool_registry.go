@@ -143,6 +143,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}))
 			},
 		},
+		newProjectAssistantWorkflowTool(server),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolWriteFile,
@@ -199,6 +200,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				return projectAssistantToolJSONResult(s.workspaces.Mkdir(ctx, req.WorkspaceScope, workspace.MkdirOptions{Path: projectToolString(req.Arguments["path"])}))
 			},
 		},
+		newProjectRuntimeCommandToolForRegistry(server),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolCommitProjectFiles,

@@ -112,12 +112,15 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 	}
 	spec := t.tool.Spec()
 	callID := compose.GetToolCallID(ctx)
-	if t.runState.PermissionBarrierActive() {
-		return projectEinoPermissionBarrierToolResult(), nil
+	if wasInterrupted, hasState, state := einotool.GetInterruptState[*projectEinoPermissionInterruptState](ctx); wasInterrupted && hasState && state != nil {
+		return t.resumePermission(ctx, callID, spec, state)
 	}
 	args, err := projectEinoToolArguments(argumentsInJSON)
 	if err != nil {
 		return t.finishFailedToolCall(callID, spec.Name, argumentsInJSON, "invalid arguments: "+truncateProjectToolInfo(err.Error())), nil
+	}
+	if t.runState.PermissionBarrierActive() {
+		return projectEinoPermissionBarrierToolResult(), nil
 	}
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:        callID,
@@ -180,29 +183,69 @@ func (t projectEinoAssistantTool) requestPermission(ctx context.Context, callID 
 		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
 		Summary:   projectAssistantPermissionReason(spec),
 	})
-	if t.server == nil {
-		return errors.New("server is not configured for permission checkpoints")
+	return einotool.StatefulInterrupt(ctx, &projectEinoPermissionInterruptInfo{
+		ToolCallID:      callID,
+		ToolName:        spec.Name,
+		ArgumentsInJSON: argumentsInJSON,
+		Reason:          projectAssistantPermissionReason(spec),
+		Risk:            spec.Risk,
+	}, &projectEinoPermissionInterruptState{
+		ToolCallID:      callID,
+		ToolName:        spec.Name,
+		ArgumentsInJSON: argumentsInJSON,
+	})
+}
+
+func (t projectEinoAssistantTool) resumePermission(ctx context.Context, callID string, spec projectAssistantToolSpec, state *projectEinoPermissionInterruptState) (string, error) {
+	if strings.TrimSpace(callID) == "" {
+		callID = strings.TrimSpace(state.ToolCallID)
 	}
-	_, index, toolCalls := t.runState.ToolCallByID(callID, spec.Name, argumentsInJSON)
-	state := t.runState.CheckpointState()
-	if len(state.ToolCalls) == 0 {
-		state.ToolCalls = cloneProjectAssistantToolCalls(toolCalls)
+	name := strings.TrimSpace(state.ToolName)
+	if name == "" {
+		name = spec.Name
 	}
-	permissionErr, permission, checkpoint, err := t.server.saveProjectAssistantPermissionCheckpointForState(ctx, t.req, t.tool, state, toolCalls, index)
+	args, err := projectEinoToolArguments(state.ArgumentsInJSON)
 	if err != nil {
-		return err
+		return t.finishFailedToolCall(callID, name, state.ArgumentsInJSON, "invalid interrupted arguments: "+truncateProjectToolInfo(err.Error())), nil
 	}
-	if t.req.StreamCallbacks.OnAssistantEvent != nil {
-		t.req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
-			Type:       projectAssistantEventPermissionNeeded,
-			Permission: &permission,
-		})
-		t.req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
-			Type:       projectAssistantEventCheckpointSaved,
-			Checkpoint: &checkpoint,
-		})
+	isResumeTarget, hasData, data := einotool.GetResumeContext[*projectEinoPermissionResumeData](ctx)
+	if !isResumeTarget {
+		return "", einotool.StatefulInterrupt(ctx, &projectEinoPermissionInterruptInfo{
+			ToolCallID:      callID,
+			ToolName:        name,
+			ArgumentsInJSON: state.ArgumentsInJSON,
+			Reason:          projectAssistantPermissionReason(spec),
+			Risk:            spec.Risk,
+		}, state)
 	}
-	return permissionErr
+	if !hasData || data == nil {
+		return "", errors.New("permission resume data is required")
+	}
+	switch data.Decision {
+	case projectAssistantPermissionAllow:
+		if len(data.EditedArguments) > 0 {
+			args = cloneProjectAssistantToolArguments(data.EditedArguments)
+		}
+		return t.invokeAllowedTool(ctx, callID, spec, args)
+	case projectAssistantPermissionDeny:
+		return t.finishDeniedToolCall(callID, name, args, "denied by user"), nil
+	default:
+		return t.finishDeniedToolCall(callID, name, args, "invalid permission decision"), nil
+	}
+}
+
+func (t projectEinoAssistantTool) finishDeniedToolCall(callID, name string, args map[string]any, reason string) string {
+	tc := projectEinoAssistantFallbackToolCall(callID, name, projectEinoToolArgumentsString(args))
+	msg := projectAssistantPermissionDeniedToolMessage(tc, reason)
+	t.emitToolCall(projectToolCallStreamEvent{
+		ID:        tc.ID,
+		Name:      tc.Function.Name,
+		Status:    "rejected",
+		Arguments: summarizeProjectToolArgumentsMap(name, args),
+		Error:     msg.Content,
+	})
+	t.recordToolMessage(tc.ID, tc.Function.Name, msg.Content)
+	return msg.Content
 }
 
 func (t projectEinoAssistantTool) finishFailedToolCall(callID, name, rawArgs, reason string) string {

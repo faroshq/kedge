@@ -1592,29 +1592,25 @@ func TestResumeProjectAssistantRunReplaysWorkflowWithRepositoryContext(t *testin
 	}
 }
 
-func TestGenerateProjectAssistantStreamStopsOfferingToolsAfterRepeatedToolLoop(t *testing.T) {
-	reply, requests, err := runRepeatedReadFileAssistantStream(t, func(w http.ResponseWriter) {
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I inspected src/App.tsx and stopped before repeating the same action.\"}}]}\n\n")
-		fmt.Fprint(w, "data: [DONE]\n\n")
-	})
+func TestGenerateProjectAssistantStreamFallsBackAfterRepeatedToolLoop(t *testing.T) {
+	reply, requests, err := runRepeatedReadFileAssistantStream(t, nil)
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "I inspected src/App.tsx") {
-		t.Fatalf("reply = %q, want final text answer", reply)
+	if !strings.Contains(reply, "repeated the same action") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/App.tsx") {
+		t.Fatalf("reply = %q, want repeated action fallback", reply)
 	}
-	if len(requests) != 3 {
-		t.Fatalf("LLM request count = %d, want 3", len(requests))
+	if len(requests) != maxAssistantToolTurns {
+		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns)
 	}
-	if len(requests[2].Tools) != 0 || requests[2].ToolChoice != "" {
-		t.Fatalf("final request offered tools: tools=%d tool_choice=%q", len(requests[2].Tools), requests[2].ToolChoice)
+	if len(requests[len(requests)-1].Tools) == 0 || requests[len(requests)-1].ToolChoice != "auto" {
+		t.Fatalf("last Eino model request tools: tools=%d tool_choice=%q, want Eino-managed tools", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
 	}
 }
 
-func TestGenerateProjectAssistantStreamFallsBackWhenFinalNoToolResponseIsEmpty(t *testing.T) {
+func TestGenerateProjectAssistantStreamNoLongerRequestsFinalNoToolResponse(t *testing.T) {
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, func(w http.ResponseWriter) {
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{}}]}\n\n")
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		t.Fatal("Eino assistant should not make the legacy final no-tool model request")
 	})
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
@@ -1622,11 +1618,11 @@ func TestGenerateProjectAssistantStreamFallsBackWhenFinalNoToolResponseIsEmpty(t
 	if !strings.Contains(reply, "repeated the same action") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/App.tsx") {
 		t.Fatalf("reply = %q, want repeated action fallback", reply)
 	}
-	if len(requests) != 3 {
-		t.Fatalf("LLM request count = %d, want 3", len(requests))
+	if len(requests) != maxAssistantToolTurns {
+		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns)
 	}
-	if len(requests[2].Tools) != 0 || requests[2].ToolChoice != "" {
-		t.Fatalf("final request offered tools: tools=%d tool_choice=%q", len(requests[2].Tools), requests[2].ToolChoice)
+	if len(requests[len(requests)-1].Tools) == 0 || requests[len(requests)-1].ToolChoice != "auto" {
+		t.Fatalf("last Eino model request tools: tools=%d tool_choice=%q, want Eino-managed tools", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
 	}
 }
 
@@ -1637,14 +1633,14 @@ func TestGenerateProjectAssistantStreamFallsBackWhenFinalToolLimitResponseHasOnl
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "kept requesting actions") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/file-7.tsx") {
+	if !strings.Contains(reply, "kept requesting actions") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/file-8.tsx") {
 		t.Fatalf("reply = %q, want tool-limit fallback", reply)
 	}
 	if len(requests) != maxAssistantToolTurns {
 		t.Fatalf("LLM request count = %d, want %d", len(requests), maxAssistantToolTurns)
 	}
-	if len(requests[len(requests)-1].Tools) != 0 || requests[len(requests)-1].ToolChoice != "" {
-		t.Fatalf("final request offered tools: tools=%d tool_choice=%q", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
+	if len(requests[len(requests)-1].Tools) == 0 || requests[len(requests)-1].ToolChoice != "auto" {
+		t.Fatalf("last Eino model request tools: tools=%d tool_choice=%q, want Eino-managed tools", len(requests[len(requests)-1].Tools), requests[len(requests)-1].ToolChoice)
 	}
 }
 

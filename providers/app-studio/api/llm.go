@@ -43,6 +43,7 @@ import (
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const (
@@ -57,14 +58,33 @@ const (
 
 	// maxAssistantToolTurns bounds how many tool-call/round-trips a single
 	// assistant generation may take before the final turn is forced to answer
-	// in text (tool_choice=none). It guards against a model that loops on
+	// in text without tools. It guards against a model that loops on
 	// failing or disallowed tool calls.
-	maxAssistantToolTurns = 8
+	maxAssistantToolTurns            = 8
+	projectToolInfoLimit             = 1000
+	projectMCPCallTimeout            = 2 * time.Minute
+	projectCommitProjectFilesMax     = 500
+	projectCommitProjectFilesMaxSize = 16 * 1024 * 1024
+)
+
+const (
+	projectToolListProjectFiles   = "list_project_files"
+	projectToolReadProjectFile    = "read_project_file"
+	projectToolSearchProjectFiles = "search_project_files"
+	projectToolPlanProjectChanges = "plan_project_changes"
+	projectToolWriteFile          = "write_file"
+	projectToolApplyPatch         = "apply_patch"
+	projectToolMkdir              = "mkdir"
+	projectToolRuntimeCommand     = "runtime_command"
+	projectToolCommitProjectFiles = "commit_project_files"
+	projectToolCommitFiles        = "commit_files"
+	projectToolCodeCommitFiles    = "code__commit_files"
 )
 
 var (
-	errProjectLLMNotConfigured = errors.New("project LLM API key is not configured")
-	secretGVR                  = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+	errProjectLLMNotConfigured    = errors.New("project LLM API key is not configured")
+	errProjectLLMNoStreamedChoice = errors.New("LLM API returned no streamed choices")
+	secretGVR                     = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 )
 
 type ProjectLLMSettingsView struct {
@@ -151,6 +171,18 @@ type chatCompletionResponse struct {
 type projectAssistantReply struct {
 	Content   string
 	ToolCalls []chatToolCall
+}
+
+type projectAssistantStreamCallbacks struct {
+	OnChunk          func(string)
+	OnStatus         func(string)
+	OnToolCall       func(projectToolCallStreamEvent)
+	OnAssistantEvent func(projectAssistantEvent)
+}
+
+type projectNamingResult struct {
+	DisplayName    string
+	RepositoryName string
 }
 
 type chatCompletionStreamChoice struct {
@@ -256,7 +288,7 @@ func (s *Server) generateProjectAssistantStream(
 	id identity,
 	c *asclient.Client,
 	p *aiv1alpha1.Project,
-	onChunk func(string),
+	callbacks projectAssistantStreamCallbacks,
 ) (string, error) {
 	ctx := r.Context()
 	if s.store == nil {
@@ -279,8 +311,33 @@ func (s *Server) generateProjectAssistantStream(
 	if err != nil {
 		return "", err
 	}
-	messages := projectPromptMessages(p, recent)
-	tools, toolsErr := s.loadProjectMCPTools(r, id, settings)
+	req := projectAssistantRunRequest{
+		Identity:                 id,
+		HTTPRequest:              r,
+		Client:                   c,
+		Project:                  p,
+		Repository:               projectRepositoryView(ctx, c, p),
+		WorkspaceScope:           projectWorkspaceScope(id, p.Name),
+		Workspace:                s.workspaces,
+		MessageScope:             projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name),
+		LLM:                      settings,
+		History:                  recent,
+		MCPBaseURL:               s.hubBase,
+		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
+		StreamCallbacks:          callbacks,
+	}
+	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req, nil)
+	if err != nil {
+		return "", err
+	}
+	return result.Content, nil
+}
+
+func (s *Server) runProjectAssistantChatLoop(ctx context.Context, req projectAssistantRunRequest) (string, error) {
+	settings := req.LLM
+	projectRepositoryRef := projectLinkedRepositoryRef(req.Project)
+	messages := projectPromptMessages(req.Project, req.Repository, req.History)
+	tools, toolsErr := s.loadProjectMCPTools(req.HTTPRequest, req.Identity, settings)
 	if toolsErr == nil {
 		if toolPrompt := projectMCPToolsPrompt(tools); toolPrompt != "" {
 			messages = append(messages, chatMessage{
@@ -303,10 +360,12 @@ func (s *Server) generateProjectAssistantStream(
 	// instead of grinding through every turn and dying with a generic error.
 	seenToolCalls := map[string]int{}
 	forceTextAnswer := false
+	repeatedToolLoop := false
+	var lastToolMessages []chatMessage
 
 	for i := 0; i < maxAssistantToolTurns; i++ {
-		// On the last allowed turn (or once we have detected a loop) set
-		// tool_choice=none so the model MUST produce a final text answer. This
+		// On the last allowed turn (or once we have detected a loop), stop
+		// offering tools so the model must produce a final text answer. This
 		// turns "exceeded safe turn limit" into a graceful explanation of why
 		// the assistant could not complete the request.
 		finalTurn := forceTextAnswer || i == maxAssistantToolTurns-1
@@ -317,21 +376,24 @@ func (s *Server) generateProjectAssistantStream(
 			Temperature: 0.2,
 			Stream:      true,
 		}
-		if len(tools) > 0 {
+		if len(tools) > 0 && !finalTurn {
 			reqBody.Tools = tools
-			if finalTurn {
-				reqBody.ToolChoice = "none"
-			} else {
-				reqBody.ToolChoice = "auto"
-			}
+			reqBody.ToolChoice = "auto"
 		}
 		maybeInjectGoogleThoughtSignature(settings, reqBody.Messages)
 
-		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, onChunk)
+		reply, err := callProjectChatCompletionStream(ctx, settings, reqBody, req.StreamCallbacks.OnChunk, req.StreamCallbacks.OnStatus)
 		if err != nil {
+			if repeatedToolLoop && errors.Is(err, errProjectLLMNoStreamedChoice) {
+				return projectRepeatedToolLoopFallback(lastToolMessages), nil
+			}
+			if finalTurn && len(lastToolMessages) > 0 && errors.Is(err, errProjectLLMNoStreamedChoice) {
+				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
+			}
 			return "", err
 		}
 		if len(reply.ToolCalls) > 0 && !finalTurn {
+			ensureProjectToolCallIDs(reply.ToolCalls)
 			repeated := false
 			for _, tc := range reply.ToolCalls {
 				sig := tc.Function.Name + "\x00" + tc.Function.Arguments
@@ -340,34 +402,291 @@ func (s *Server) generateProjectAssistantStream(
 					repeated = true
 				}
 				logger.V(2).Info("project assistant requested tool call",
-					"turn", i, "tool", tc.Function.Name, "args", tc.Function.Arguments)
+					"turn", i, "tool", tc.Function.Name, "args", summarizeProjectToolArguments(tc.Function.Name, tc.Function.Arguments))
 			}
 
 			messages = append(messages, chatMessage{
 				Role:      aiv1alpha1.ProjectMessageRoleAssistant,
 				ToolCalls: reply.ToolCalls,
 			})
-			nextMessages, callErr := s.resolveProjectToolCalls(ctx, id, reply.ToolCalls, r)
+			nextMessages, callErr := s.resolveProjectToolCallsWithPermissions(ctx, req, projectRepositoryRef, reply.ToolCalls)
 			if callErr != nil {
 				return "", callErr
 			}
+			lastToolMessages = nextMessages
 			messages = append(messages, nextMessages...)
 
+			if commitReply, ok := projectCommitToolReply(nextMessages); ok {
+				logger.Info("project assistant completed a project commit handoff attempt; forcing a final text answer",
+					"turn", i, "project", req.Project.Name)
+				return commitReply, nil
+			}
 			if repeated {
 				logger.Info("project assistant repeated an identical tool call across turns; forcing a final text answer",
-					"turn", i, "project", p.Name)
+					"turn", i, "project", req.Project.Name)
 				forceTextAnswer = true
+				repeatedToolLoop = true
 			}
 			continue
 		}
 
 		if strings.TrimSpace(reply.Content) == "" {
+			if repeatedToolLoop {
+				return projectRepeatedToolLoopFallback(lastToolMessages), nil
+			}
+			if finalTurn && len(lastToolMessages) > 0 {
+				return projectToolLoopFallback(lastToolMessages, "kept requesting actions"), nil
+			}
 			return "", errors.New("LLM API returned an empty assistant message")
 		}
 		return reply.Content, nil
 	}
 
 	return "", errors.New("LLM tool loop exceeded safe turn limit")
+}
+
+func (s *Server) resolveProjectToolCallsWithPermissions(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	projectRepositoryRef string,
+	toolCalls []chatToolCall,
+) ([]chatMessage, error) {
+	if len(toolCalls) == 0 {
+		return nil, nil
+	}
+	registry := s.projectAssistantToolRegistry()
+	var toolMessages []chatMessage
+	for i, tc := range toolCalls {
+		tool, ok := registry.Get(tc.Function.Name)
+		if !ok {
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+			continue
+		}
+		args, err := projectAssistantToolCallArguments(tc)
+		if err != nil {
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+			continue
+		}
+		spec := tool.Spec()
+		switch projectAssistantPermissionForTool(spec) {
+		case projectAssistantPermissionAllow:
+			nextMessages, err := s.resolveProjectToolCalls(ctx, req.Identity, req.Project, req.Repository, req.WorkspaceScope, projectRepositoryRef, []chatToolCall{tc}, req.HTTPRequest, req.StreamCallbacks.OnToolCall)
+			if err != nil {
+				return nil, err
+			}
+			toolMessages = append(toolMessages, nextMessages...)
+		case projectAssistantPermissionAsk:
+			if req.StreamCallbacks.OnToolCall != nil {
+				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "permission_required",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Summary:   projectAssistantPermissionReason(spec),
+				})
+			}
+			permissionErr, permission, checkpoint, err := s.saveProjectAssistantPermissionCheckpointForToolCalls(ctx, req, tool, toolCalls, i, projectRepositoryRef)
+			if err != nil {
+				return nil, err
+			}
+			if req.StreamCallbacks.OnAssistantEvent != nil {
+				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+					Type:       projectAssistantEventPermissionNeeded,
+					Permission: &permission,
+				})
+				req.StreamCallbacks.OnAssistantEvent(projectAssistantEvent{
+					Type:       projectAssistantEventCheckpointSaved,
+					Checkpoint: &checkpoint,
+				})
+			}
+			return nil, permissionErr
+		case projectAssistantPermissionDeny:
+			reason := "unknown tool risk"
+			if req.StreamCallbacks.OnToolCall != nil {
+				req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "rejected",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Error:     reason,
+				})
+			}
+			toolMessages = append(toolMessages, projectAssistantPermissionDeniedToolMessage(tc, reason))
+		}
+	}
+	return toolMessages, nil
+}
+
+func projectAssistantToolCallArguments(tc chatToolCall) (map[string]any, error) {
+	args := map[string]any{}
+	if strings.TrimSpace(tc.Function.Arguments) == "" {
+		return args, nil
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return nil, err
+	}
+	return args, nil
+}
+
+func projectRepeatedToolLoopFallback(toolMessages []chatMessage) string {
+	return projectToolLoopFallback(toolMessages, "repeated the same action")
+}
+
+func projectCommitToolReply(toolMessages []chatMessage) (string, bool) {
+	for i := len(toolMessages) - 1; i >= 0; i-- {
+		msg := toolMessages[i]
+		if projectToolBaseName(msg.Name) != projectToolCommitProjectFiles {
+			continue
+		}
+		status := projectToolMessageStatus(msg)
+		summary := summarizeProjectToolResult(msg.Name, msg.Content)
+		summary = strings.TrimSpace(strings.TrimPrefix(summary, "Tool call failed:"))
+
+		var b strings.Builder
+		switch status {
+		case "failed":
+			b.WriteString("I could not commit the workspace files to the managed git source.")
+		case "running":
+			b.WriteString("The repository commit request was created, but it is still running.")
+		default:
+			b.WriteString("Committed the workspace files to the managed git source.")
+		}
+		if summary != "" {
+			b.WriteString(" Last action result: ")
+			b.WriteString(summary)
+			b.WriteString(".")
+		}
+		return b.String(), true
+	}
+	return "", false
+}
+
+func projectToolMessageStatus(msg chatMessage) string {
+	if strings.HasPrefix(strings.TrimSpace(msg.Content), "Tool call failed:") {
+		return "failed"
+	}
+	return projectToolCallResultStatus(msg.Name, msg.Content)
+}
+
+func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "could not finish using tools"
+	}
+	summaries := make([]string, 0, len(toolMessages))
+	for _, msg := range toolMessages {
+		name := strings.TrimSpace(msg.Name)
+		if name == "" {
+			continue
+		}
+		if summary := summarizeProjectToolResult(name, msg.Content); summary != "" {
+			summaries = append(summaries, name+": "+summary)
+			continue
+		}
+		summaries = append(summaries, name)
+	}
+
+	var b strings.Builder
+	b.WriteString("I stopped because the assistant " + reason + " and the model did not provide a final text answer.")
+	if len(summaries) > 0 {
+		b.WriteString(" Last action result")
+		if len(summaries) > 1 {
+			b.WriteString("s")
+		}
+		b.WriteString(": ")
+		b.WriteString(strings.Join(summaries, "; "))
+		b.WriteString(".")
+	}
+	b.WriteString(" Please ask me to continue if you want the next step.")
+	return b.String()
+}
+
+func (s *Server) generateProjectNaming(ctx context.Context, c *asclient.Client, prompt string) (projectNamingResult, error) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return projectNamingResult{}, newValidationError("prompt is required")
+	}
+	settings, err := readProjectLLMSettings(ctx, c)
+	if err != nil {
+		return projectNamingResult{}, err
+	}
+	if err := normalizeProjectLLMSettings(&settings); err != nil {
+		return projectNamingResult{}, err
+	}
+	if strings.TrimSpace(settings.APIKey) == "" {
+		return projectNamingResult{}, errProjectLLMNotConfigured
+	}
+
+	reqBody := chatCompletionRequest{
+		Model:       settings.Model,
+		Temperature: 0.1,
+		Messages: []chatMessage{
+			{
+				Role: "system",
+				Content: "Generate concise app project names. Return only JSON with string fields displayName and repositoryName. " +
+					"displayName should be 2-5 words, human-readable, and no longer than 64 characters. " +
+					"repositoryName must be derived from displayName and must already satisfy DNS-1123 label rules: lowercase a-z, 0-9, hyphen only; starts and ends with alphanumeric; max 63 characters.",
+			},
+			{
+				Role:    "user",
+				Content: "Prompt:\n" + prompt,
+			},
+		},
+	}
+	reply, err := callProjectChatCompletion(ctx, settings, reqBody)
+	if err != nil {
+		return projectNamingResult{}, err
+	}
+	out, err := parseProjectNamingResult(reply.Content)
+	if err != nil {
+		return projectNamingResult{}, err
+	}
+	out.DisplayName = strings.TrimSpace(out.DisplayName)
+	if out.DisplayName == "" {
+		return projectNamingResult{}, errors.New("LLM naming response omitted displayName")
+	}
+	if len(out.DisplayName) > 64 {
+		out.DisplayName = strings.TrimSpace(out.DisplayName[:64])
+	}
+	out.RepositoryName = dns1123Label(out.RepositoryName)
+	if out.RepositoryName == "" {
+		return projectNamingResult{}, errors.New("LLM naming response did not produce a valid repositoryName")
+	}
+	return out, nil
+}
+
+func parseProjectNamingResult(content string) (projectNamingResult, error) {
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+	if start := strings.Index(content, "{"); start >= 0 {
+		if end := strings.LastIndex(content, "}"); end > start {
+			content = content[start : end+1]
+		}
+	}
+	var decoded struct {
+		DisplayName    string `json:"displayName"`
+		RepositoryName string `json:"repositoryName"`
+	}
+	if err := json.Unmarshal([]byte(content), &decoded); err != nil {
+		return projectNamingResult{}, fmt.Errorf("decode LLM naming response: %w", err)
+	}
+	return projectNamingResult{
+		DisplayName:    decoded.DisplayName,
+		RepositoryName: decoded.RepositoryName,
+	}, nil
 }
 
 const googleThoughtSignatureSkipValue = "skip_thought_signature_validator"
@@ -448,6 +767,7 @@ func callProjectChatCompletionStream(
 	settings projectLLMSettings,
 	reqBody chatCompletionRequest,
 	onChunk func(string),
+	onStatus func(string),
 ) (projectAssistantReply, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
@@ -467,7 +787,7 @@ func callProjectChatCompletionStream(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := projectLLMStreamClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return projectAssistantReply{}, err
@@ -501,6 +821,7 @@ func callProjectChatCompletionStream(
 	var toolCallByIndex = map[int]chatToolCall{}
 	var content strings.Builder
 	var sawStreamingEvents bool
+	var reportedToolPreparation bool
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -534,6 +855,12 @@ func callProjectChatCompletionStream(
 					onChunk(choice.Delta.Content)
 				}
 			}
+			if len(choice.Delta.ToolCalls) > 0 && !reportedToolPreparation {
+				reportedToolPreparation = true
+				if onStatus != nil {
+					onStatus("Preparing action")
+				}
+			}
 			for _, toolCall := range choice.Delta.ToolCalls {
 				existing := toolCallByIndex[toolCall.Index]
 				if existing.ID == "" {
@@ -565,10 +892,10 @@ func callProjectChatCompletionStream(
 		return projectAssistantReply{}, fmt.Errorf("scan stream response: %w", err)
 	}
 	if !sawStreamingEvents {
-		return projectAssistantReply{}, errors.New("LLM API returned no streamed choices")
+		return projectAssistantReply{}, errProjectLLMNoStreamedChoice
 	}
 	if content.Len() == 0 && len(toolCallByIndex) == 0 {
-		return projectAssistantReply{}, errors.New("LLM API returned no streamed choices")
+		return projectAssistantReply{}, errProjectLLMNoStreamedChoice
 	}
 	toolCalls := make([]chatToolCall, 0, len(toolCallByIndex))
 	indices := make([]int, 0, len(toolCallByIndex))
@@ -583,6 +910,71 @@ func callProjectChatCompletionStream(
 		Content:   content.String(),
 		ToolCalls: toolCalls,
 	}, nil
+}
+
+func projectLLMStreamClient() *http.Client {
+	// Do not use http.Client.Timeout for SSE. That timeout covers reading the
+	// entire response body, so healthy long-running generations can be cut off
+	// mid-stream. The request context still handles user cancellation and server
+	// shutdown.
+	return &http.Client{}
+}
+
+func callProjectChatCompletion(
+	ctx context.Context,
+	settings projectLLMSettings,
+	reqBody chatCompletionRequest,
+) (chatMessage, error) {
+	reqBody.Stream = false
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return chatMessage{}, fmt.Errorf("encoding request: %w", err)
+	}
+
+	endpoint := strings.TrimRight(settings.BaseURL, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return chatMessage{}, fmt.Errorf("creating request: %w", err)
+	}
+	authToken, err := projectLLMAuthToken(ctx, settings)
+	if err != nil {
+		return chatMessage{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return chatMessage{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return chatMessage{}, fmt.Errorf("reading response: %w", readErr)
+	}
+	var decoded chatCompletionResponse
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &decoded)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		detail := strings.TrimSpace(string(body))
+		if decoded.Error != nil && decoded.Error.Message != "" {
+			detail = decoded.Error.Message
+		}
+		if detail == "" {
+			detail = resp.Status
+		}
+		klog.FromContext(ctx).Error(nil, "LLM API returned non-2xx",
+			"endpoint", endpoint, "model", reqBody.Model, "status", resp.Status, "detail", detail)
+		return chatMessage{}, fmt.Errorf("LLM API returned %s: %s", resp.Status, detail)
+	}
+	if len(decoded.Choices) == 0 {
+		return chatMessage{}, errors.New("LLM API returned no choices")
+	}
+	return decoded.Choices[0].Message, nil
 }
 
 func projectLLMAuthToken(ctx context.Context, settings projectLLMSettings) (string, error) {
@@ -608,7 +1000,17 @@ func projectLLMAuthToken(ctx context.Context, settings projectLLMSettings) (stri
 	return token.AccessToken, nil
 }
 
-func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolCalls []chatToolCall, r *http.Request) ([]chatMessage, error) {
+func (s *Server) resolveProjectToolCalls(
+	ctx context.Context,
+	id identity,
+	project *aiv1alpha1.Project,
+	repository *ProjectRepositoryView,
+	scope workspace.Scope,
+	projectRepositoryRef string,
+	toolCalls []chatToolCall,
+	r *http.Request,
+	onToolCall func(projectToolCallStreamEvent),
+) ([]chatMessage, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
@@ -616,10 +1018,26 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 	var toolMessages []chatMessage
 	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
 	logger := klog.FromContext(ctx)
+	registry := s.projectAssistantToolRegistry()
 
 	for _, tc := range toolCalls {
+		if onToolCall != nil {
+			onToolCall(projectToolCallStreamEvent{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Status:    "requested",
+				Arguments: summarizeProjectToolArguments(tc.Function.Name, tc.Function.Arguments),
+			})
+		}
 		if tc.Function.Name == "" {
 			logger.Info("project assistant tool call rejected", "reason", "missing function name")
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:     tc.ID,
+					Status: "rejected",
+					Error:  "missing function name",
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -627,13 +1045,23 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 			})
 			continue
 		}
-		if !projectMCPToolAllowed(tc.Function.Name) {
-			logger.Info("project assistant tool call rejected", "reason", "disallowed MCP tool name", "tool", tc.Function.Name)
+		localTool := registry.Has(tc.Function.Name)
+		runtimeTool := projectRuntimeToolAllowed(tc.Function.Name)
+		if !localTool && !runtimeTool && !projectMCPToolAllowed(tc.Function.Name) {
+			logger.Info("project assistant tool call rejected", "reason", "disallowed tool name", "tool", tc.Function.Name)
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:     tc.ID,
+					Name:   tc.Function.Name,
+					Status: "rejected",
+					Error:  "disallowed tool name",
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
 				ToolCallID: tc.ID,
-				Content:    "Tool call failed: disallowed MCP tool name",
+				Content:    "Tool call failed: disallowed tool name",
 			})
 			continue
 		}
@@ -642,6 +1070,14 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 		}
 		if tc.Type != "function" {
 			logger.Info("project assistant tool call rejected", "reason", "unsupported tool call type", "tool", tc.Function.Name, "type", tc.Type)
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:     tc.ID,
+					Name:   tc.Function.Name,
+					Status: "rejected",
+					Error:  "unsupported tool call type: " + tc.Type,
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -653,7 +1089,15 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 		args := map[string]any{}
 		if strings.TrimSpace(tc.Function.Arguments) != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "args", tc.Function.Arguments, "err", err.Error())
+				logger.Info("project assistant tool call rejected", "reason", "invalid arguments", "tool", tc.Function.Name, "argsBytes", len(tc.Function.Arguments), "err", err.Error())
+				if onToolCall != nil {
+					onToolCall(projectToolCallStreamEvent{
+						ID:     tc.ID,
+						Name:   tc.Function.Name,
+						Status: "rejected",
+						Error:  "invalid arguments: " + truncateProjectToolInfo(err.Error()),
+					})
+				}
 				toolMessages = append(toolMessages, chatMessage{
 					Role:       "tool",
 					Name:       tc.Function.Name,
@@ -663,9 +1107,38 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 				continue
 			}
 		}
-		resp, err := callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
+		if onToolCall != nil {
+			onToolCall(projectToolCallStreamEvent{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Status:    "running",
+				Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+			})
+		}
+		var resp string
+		var err error
+		if localTool {
+			resp, err = s.callProjectLocalTool(ctx, id, project, repository, scope, projectRepositoryRef, mcpEndpoint, r, tc.Function.Name, args)
+		} else if runtimeTool {
+			resp, err = newProjectRuntimeCommandTool(nil).Call(ctx, projectAssistantToolCallRequest{
+				Identity:       id,
+				WorkspaceScope: scope,
+				Arguments:      args,
+			})
+		} else {
+			resp, err = callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, tc.Function.Name, args)
+		}
 		if err != nil {
-			logger.Error(err, "project assistant MCP tool call failed", "tool", tc.Function.Name, "endpoint", mcpEndpoint)
+			logger.Error(err, "project assistant tool call failed", "tool", tc.Function.Name, "endpoint", mcpEndpoint)
+			if onToolCall != nil {
+				onToolCall(projectToolCallStreamEvent{
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Status:    "failed",
+					Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+					Error:     truncateProjectToolInfo(err.Error()),
+				})
+			}
 			toolMessages = append(toolMessages, chatMessage{
 				Role:       "tool",
 				Name:       tc.Function.Name,
@@ -674,7 +1147,16 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 			})
 			continue
 		}
-		logger.V(2).Info("project assistant MCP tool call succeeded", "tool", tc.Function.Name, "responseBytes", len(resp))
+		logger.V(2).Info("project assistant tool call succeeded", "tool", tc.Function.Name, "responseBytes", len(resp))
+		if onToolCall != nil {
+			onToolCall(projectToolCallStreamEvent{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Status:    projectToolCallResultStatus(tc.Function.Name, resp),
+				Arguments: summarizeProjectToolArgumentsMap(tc.Function.Name, args),
+				Summary:   summarizeProjectToolResult(tc.Function.Name, resp),
+			})
+		}
 		toolMessages = append(toolMessages, chatMessage{
 			Role:       "tool",
 			Name:       tc.Function.Name,
@@ -686,34 +1168,516 @@ func (s *Server) resolveProjectToolCalls(ctx context.Context, id identity, toolC
 	return toolMessages, nil
 }
 
+func projectWorkspaceScope(id identity, projectName string) workspace.Scope {
+	return workspace.Scope{
+		OrgUUID:       id.orgUUID,
+		WorkspaceUUID: id.workspaceUUID,
+		ProjectName:   projectName,
+	}
+}
+
+func projectLinkedRepositoryRef(p *aiv1alpha1.Project) string {
+	if p == nil || p.Spec.Repository == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Spec.Repository.RepositoryRef)
+}
+
+func (s *Server) callProjectLocalTool(ctx context.Context, id identity, project *aiv1alpha1.Project, repository *ProjectRepositoryView, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
+	tool, ok := s.projectAssistantToolRegistry().Get(name)
+	if !ok {
+		return "", fmt.Errorf("unknown local project tool %q", name)
+	}
+	return tool.Call(ctx, projectAssistantToolCallRequest{
+		Identity:             id,
+		Project:              project,
+		Repository:           repository,
+		WorkspaceScope:       scope,
+		ProjectRepositoryRef: projectRepositoryRef,
+		MCPEndpoint:          mcpEndpoint,
+		HTTPRequest:          r,
+		Arguments:            args,
+	})
+}
+
+func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
+	projectRepositoryRef = strings.TrimSpace(projectRepositoryRef)
+	if projectRepositoryRef == "" {
+		return "", errors.New("project repository is not configured")
+	}
+	repositoryRef := projectToolString(args["repositoryRef"])
+	if repositoryRef == "" {
+		return "", errors.New("repositoryRef is required")
+	}
+	if repositoryRef != projectRepositoryRef {
+		return "", fmt.Errorf("repositoryRef %q does not match this Project's repository %q", repositoryRef, projectRepositoryRef)
+	}
+	paths := projectToolStringList(args["paths"])
+	if len(paths) == 0 {
+		return "", errors.New("at least one path is required")
+	}
+	if len(paths) > projectCommitProjectFilesMax {
+		return "", fmt.Errorf("too many paths: %d > %d", len(paths), projectCommitProjectFilesMax)
+	}
+	cleanPaths := make([]string, 0, len(paths))
+	seen := map[string]struct{}{}
+	for _, p := range paths {
+		clean, err := workspace.CleanProjectPath(p)
+		if err != nil {
+			return "", err
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		cleanPaths = append(cleanPaths, clean)
+	}
+	files := make([]map[string]string, 0, len(cleanPaths))
+	var totalBytes int64
+	for _, p := range cleanPaths {
+		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: p, MaxBytes: workspace.MaxWriteBytes})
+		if err != nil {
+			return "", err
+		}
+		if read.Binary {
+			return "", fmt.Errorf("file %q is binary and cannot be committed through code__commit_files", read.Path)
+		}
+		if read.Truncated {
+			return "", fmt.Errorf("file %q is too large to commit through commit_project_files", read.Path)
+		}
+		totalBytes += int64(len([]byte(read.Content)))
+		if totalBytes > projectCommitProjectFilesMaxSize {
+			return "", fmt.Errorf("commit_project_files payload is too large: %d > %d bytes", totalBytes, projectCommitProjectFilesMaxSize)
+		}
+		files = append(files, map[string]string{"path": read.Path, "content": read.Content})
+	}
+	if len(files) == 0 {
+		return "", errors.New("no files to commit")
+	}
+	commitArgs := map[string]any{
+		"repositoryRef": projectRepositoryRef,
+		"files":         files,
+	}
+	if message := projectToolString(args["message"]); message != "" {
+		commitArgs["message"] = message
+	}
+	if branch := projectToolString(args["branch"]); branch != "" {
+		commitArgs["branch"] = branch
+	}
+	return callProjectMCPTool(ctx, mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeCommitFiles, commitArgs)
+}
+
+func ensureProjectToolCallIDs(toolCalls []chatToolCall) {
+	for i := range toolCalls {
+		if toolCalls[i].ID == "" {
+			toolCalls[i].ID = fmt.Sprintf("tool-%d", i+1)
+		}
+	}
+}
+
+func summarizeProjectToolArguments(name, raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	args := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return "unparseable arguments"
+	}
+	return summarizeProjectToolArgumentsMap(name, args)
+}
+
+func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	switch projectToolBaseName(name) {
+	case projectToolCommitFiles, projectToolCommitProjectFiles:
+		parts := []string{}
+		if repo := projectToolString(args["repositoryRef"]); repo != "" {
+			parts = append(parts, "repository "+repo)
+		}
+		if branch := projectToolString(args["branch"]); branch != "" {
+			parts = append(parts, "branch "+branch)
+		}
+		if message := projectToolString(args["message"]); message != "" {
+			parts = append(parts, "message "+message)
+		}
+		paths := projectToolFilePaths(args["files"])
+		if len(paths) == 0 {
+			paths = projectToolStringList(args["paths"])
+		}
+		if len(paths) > 0 {
+			parts = append(parts, fmt.Sprintf("%d file(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
+		}
+		return truncateProjectToolInfo(strings.Join(parts, "; "))
+	case projectToolListProjectFiles:
+		return summarizeProjectToolKeyValues(args, []string{"limit"})
+	case projectToolReadProjectFile:
+		return summarizeProjectToolKeyValues(args, []string{"path", "maxBytes"})
+	case projectToolSearchProjectFiles:
+		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
+	case projectToolPlanProjectChanges:
+		return summarizeProjectPlanningWorkflowArgs(args)
+	case projectToolWriteFile:
+		return summarizeProjectMutationArgs(args, []string{"path"}, true)
+	case projectToolApplyPatch:
+		return summarizeProjectMutationArgs(args, []string{"path"}, false)
+	case projectToolMkdir:
+		return summarizeProjectToolKeyValues(args, []string{"path"})
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return ""
+	}
+	return truncateProjectToolInfo(string(raw))
+}
+
+func summarizeProjectToolResult(name, result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(result), &decoded); err == nil {
+		switch projectToolBaseName(name) {
+		case projectToolCommitFiles, projectToolCommitProjectFiles:
+			parts := []string{}
+			if sha := projectToolString(decoded["commitSHA"]); sha != "" {
+				if len(sha) > 12 {
+					sha = sha[:12]
+				}
+				parts = append(parts, "commit "+sha)
+			} else if reqName := projectToolString(decoded["name"]); reqName != "" {
+				parts = append(parts, "request "+reqName)
+			}
+			if phase := projectToolString(decoded["phase"]); phase != "" {
+				parts = append(parts, "phase "+phase)
+			}
+			if branch := projectToolString(decoded["branch"]); branch != "" {
+				parts = append(parts, "branch "+branch)
+			}
+			if files := projectToolStringList(decoded["files"]); len(files) > 0 {
+				parts = append(parts, fmt.Sprintf("%d file(s): %s", len(files), summarizeProjectToolList(files, 5)))
+			}
+			if len(parts) > 0 {
+				return truncateProjectToolInfo(strings.Join(parts, "; "))
+			}
+		case projectToolListProjectFiles:
+			return summarizeWorkspaceListResult(decoded)
+		case projectToolReadProjectFile:
+			return summarizeWorkspaceReadResult(decoded)
+		case projectToolSearchProjectFiles:
+			return summarizeWorkspaceSearchResult(decoded)
+		case projectToolPlanProjectChanges:
+			return summarizeProjectPlanningWorkflowResult(decoded)
+		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+			return summarizeWorkspaceMutationResult(decoded)
+		}
+		if message := projectToolString(decoded["message"]); message != "" {
+			return truncateProjectToolInfo(message)
+		}
+	}
+	firstLine := strings.TrimSpace(strings.Split(result, "\n")[0])
+	return truncateProjectToolInfo(firstLine)
+}
+
+func summarizeProjectMutationArgs(args map[string]any, keys []string, includeContentBytes bool) string {
+	parts := []string{}
+	if summary := summarizeProjectToolKeyValues(args, keys); summary != "" {
+		parts = append(parts, summary)
+	}
+	if includeContentBytes {
+		if content, ok := args["content"].(string); ok {
+			parts = append(parts, fmt.Sprintf("%d bytes", len([]byte(content))))
+		}
+	}
+	if projectToolBool(args["replaceAll"]) {
+		parts = append(parts, "replaceAll")
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectToolKeyValues(args map[string]any, keys []string) string {
+	parts := []string{}
+	for _, key := range keys {
+		switch key {
+		case "maxBytes", "maxResults", "limit":
+			if n, ok := projectToolNumber(args[key]); ok {
+				parts = append(parts, fmt.Sprintf("%s %d", key, n))
+			}
+		default:
+			if value := projectToolString(args[key]); value != "" {
+				parts = append(parts, key+" "+value)
+			}
+		}
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectPlanningWorkflowArgs(args map[string]any) string {
+	parts := []string{}
+	if includeFiles, ok := args["includeFiles"].(bool); ok {
+		parts = append(parts, fmt.Sprintf("includeFiles %t", includeFiles))
+	}
+	if n, ok := projectToolNumber(args["maxFiles"]); ok {
+		parts = append(parts, fmt.Sprintf("maxFiles %d", n))
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeWorkspaceMutationResult(decoded map[string]any) string {
+	parts := []string{}
+	if op := projectToolString(decoded["operation"]); op != "" {
+		parts = append(parts, op)
+	}
+	if path := projectToolString(decoded["path"]); path != "" {
+		parts = append(parts, path)
+	}
+	if size, ok := projectToolNumber(decoded["size"]); ok {
+		parts = append(parts, fmt.Sprintf("%d bytes", size))
+	}
+	if replacements, ok := projectToolNumber(decoded["replacements"]); ok {
+		parts = append(parts, fmt.Sprintf("%d replacement(s)", replacements))
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectPlanningWorkflowResult(decoded map[string]any) string {
+	parts := []string{}
+	if summary := projectToolString(decoded["summary"]); summary != "" {
+		parts = append(parts, summary)
+	}
+	if steps, ok := decoded["steps"].([]any); ok && len(steps) > 0 {
+		parts = append(parts, fmt.Sprintf("%d step(s)", len(steps)))
+	}
+	if files := projectToolStringList(decoded["files"]); len(files) > 0 {
+		parts = append(parts, fmt.Sprintf("%d file(s): %s", len(files), summarizeProjectToolList(files, 5)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeWorkspaceListResult(decoded map[string]any) string {
+	files := projectToolObjectPaths(decoded["files"])
+	parts := []string{}
+	parts = append(parts, fmt.Sprintf("%d path(s)", len(files)))
+	if len(files) > 0 {
+		parts = append(parts, summarizeProjectToolList(files, 5))
+	}
+	if projectToolBool(decoded["truncated"]) {
+		parts = append(parts, "truncated")
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeWorkspaceReadResult(decoded map[string]any) string {
+	parts := []string{}
+	if path := projectToolString(decoded["path"]); path != "" {
+		parts = append(parts, "file "+path)
+	}
+	if size, ok := projectToolNumber(decoded["size"]); ok {
+		parts = append(parts, fmt.Sprintf("%d bytes", size))
+	}
+	if projectToolBool(decoded["binary"]) {
+		parts = append(parts, "binary")
+	}
+	if projectToolBool(decoded["truncated"]) {
+		parts = append(parts, "truncated")
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeWorkspaceSearchResult(decoded map[string]any) string {
+	parts := []string{}
+	if total, ok := projectToolNumber(decoded["totalCount"]); ok {
+		parts = append(parts, fmt.Sprintf("%d match(es)", total))
+	}
+	paths := projectToolObjectPaths(decoded["results"])
+	if len(paths) > 0 {
+		parts = append(parts, summarizeProjectToolList(paths, 5))
+	}
+	if projectToolBool(decoded["incomplete"]) {
+		parts = append(parts, "incomplete")
+	}
+	if projectToolBool(decoded["truncated"]) {
+		parts = append(parts, "truncated")
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func projectToolCallResultStatus(name, result string) string {
+	baseName := projectToolBaseName(name)
+	if baseName != projectToolCommitFiles && baseName != projectToolCommitProjectFiles {
+		return "succeeded"
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err != nil {
+		return "succeeded"
+	}
+	switch strings.ToLower(projectToolString(decoded["phase"])) {
+	case "pending", "running":
+		return "running"
+	case "failed":
+		return "failed"
+	default:
+		return "succeeded"
+	}
+}
+
+func projectToolBaseName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if idx := strings.LastIndex(name, "__"); idx >= 0 {
+		return name[idx+2:]
+	}
+	return name
+}
+
+func projectToolString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
+}
+
+func projectToolRawString(value any) (string, bool) {
+	v, ok := value.(string)
+	return v, ok
+}
+
+func projectToolFilePaths(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if path := projectToolString(obj["path"]); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func projectToolStringList(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if value := projectToolString(item); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func projectToolObjectPaths(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if path := projectToolString(obj["path"]); path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func projectToolNumber(value any) (int64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case json.Number:
+		n, err := v.Int64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func projectToolInt(value any) int {
+	n, ok := projectToolNumber(value)
+	if !ok || n <= 0 {
+		return 0
+	}
+	if n > int64(^uint(0)>>1) {
+		return int(^uint(0) >> 1)
+	}
+	return int(n)
+}
+
+func projectToolBool(value any) bool {
+	v, ok := value.(bool)
+	return ok && v
+}
+
+func summarizeProjectToolList(values []string, limit int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if limit <= 0 || len(values) <= limit {
+		return strings.Join(values, ", ")
+	}
+	return strings.Join(values[:limit], ", ") + fmt.Sprintf(", +%d more", len(values)-limit)
+}
+
+func truncateProjectToolInfo(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= projectToolInfoLimit {
+		return value
+	}
+	if projectToolInfoLimit <= 3 {
+		return value[:projectToolInfoLimit]
+	}
+	return strings.TrimSpace(value[:projectToolInfoLimit-3]) + "..."
+}
+
 func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings projectLLMSettings) ([]chatTool, error) {
 	if id.tenantPath == "" {
 		return nil, errors.New("tenant context missing")
 	}
+	registry := s.projectAssistantToolRegistry()
+	out := registry.ChatTools(false)
 	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
 	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	if len(tools) == 0 {
-		return nil, nil
+		return out, nil
 	}
-	out := make([]chatTool, 0, len(tools))
+	codeCommitAvailable := false
 	for _, t := range tools {
 		if strings.TrimSpace(t.Name) == "" {
 			continue
 		}
-		if !projectMCPToolAllowed(t.Name) {
-			continue
+		if projectMCPCommitToolAvailable(t.Name) {
+			codeCommitAvailable = true
 		}
-		out = append(out, chatTool{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
-			},
-		})
+	}
+	if codeCommitAvailable {
+		if tool, ok := registry.ChatTool(projectToolCommitProjectFiles); ok {
+			out = append(out, tool)
+		}
 	}
 	return out, nil
 }
@@ -776,16 +1740,23 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, t
 		ErrorMessage      string          `json:"error"`
 	}
 	if err := json.Unmarshal(body, &result); err == nil {
-		if result.IsError {
-			if result.ErrorMessage != "" {
-				return "", errors.New(result.ErrorMessage)
-			}
-		}
 		textParts := make([]string, 0, len(result.Content))
 		for _, item := range result.Content {
 			if item.Type == "text" && item.Text != "" {
 				textParts = append(textParts, item.Text)
 			}
+		}
+		if result.IsError {
+			if result.ErrorMessage != "" {
+				return "", errors.New(result.ErrorMessage)
+			}
+			if len(textParts) > 0 {
+				return "", errors.New(strings.Join(textParts, "\n"))
+			}
+			if len(result.StructuredContent) > 0 {
+				return "", errors.New(string(result.StructuredContent))
+			}
+			return "", errors.New("tool call returned an error")
 		}
 		if len(textParts) > 0 {
 			return strings.Join(textParts, "\n"), nil
@@ -822,11 +1793,11 @@ func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON 
 	}
 
 	transport := projectMCPTransport(skipTLSVerify)
-	client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
+	client := &http.Client{Timeout: projectMCPCallTimeout, Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil && projectMCPShouldRetryInsecure(endpoint, err, skipTLSVerify) {
 		transport = projectMCPTransport(true)
-		client = &http.Client{Timeout: 15 * time.Second, Transport: transport}
+		client = &http.Client{Timeout: projectMCPCallTimeout, Transport: transport}
 		resp, err = client.Do(req)
 	}
 	if err != nil {
@@ -1194,8 +2165,9 @@ func normalizeLLMBasePath(path string, host string) string {
 	return path
 }
 
-func projectPromptMessages(p *aiv1alpha1.Project, history []store.Message) []chatMessage {
-	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p)}}
+func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryView, history []store.Message) []chatMessage {
+	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p, repository)}}
+	var lastRole, lastContent string
 	for _, m := range history {
 		if m.Role != aiv1alpha1.ProjectMessageRoleUser && m.Role != aiv1alpha1.ProjectMessageRoleAssistant {
 			continue
@@ -1204,12 +2176,17 @@ func projectPromptMessages(p *aiv1alpha1.Project, history []store.Message) []cha
 		if content == "" {
 			continue
 		}
+		if m.Role == aiv1alpha1.ProjectMessageRoleUser && lastRole == aiv1alpha1.ProjectMessageRoleUser && lastContent == content {
+			continue
+		}
 		messages = append(messages, chatMessage{Role: m.Role, Content: content})
+		lastRole = m.Role
+		lastContent = content
 	}
 	return messages
 }
 
-func projectSystemPrompt(p *aiv1alpha1.Project) string {
+func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryView) string {
 	var b strings.Builder
 	b.WriteString("You are the assistant for a persistent Kedge Project workspace. ")
 	b.WriteString("Help the user reason about and build the application represented by this Project. ")
@@ -1221,6 +2198,32 @@ func projectSystemPrompt(p *aiv1alpha1.Project) string {
 	if strings.TrimSpace(p.Spec.Description) != "" {
 		b.WriteString("- Description: " + p.Spec.Description + "\n")
 	}
+	if repo := p.Spec.Repository; repo != nil && strings.TrimSpace(repo.RepositoryRef) != "" {
+		repoRef := strings.TrimSpace(repo.RepositoryRef)
+		b.WriteString("\nSource repository:\n")
+		b.WriteString("- Repository resource: " + repoRef + "\n")
+		if repoName := strings.TrimSpace(repo.Name); repoName != "" {
+			b.WriteString("- Repository name: " + repoName + "\n")
+		}
+		if connectionRef := strings.TrimSpace(repo.ConnectionRef); connectionRef != "" {
+			b.WriteString("- Connection: " + connectionRef + "\n")
+		}
+		if repository != nil && repository.Status != "" && repository.Status != projectRepositoryStatusReady && repository.Status != projectRepositoryStatusProvisioning {
+			b.WriteString("- Repository status: " + repository.Status + "\n")
+			if strings.TrimSpace(repository.Message) != "" {
+				b.WriteString("- Repository issue: " + repository.Message + "\n")
+			}
+			b.WriteString("Do not attempt to commit files until the user restores the missing Code repository or connection.\n")
+		} else {
+			b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
+			b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
+			b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")
+			b.WriteString("Use provider-code only as the git-source boundary; do not use provider-code tools to inspect or mutate the live App Studio workspace. ")
+			b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")
+			b.WriteString("Do not paste large file contents into user-facing answers; summarize what you inspected instead. ")
+			b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
+		}
+	}
 	b.WriteString("\nProject memory:\n")
 	appendMemoryList(&b, "Goals", p.Spec.Memory.Goals)
 	appendMemoryList(&b, "Requirements", p.Spec.Memory.Requirements)
@@ -1230,10 +2233,10 @@ func projectSystemPrompt(p *aiv1alpha1.Project) string {
 
 func projectMCPToolsPrompt(tools []chatTool) string {
 	if len(tools) == 0 {
-		return "No MCP tools were discovered for this workspace."
+		return "No tools were discovered for this workspace."
 	}
 	var b strings.Builder
-	b.WriteString("Available MCP tools in this workspace:\n")
+	b.WriteString("Available tools in this workspace:\n")
 	for _, tool := range tools {
 		desc := strings.TrimSpace(tool.Function.Description)
 		if desc == "" {
@@ -1248,28 +2251,23 @@ func projectMCPToolsFailurePrompt(err error) string {
 	if err == nil {
 		return ""
 	}
-	return "MCP tool discovery failed for this workspace: " + err.Error() + ". Tell the user that MCP tools are unavailable in this session."
+	return "External MCP tool discovery failed for this workspace: " + err.Error() + ". Tell the user that git-source tools are unavailable in this session, but App Studio workspace file tools may still be available."
 }
 
-func projectMCPToolAllowed(name string) bool {
-	baseName := projectMCPToolBaseName(name)
-	if baseName == "" {
-		return false
-	}
-	lower := strings.ToLower(baseName)
-	for _, prefix := range []string{"read", "list", "get", "describe"} {
-		if !strings.HasPrefix(lower, prefix) {
-			continue
-		}
-		if len(baseName) == len(prefix) {
-			return true
-		}
-		next := baseName[len(prefix)]
-		if next == '-' || next == '_' || next == '.' || next == ':' || next == '/' || next == ' ' || (next >= 'A' && next <= 'Z') {
-			return true
-		}
-	}
+func projectToolAllowed(name string) bool {
+	return projectLocalToolAllowed(name) || projectMCPToolAllowed(name)
+}
+
+func projectLocalToolAllowed(name string) bool {
+	return projectAssistantLocalToolRegistry(nil).Has(name)
+}
+
+func projectMCPToolAllowed(_ string) bool {
 	return false
+}
+
+func projectMCPCommitToolAvailable(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), projectToolCodeCommitFiles)
 }
 
 func projectMCPToolBaseName(name string) string {

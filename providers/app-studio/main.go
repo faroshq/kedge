@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,7 @@ import (
 	"github.com/faroshq/provider-app-studio/api"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func envOr(key, def string) string {
@@ -123,9 +125,10 @@ func runServe() {
 	}
 	defer closeStore()
 
-	apiServer := api.New(
+	apiServer := api.NewWithWorkspace(
 		clientFactory,
 		msgStore,
+		openWorkspaceStore(),
 		os.Getenv("KEDGE_HUB_URL"),
 		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true",
 	)
@@ -200,6 +203,15 @@ func newHandler(apiServer *api.Server) (http.Handler, error) {
 	return r, nil
 }
 
+func openWorkspaceStore() *workspace.FileStore {
+	root := strings.TrimSpace(os.Getenv("APP_STUDIO_WORKSPACE_ROOT"))
+	if root == "" {
+		root = filepath.Join(os.TempDir(), "kedge-app-studio-workspaces")
+	}
+	log.Printf("app studio workspace root: %s", root)
+	return workspace.NewFileStore(root)
+}
+
 // openMessageStore builds the App Studio message store from env, wraps it with
 // envelope encryption when configured, and starts the retention sweeper. The
 // returned closer is always safe to call.
@@ -222,12 +234,12 @@ func openMessageStore(ctx context.Context) (store.Store, func(), error) {
 	} else if os.Getenv("APP_STUDIO_IN_MEMORY_MESSAGE_STORE") == "true" {
 		msgStore = store.NewMemoryStore()
 	}
+	if msgStore == nil {
+		return nil, noop, fmt.Errorf("app studio message store requires APP_STUDIO_DATABASE_URL or APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true")
+	}
 
 	encKeys := strings.TrimSpace(os.Getenv("APP_STUDIO_MESSAGE_ENCRYPTION_KEYS"))
 	if encKeys != "" {
-		if msgStore == nil {
-			return nil, noop, fmt.Errorf("app studio message encryption requires APP_STUDIO_DATABASE_URL or APP_STUDIO_IN_MEMORY_MESSAGE_STORE")
-		}
 		keys, err := store.ParseEncryptionKeys(encKeys)
 		if err != nil {
 			return nil, noop, fmt.Errorf("parsing app studio message encryption keys: %w", err)
@@ -239,9 +251,6 @@ func openMessageStore(ctx context.Context) (store.Store, func(), error) {
 	}
 
 	if retention := parseRetention(os.Getenv("APP_STUDIO_MESSAGE_RETENTION")); retention > 0 {
-		if msgStore == nil {
-			return nil, noop, fmt.Errorf("app studio message retention requires APP_STUDIO_DATABASE_URL or APP_STUDIO_IN_MEMORY_MESSAGE_STORE")
-		}
 		go runRetention(ctx, msgStore, retention)
 	}
 

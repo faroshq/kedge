@@ -32,27 +32,48 @@ import (
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 // Server holds the dependencies the project handlers need. clients builds a
 // per-(tenant, caller) dynamic client; store persists chat transcripts; hubBase
 // locates the hub's MCP virtual workspace; mcpInsecureSkipTLSVerify relaxes TLS
-// for dev MCP calls.
+// for dev MCP calls; workspaces stores project files owned by App Studio;
+// assistantEngine runs project assistant turns; runtimeWorker is an optional
+// boundary for future sandboxed checks and previews.
 type Server struct {
 	clients                  *tenant.ClientFactory
 	store                    store.Store
+	workspaces               *workspace.FileStore
 	hubBase                  string
 	mcpInsecureSkipTLSVerify bool
+	assistantEngine          projectAssistantEngine
+	runtimeWorker            projectRuntimeWorker
 }
 
 // New constructs a Server.
 func New(clients *tenant.ClientFactory, msgStore store.Store, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
-	return &Server{
+	return NewWithWorkspace(clients, msgStore, nil, hubBase, mcpInsecureSkipTLSVerify)
+}
+
+// NewWithWorkspace constructs a Server with an explicit project workspace store.
+func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+	s := &Server{
 		clients:                  clients,
 		store:                    msgStore,
+		workspaces:               workspaces,
 		hubBase:                  hubBase,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 	}
+	s.assistantEngine = NewEinoAssistantEngine(s)
+	return s
+}
+
+func (s *Server) projectAssistantEngine() projectAssistantEngine {
+	if s.assistantEngine == nil {
+		s.assistantEngine = NewEinoAssistantEngine(s)
+	}
+	return s.assistantEngine
 }
 
 // Register mounts the project routes onto r. The hub backend proxy strips the
@@ -60,6 +81,7 @@ func New(clients *tenant.ClientFactory, msgStore store.Store, hubBase string, mc
 func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects", s.listProjects).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects", s.createProject).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/stream", s.createProjectStartStream).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)
@@ -67,6 +89,8 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/messages", s.listProjectMessages).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/messages/stream", s.createProjectMessageStream).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/{run}/resume", s.resumeProjectAssistant).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/{run}/abort", s.abortProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
 }

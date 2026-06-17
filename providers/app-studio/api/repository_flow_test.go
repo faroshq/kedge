@@ -1772,7 +1772,7 @@ func TestGenerateProjectAssistantStreamFallsBackWhenFinalToolLimitResponseHasOnl
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if !strings.Contains(reply, "kept requesting actions") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, "src/file-8.tsx") {
+	if !strings.Contains(reply, "per-turn action limit") || !strings.Contains(reply, "read_project_file") || !strings.Contains(reply, fmt.Sprintf("src/file-%d.tsx", maxAssistantToolTurns)) {
 		t.Fatalf("reply = %q, want tool-limit fallback", reply)
 	}
 	if len(requests) != maxAssistantToolTurns {
@@ -2164,6 +2164,24 @@ func TestProjectRepeatedToolLoopFallbackSummarizesLastToolResult(t *testing.T) {
 	}
 	if strings.Contains(got, "completed action") {
 		t.Fatalf("fallback = %q, should not claim the action completed", got)
+	}
+}
+
+func TestProjectToolLoopFallbackDoesNotAskForManualContinuation(t *testing.T) {
+	got := projectToolLoopFallback([]chatMessage{{
+		Role:    "tool",
+		Name:    "write_file",
+		Content: `{"operation":"write_file","path":"postcss.config.js","size":80}`,
+	}}, "kept requesting actions")
+	for _, want := range []string{"hit the per-turn action limit", "Last action result", "write_file", "postcss.config.js", "80 bytes"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("fallback = %q, want %q", got, want)
+		}
+	}
+	for _, unwanted := range []string{"Please ask me to continue", "I stopped because"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("fallback = %q, should not contain %q", got, unwanted)
+		}
 	}
 }
 

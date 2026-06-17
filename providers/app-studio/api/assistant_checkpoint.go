@@ -379,6 +379,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		LLM:                      settings,
 		MCPBaseURL:               s.hubBase,
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
+		AutoApproveActions:       s.autoApproveAssistantActions(),
 		Continuation:             &state,
 		AssistantRun:             &resumeRun,
 		StreamCallbacks: projectAssistantStreamCallbacks{

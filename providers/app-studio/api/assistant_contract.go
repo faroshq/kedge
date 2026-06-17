@@ -58,6 +58,7 @@ type projectAssistantRunRequest struct {
 	History                  []store.Message
 	MCPBaseURL               string
 	MCPInsecureSkipTLSVerify bool
+	AutoApproveActions       bool
 	StreamCallbacks          projectAssistantStreamCallbacks
 	Continuation             *projectAssistantCheckpointState
 	AssistantRun             *store.AssistantRun

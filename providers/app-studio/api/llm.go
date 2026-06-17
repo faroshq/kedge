@@ -57,10 +57,10 @@ const (
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
 
 	// maxAssistantToolTurns bounds how many tool-call/round-trips a single
-	// assistant generation may take before the final turn is forced to answer
-	// in text without tools. It guards against a model that loops on
-	// failing or disallowed tool calls.
-	maxAssistantToolTurns            = 8
+	// assistant generation may take before the run returns a progress summary.
+	// It is intentionally high enough for app scaffolding that writes many
+	// files, while still guarding against models that loop on tool calls.
+	maxAssistantToolTurns            = 32
 	projectToolInfoLimit             = 1000
 	projectMCPCallTimeout            = 2 * time.Minute
 	projectCommitProjectFilesMax     = 500
@@ -330,6 +330,7 @@ func (s *Server) generateProjectAssistantStream(
 		History:                  recent,
 		MCPBaseURL:               s.hubBase,
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
+		AutoApproveActions:       s.autoApproveAssistantActions(),
 		StreamCallbacks:          callbacks,
 	}
 	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req, nil)
@@ -398,7 +399,11 @@ func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("I stopped because the assistant " + reason + " and the model did not provide a final text answer.")
+	if reason == "kept requesting actions" {
+		b.WriteString("I hit the per-turn action limit before the model produced a final text answer.")
+	} else {
+		b.WriteString("I stopped because the assistant " + reason + " and the model did not provide a final text answer.")
+	}
 	if len(summaries) > 0 {
 		b.WriteString(" Last action result")
 		if len(summaries) > 1 {
@@ -408,7 +413,6 @@ func projectToolLoopFallback(toolMessages []chatMessage, reason string) string {
 		b.WriteString(strings.Join(summaries, "; "))
 		b.WriteString(".")
 	}
-	b.WriteString(" Please ask me to continue if you want the next step.")
 	return b.String()
 }
 

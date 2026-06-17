@@ -48,6 +48,7 @@ type Server struct {
 	workspaces               *workspace.FileStore
 	hubBase                  string
 	mcpInsecureSkipTLSVerify bool
+	autoApproveActions       bool
 	assistantEngine          projectAssistantEngine
 	assistantRunManager      *projectAssistantRunManager
 	runtimeWorker            projectRuntimeWorker
@@ -71,6 +72,18 @@ func NewWithWorkspace(clients *tenant.ClientFactory, msgStore store.Store, works
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
 	return s
+}
+
+func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoApproveActions = enabled
+}
+
+func (s *Server) autoApproveAssistantActions() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autoApproveActions
 }
 
 func (s *Server) projectAssistantEngine() projectAssistantEngine {

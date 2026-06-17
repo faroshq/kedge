@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/gob"
 	"sync"
 
 	"github.com/cloudwego/eino/schema"
@@ -43,6 +44,8 @@ type projectEinoPermissionResumeData struct {
 }
 
 func init() {
+	gob.Register(map[string]any{})
+	gob.Register([]any{})
 	schema.RegisterName[*projectEinoPermissionInterruptInfo]("faros_app_studio_eino_permission_interrupt_info")
 	schema.RegisterName[*projectEinoPermissionInterruptState]("faros_app_studio_eino_permission_interrupt_state")
 	schema.RegisterName[*projectEinoPermissionResumeData]("faros_app_studio_eino_permission_resume_data")

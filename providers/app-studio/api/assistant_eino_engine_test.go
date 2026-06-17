@@ -233,6 +233,152 @@ func TestEinoAssistantEngineStopsToolBatchAfterPermissionRequest(t *testing.T) {
 	}
 }
 
+func TestEinoAssistantEngineAutoApprovesWriteTools(t *testing.T) {
+	messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
+	workspaces := workspace.NewFileStore(t.TempDir())
+	server := NewWithWorkspace(nil, messages, workspaces, "", false)
+	writeTool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing")
+	}
+	chatModel := &multipleToolCallEinoChatModel{toolCalls: []schema.ToolCall{
+		{
+			ID:   "call-one",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/one.tsx","content":"one"}`,
+			},
+		},
+		{
+			ID:   "call-two",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/two.tsx","content":"two"}`,
+			},
+		},
+	}}
+	engine := projectEinoAssistantEngine{
+		server: server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return chatModel, nil
+		},
+		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return []einotool.BaseTool{newProjectEinoAssistantServerTool(server, writeTool, req, state)}, nil
+		},
+		newRunner: newProjectEinoAssistantRunner,
+	}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	var assistantEvents []projectAssistantEvent
+	var toolEvents []projectToolCallStreamEvent
+	result, err := engine.StreamProjectAssistant(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:           id,
+			Project:            project,
+			Workspace:          workspaces,
+			WorkspaceScope:     projectWorkspaceScope(id, project.Name),
+			MessageScope:       projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+			AutoApproveActions: true,
+			StreamCallbacks: projectAssistantStreamCallbacks{
+				OnAssistantEvent: func(event projectAssistantEvent) {
+					assistantEvents = append(assistantEvents, event)
+				},
+				OnToolCall: func(event projectToolCallStreamEvent) {
+					toolEvents = append(toolEvents, event)
+				},
+			},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("StreamProjectAssistant returned error: %v", err)
+	}
+	if result.Content != "unexpected continuation" {
+		t.Fatalf("content = %q, want continuation after auto-approved writes", result.Content)
+	}
+	if messages.saveAssistantRunCount != 0 {
+		t.Fatalf("assistant run saves = %d, want no permission checkpoint", messages.saveAssistantRunCount)
+	}
+	if countProjectAssistantEvents(assistantEvents, projectAssistantEventPermissionNeeded) != 0 || countProjectAssistantEvents(assistantEvents, projectAssistantEventCheckpointSaved) != 0 {
+		t.Fatalf("assistant events = %#v, want no permission events", assistantEvents)
+	}
+	if projectToolEventsWithStatus(toolEvents, "permission_required") != 0 {
+		t.Fatalf("tool events = %#v, want no permission-required event", toolEvents)
+	}
+	for _, path := range []string{"src/one.tsx", "src/two.tsx"} {
+		if _, err := workspaces.ReadFile(context.Background(), projectWorkspaceScope(id, project.Name), workspace.ReadOptions{Path: path}); err != nil {
+			t.Fatalf("ReadFile(%q) returned error: %v", path, err)
+		}
+	}
+}
+
+func TestEinoAssistantEngineCheckpointsDynamicJSONToolCallMetadata(t *testing.T) {
+	messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	writeTool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
+	if !ok {
+		t.Fatal("write_file tool missing")
+	}
+	chatModel := &multipleToolCallEinoChatModel{toolCalls: []schema.ToolCall{
+		{
+			ID:   "call-write",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectToolWriteFile,
+				Arguments: `{"path":"src/App.tsx","content":"hello"}`,
+			},
+			Extra: map[string]any{
+				"runtime": map[string]any{
+					"name":   "node",
+					"checks": []any{"build", "test"},
+				},
+			},
+		},
+	}}
+	engine := projectEinoAssistantEngine{
+		server: server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return chatModel, nil
+		},
+		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return []einotool.BaseTool{newProjectEinoAssistantServerTool(server, writeTool, req, state)}, nil
+		},
+		newRunner: newProjectEinoAssistantRunner,
+	}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	_, err := engine.StreamProjectAssistant(
+		context.Background(),
+		projectAssistantRunRequest{
+			Identity:       id,
+			Project:        project,
+			WorkspaceScope: projectWorkspaceScope(id, project.Name),
+			MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+		},
+		nil,
+	)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("StreamProjectAssistant error = %v, want permission required", err)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name), permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint returned error: %v", err)
+	}
+	if checkpoint.Eino == nil || len(checkpoint.Eino.Checkpoint) == 0 {
+		t.Fatalf("checkpoint eino state = %#v, want runner checkpoint", checkpoint.Eino)
+	}
+}
+
 func TestEinoAssistantEngineResumesApprovedToolThroughRunner(t *testing.T) {
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())

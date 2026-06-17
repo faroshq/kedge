@@ -129,7 +129,7 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
 	})
 
-	switch projectAssistantPermissionForTool(spec) {
+	switch projectAssistantPermissionForToolWithPolicy(spec, t.req.AutoApproveActions) {
 	case projectAssistantPermissionAllow:
 		return t.invokeAllowedTool(ctx, callID, spec, args)
 	case projectAssistantPermissionAsk:

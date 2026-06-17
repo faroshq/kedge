@@ -98,12 +98,12 @@ jobs:
           # the 'vX.Y.Z' image tag pushed above.
           CHART_VERSION="${{ steps.tag.outputs.semver }}"
           APP_VERSION="${{ steps.tag.outputs.version }}"
-          sed -i "s/^version:.*/version: ${CHART_VERSION}/" "${chart_dir}Chart.yaml"
-          sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" "${chart_dir}Chart.yaml"
 
           # lint renders templates against default values (package only tars), so
           # a broken template fails here rather than shipping.
           helm lint "$chart_dir"
-          helm package "$chart_dir" --version "${CHART_VERSION}"
+          # Stamp version + appVersion at package time via flags rather than
+          # rewriting Chart.yaml, so the checked-out source is never mutated.
+          helm package "$chart_dir" --version "${CHART_VERSION}" --app-version "${APP_VERSION}"
           helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://${REGISTRY}/${{ github.repository_owner }}/charts"
           echo "Pushed oci://${REGISTRY}/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION} (appVersion ${APP_VERSION})"

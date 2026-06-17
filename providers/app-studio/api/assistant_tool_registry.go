@@ -82,6 +82,18 @@ func (r projectAssistantToolRegistry) ChatTools(includeCommitBridge bool) []chat
 	return out
 }
 
+func (r projectAssistantToolRegistry) Tools(includeCommitBridge bool) []projectAssistantTool {
+	out := make([]projectAssistantTool, 0, len(r.tools))
+	for _, tool := range r.tools {
+		spec := tool.Spec()
+		if spec.Risk == projectAssistantToolRiskCommit && !includeCommitBridge {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out
+}
+
 func projectAssistantToolKey(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }

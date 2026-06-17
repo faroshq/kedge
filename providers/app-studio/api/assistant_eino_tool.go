@@ -223,7 +223,7 @@ func (t projectEinoAssistantTool) resumePermission(ctx context.Context, callID s
 	}
 	switch data.Decision {
 	case projectAssistantPermissionAllow:
-		if len(data.EditedArguments) > 0 {
+		if data.EditedArguments != nil {
 			args = cloneProjectAssistantToolArguments(data.EditedArguments)
 		}
 		return t.invokeAllowedTool(ctx, callID, spec, args)

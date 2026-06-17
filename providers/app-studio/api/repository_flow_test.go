@@ -95,6 +95,7 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"read_project_file",
 		"search_project_files",
 		"plan_project_changes",
+		"check_project_readiness",
 		"write_file",
 		"apply_patch",
 		"mkdir",
@@ -117,6 +118,7 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"read_project_file",
 		"search_project_files",
 		"plan_project_changes",
+		"check_project_readiness",
 		"write_file",
 		"apply_patch",
 		"mkdir",
@@ -198,7 +200,7 @@ func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
 	}
 
 	prompt := projectSystemPrompt(project, repository)
-	for _, want := range []string{"list_project_files", "read_project_file", "search_project_files", "write_file", "apply_patch", "mkdir", "commit_project_files"} {
+	for _, want := range []string{"check_project_readiness", "list_project_files", "read_project_file", "search_project_files", "write_file", "apply_patch", "mkdir", "commit_project_files"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
@@ -280,6 +282,16 @@ func TestSummarizeProjectToolArgumentsWorkspaceReadTools(t *testing.T) {
 			want: []string{"includeFiles true", "maxFiles 12"},
 		},
 		{
+			name: "check_project_readiness",
+			args: `{"includeFiles":true,"maxFiles":12}`,
+			want: []string{"includeFiles true", "maxFiles 12"},
+		},
+		{
+			name: "verify_project_runtime",
+			args: `{"checks":["build","test"],"timeoutSeconds":30}`,
+			want: []string{"checks build, test", "timeoutSeconds 30"},
+		},
+		{
 			name: "write_file",
 			args: `{"path":"src/App.tsx","content":"secret-ish file body"}`,
 			want: []string{"path src/App.tsx", "20 bytes"},
@@ -353,6 +365,22 @@ func TestSummarizeProjectToolResultWorkspaceReadTools(t *testing.T) {
 			t.Fatalf("summary = %q, want %q", got, want)
 		}
 	}
+
+	readinessResult := `{"status":"ready_to_verify","recommendedChecks":["build","test"],"files":["package.json","src/App.tsx"],"trace":[{"node":"read-context","status":"ok"}]}`
+	got = summarizeProjectToolResult("check_project_readiness", readinessResult)
+	for _, want := range []string{"status ready_to_verify", "checks build, test", "2 file(s): package.json, src/App.tsx"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary = %q, want %q", got, want)
+		}
+	}
+
+	verificationResult := `{"status":"started","checks":[{"name":"build","status":"started","id":"runtime-build"},{"name":"test","status":"started","id":"runtime-test"}]}`
+	got = summarizeProjectToolResult("verify_project_runtime", verificationResult)
+	for _, want := range []string{"status started", "2 check(s): build started, test started"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary = %q, want %q", got, want)
+		}
+	}
 }
 
 func TestProjectAssistantMessageMetadataToolCalls(t *testing.T) {
@@ -381,6 +409,15 @@ func TestProjectToolCallResultStatusCommitFilesPending(t *testing.T) {
 	}
 	if got := projectToolCallResultStatus("code__commit_files", `{"phase":"Succeeded"}`); got != "succeeded" {
 		t.Fatalf("status = %q, want succeeded", got)
+	}
+	if got := projectToolCallResultStatus("verify_project_runtime", `{"status":"started"}`); got != "running" {
+		t.Fatalf("runtime verification started status = %q, want running", got)
+	}
+	if got := projectToolCallResultStatus("verify_project_runtime", `{"status":"failed"}`); got != "failed" {
+		t.Fatalf("runtime verification failed status = %q, want failed", got)
+	}
+	if got := projectToolCallResultStatus("verify_project_runtime", `{"status":"bounded"}`); got != "failed" {
+		t.Fatalf("runtime verification bounded status = %q, want failed", got)
 	}
 	if got := projectToolCallResultStatus("other_tool", result); got != "succeeded" {
 		t.Fatalf("non-commit status = %q, want succeeded", got)

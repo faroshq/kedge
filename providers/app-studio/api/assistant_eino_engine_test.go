@@ -304,6 +304,77 @@ func TestEinoAssistantEngineResumesApprovedToolThroughRunner(t *testing.T) {
 	}
 }
 
+func TestEinoAssistantEngineValidatesEditedRuntimeVerificationArgsOnResume(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	worker := &recordingProjectRuntimeWorker{handles: []projectRuntimeHandle{{ID: "runtime-1"}}}
+	server.runtimeWorker = worker
+	runtimeTool, ok := server.projectAssistantToolRegistry().Get(projectToolVerifyProjectRuntime)
+	if !ok {
+		t.Fatal("verify_project_runtime tool missing")
+	}
+	chatModel := &resumeRuntimeVerificationEinoChatModel{}
+	engine := projectEinoAssistantEngine{
+		server: server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return chatModel, nil
+		},
+		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return []einotool.BaseTool{newProjectEinoAssistantServerTool(server, runtimeTool, req, state)}, nil
+		},
+		newRunner: newProjectEinoAssistantRunner,
+	}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	req := projectAssistantRunRequest{
+		Identity:       id,
+		HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+		Project:        project,
+		WorkspaceScope: projectWorkspaceScope(id, project.Name),
+		MessageScope:   projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name),
+	}
+	_, err := engine.StreamProjectAssistant(context.Background(), req, nil)
+	var permissionErr *projectAssistantPermissionRequiredError
+	if !errors.As(err, &permissionErr) {
+		t.Fatalf("StreamProjectAssistant error = %v, want permission required", err)
+	}
+	if len(worker.requests) != 0 {
+		t.Fatalf("worker requests = %#v, want no start before approval", worker.requests)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), req.MessageScope, permissionErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint returned error: %v", err)
+	}
+
+	result, err := engine.ResumeProjectAssistant(
+		context.Background(),
+		req,
+		projectAssistantResumeRequest{
+			RequestID:       permissionErr.RequestID,
+			Decision:        string(projectAssistantPermissionAllow),
+			EditedArguments: map[string]any{},
+		},
+		checkpoint,
+	)
+	if err != nil {
+		t.Fatalf("ResumeProjectAssistant returned error: %v", err)
+	}
+	if result.Content != "runtime validation handled" {
+		t.Fatalf("content = %q, want resumed model response", result.Content)
+	}
+	if len(worker.requests) != 0 {
+		t.Fatalf("worker requests = %#v, want no start for invalid edited approval args", worker.requests)
+	}
+	if len(chatModel.inputs) != 2 || !einoMessagesContainToolResult(chatModel.inputs[1], "call-runtime", "requires at least one check") {
+		t.Fatalf("model inputs = %#v, want runtime validation tool result", chatModel.inputs)
+	}
+}
+
 func TestEinoAssistantEngineReturnsUnknownToolResultToModel(t *testing.T) {
 	chatModel := &unknownToolEinoChatModel{}
 	projectTool := &recordingProjectAssistantTool{
@@ -476,6 +547,36 @@ func (m *resumePermissionEinoChatModel) Generate(ctx context.Context, input []*s
 }
 
 func (m *resumePermissionEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+}
+
+type resumeRuntimeVerificationEinoChatModel struct {
+	inputs [][]*schema.Message
+}
+
+func (m *resumeRuntimeVerificationEinoChatModel) Generate(ctx context.Context, input []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.inputs = append(m.inputs, cloneEinoMessagesForTest(input))
+	if len(m.inputs) == 1 {
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-runtime",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectToolVerifyProjectRuntime,
+				Arguments: `{"checks":["build"],"timeoutSeconds":30}`,
+			},
+		}}), nil
+	}
+	return schema.AssistantMessage("runtime validation handled", nil), nil
+}
+
+func (m *resumeRuntimeVerificationEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	msg, err := m.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, err

@@ -68,17 +68,19 @@ const (
 )
 
 const (
-	projectToolListProjectFiles   = "list_project_files"
-	projectToolReadProjectFile    = "read_project_file"
-	projectToolSearchProjectFiles = "search_project_files"
-	projectToolPlanProjectChanges = "plan_project_changes"
-	projectToolWriteFile          = "write_file"
-	projectToolApplyPatch         = "apply_patch"
-	projectToolMkdir              = "mkdir"
-	projectToolRuntimeCommand     = "runtime_command"
-	projectToolCommitProjectFiles = "commit_project_files"
-	projectToolCommitFiles        = "commit_files"
-	projectToolCodeCommitFiles    = "code__commit_files"
+	projectToolListProjectFiles      = "list_project_files"
+	projectToolReadProjectFile       = "read_project_file"
+	projectToolSearchProjectFiles    = "search_project_files"
+	projectToolPlanProjectChanges    = "plan_project_changes"
+	projectToolCheckProjectReadiness = "check_project_readiness"
+	projectToolWriteFile             = "write_file"
+	projectToolApplyPatch            = "apply_patch"
+	projectToolMkdir                 = "mkdir"
+	projectToolVerifyProjectRuntime  = "verify_project_runtime"
+	projectToolRuntimeCommand        = "runtime_command"
+	projectToolCommitProjectFiles    = "commit_project_files"
+	projectToolCommitFiles           = "commit_files"
+	projectToolCodeCommitFiles       = "code__commit_files"
 )
 
 var (
@@ -1117,8 +1119,10 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"path", "maxBytes"})
 	case projectToolSearchProjectFiles:
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
-	case projectToolPlanProjectChanges:
+	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness:
 		return summarizeProjectPlanningWorkflowArgs(args)
+	case projectToolVerifyProjectRuntime:
+		return summarizeProjectRuntimeVerificationArgs(args)
 	case projectToolWriteFile:
 		return summarizeProjectMutationArgs(args, []string{"path"}, true)
 	case projectToolApplyPatch:
@@ -1171,6 +1175,10 @@ func summarizeProjectToolResult(name, result string) string {
 			return summarizeWorkspaceSearchResult(decoded)
 		case projectToolPlanProjectChanges:
 			return summarizeProjectPlanningWorkflowResult(decoded)
+		case projectToolCheckProjectReadiness:
+			return summarizeProjectReadinessWorkflowResult(decoded)
+		case projectToolVerifyProjectRuntime:
+			return summarizeProjectRuntimeVerificationResult(decoded)
 		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 			return summarizeWorkspaceMutationResult(decoded)
 		}
@@ -1226,6 +1234,17 @@ func summarizeProjectPlanningWorkflowArgs(args map[string]any) string {
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
 }
 
+func summarizeProjectRuntimeVerificationArgs(args map[string]any) string {
+	parts := []string{}
+	if checks := projectToolStringList(args["checks"]); len(checks) > 0 {
+		parts = append(parts, "checks "+summarizeProjectToolList(checks, 4))
+	}
+	if n, ok := projectToolNumber(args["timeoutSeconds"]); ok {
+		parts = append(parts, fmt.Sprintf("timeoutSeconds %d", n))
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
 func summarizeWorkspaceMutationResult(decoded map[string]any) string {
 	parts := []string{}
 	if op := projectToolString(decoded["operation"]); op != "" {
@@ -1258,6 +1277,58 @@ func summarizeProjectPlanningWorkflowResult(decoded map[string]any) string {
 		return ""
 	}
 	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectReadinessWorkflowResult(decoded map[string]any) string {
+	parts := []string{}
+	if status := projectToolString(decoded["status"]); status != "" {
+		parts = append(parts, "status "+status)
+	}
+	if checks := projectToolStringList(decoded["recommendedChecks"]); len(checks) > 0 {
+		parts = append(parts, "checks "+summarizeProjectToolList(checks, 4))
+	}
+	if files := projectToolStringList(decoded["files"]); len(files) > 0 {
+		parts = append(parts, fmt.Sprintf("%d file(s): %s", len(files), summarizeProjectToolList(files, 5)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectRuntimeVerificationResult(decoded map[string]any) string {
+	parts := []string{}
+	if status := projectToolString(decoded["status"]); status != "" {
+		parts = append(parts, "status "+status)
+	}
+	if checks, ok := decoded["checks"].([]any); ok && len(checks) > 0 {
+		parts = append(parts, fmt.Sprintf("%d check(s): %s", len(checks), summarizeProjectRuntimeCheckNames(checks, 4)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateProjectToolInfo(strings.Join(parts, "; "))
+}
+
+func summarizeProjectRuntimeCheckNames(values []any, maxValues int) string {
+	if len(values) == 0 || maxValues <= 0 {
+		return ""
+	}
+	names := make([]string, 0, len(values))
+	for _, value := range values {
+		obj, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := projectToolString(obj["name"])
+		if status := projectToolString(obj["status"]); status != "" {
+			name = strings.TrimSpace(name + " " + status)
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return summarizeProjectToolList(names, maxValues)
 }
 
 func summarizeWorkspaceListResult(decoded map[string]any) string {
@@ -1310,6 +1381,19 @@ func summarizeWorkspaceSearchResult(decoded map[string]any) string {
 
 func projectToolCallResultStatus(name, result string) string {
 	baseName := projectToolBaseName(name)
+	if baseName == projectToolVerifyProjectRuntime {
+		decoded := map[string]any{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err == nil {
+			switch strings.ToLower(projectToolString(decoded["status"])) {
+			case "failed":
+				return "failed"
+			case "started":
+				return "running"
+			case "bounded":
+				return "failed"
+			}
+		}
+	}
 	if baseName != projectToolCommitFiles && baseName != projectToolCommitProjectFiles {
 		return "succeeded"
 	}
@@ -2016,6 +2100,7 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 			}
 			b.WriteString("Do not attempt to commit files until the user restores the missing Code repository or connection.\n")
 		} else {
+			b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
 			b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
 			b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
 			b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")

@@ -732,7 +732,7 @@ func appendProjectAssistantRunAudit(run store.AssistantRun, entry projectAssista
 }
 
 func cloneProjectAssistantToolArguments(src map[string]any) map[string]any {
-	if len(src) == 0 {
+	if src == nil {
 		return nil
 	}
 	dst := make(map[string]any, len(src))

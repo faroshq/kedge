@@ -34,8 +34,14 @@ func TestProjectRuntimeWorkerToolsAbsentByDefault(t *testing.T) {
 	if registry.Has(projectToolRuntimeCommand) {
 		t.Fatal("runtime_command tool registered without a runtime worker")
 	}
+	if registry.Has(projectToolVerifyProjectRuntime) {
+		t.Fatal("verify_project_runtime tool registered without a runtime worker")
+	}
 	if projectLocalToolAllowed(projectToolRuntimeCommand) {
 		t.Fatal("runtime_command is globally local-allowed without a runtime worker")
+	}
+	if projectLocalToolAllowed(projectToolVerifyProjectRuntime) {
+		t.Fatal("verify_project_runtime is globally local-allowed without a runtime worker")
 	}
 	if tool := newProjectRuntimeCommandToolForRegistry(server); tool != nil {
 		t.Fatalf("runtime tool = %#v, want nil without worker", tool)

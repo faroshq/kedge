@@ -937,7 +937,7 @@ async function createProjectAndStartConversation(content: string) {
         selected.value = event.project
         messages.value = messages.value.map((message) => ({ ...message, projectID: projectName }))
         props.navigate(encodeURIComponent(projectName))
-      } else if (event.type === 'chunk') {
+      } else if (event.type === 'message_delta') {
         conversationStatus.value = ''
         if (!projectName || !event.assistantMessageID) return
         if (!assistantMessageID) {
@@ -952,7 +952,7 @@ async function createProjectAndStartConversation(content: string) {
           content: `${existing.content}${event.content ?? ''}`,
         }
         messages.value = [...messages.value]
-      } else if (event.type === 'tool_call') {
+      } else if (event.type === 'tool_call_started' || event.type === 'tool_call_finished') {
         conversationStatus.value = ''
         if (!projectName || !event.assistantMessageID || !event.toolCall) return
         if (!assistantMessageID) {
@@ -973,12 +973,12 @@ async function createProjectAndStartConversation(content: string) {
           assistantMessageID = event.assistantMessageID
         }
         attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
-      } else if (event.type === 'done') {
+      } else if (event.type === 'run_finished') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
         }
-      } else if (event.type === 'error') {
+      } else if (event.type === 'run_failed') {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)
@@ -1151,7 +1151,7 @@ async function sendMessage() {
     await api.createMessageStream(props.ctx, projectName, content, (event: ProjectMessageStreamEvent) => {
       if (event.type === 'status') {
         conversationStatus.value = event.status || 'Working'
-      } else if (event.type === 'chunk') {
+      } else if (event.type === 'message_delta') {
         conversationStatus.value = ''
         if (!event.assistantMessageID) return
         if (!assistantMessageID) {
@@ -1166,7 +1166,7 @@ async function sendMessage() {
           content: `${existing.content}${event.content ?? ''}`,
         }
         messages.value = [...messages.value]
-      } else if (event.type === 'tool_call') {
+      } else if (event.type === 'tool_call_started' || event.type === 'tool_call_finished') {
         conversationStatus.value = ''
         if (!event.assistantMessageID || !event.toolCall) return
         if (!assistantMessageID) {
@@ -1187,12 +1187,12 @@ async function sendMessage() {
           assistantMessageID = event.assistantMessageID
         }
         attachAssistantCheckpoint(projectName, event.assistantMessageID, event.checkpoint)
-      } else if (event.type === 'done') {
+      } else if (event.type === 'run_finished') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
         }
-      } else if (event.type === 'error') {
+      } else if (event.type === 'run_failed') {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)

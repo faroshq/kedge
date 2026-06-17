@@ -306,6 +306,15 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	out projectAssistantResumeResponse,
 ) (projectAssistantResumeResponse, error) {
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
+	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, id, p.Name)
+	turn.RunID = run.ID
+	turn.RequestID = run.RequestID
+	turn.AssistantMessageID = strings.TrimSpace(resumeReq.AssistantMessageID)
+	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
+	defer finishTurn()
+	if r != nil {
+		r = r.WithContext(ctx)
+	}
 	if c == nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, fmt.Errorf("project client is required for assistant resume"))
 	}
@@ -394,7 +403,9 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		if !errors.As(err, &permissionErr) {
 			return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, currentToolCall, err)
 		}
-		pendingRun, getErr := s.store.GetAssistantRun(ctx, messageScope, permissionErr.RunID)
+		persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
+		defer cancelPersist()
+		pendingRun, getErr := s.store.GetAssistantRun(persistCtx, messageScope, permissionErr.RunID)
 		if getErr != nil {
 			return projectAssistantResumeResponse{}, getErr
 		}
@@ -412,18 +423,20 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		if err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
-		if err := s.store.SaveAssistantRun(ctx, messageScope, pendingRun); err != nil {
+		if err := s.store.SaveAssistantRun(persistCtx, messageScope, pendingRun); err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
 		out.RunID = pendingRun.ID
 		out.RequestID = pendingRun.RequestID
 		out.Status = pendingRun.Status
-		if err := s.updateProjectAssistantPermissionMessage(ctx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
+		if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
 		return out, nil
 	}
 
+	persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
+	defer cancelPersist()
 	run.Status = store.AssistantRunStatusCompleted
 	run.UpdatedAt = time.Now().UTC()
 	run, err = appendProjectAssistantRunAudit(run, projectAssistantPermissionAudit{
@@ -440,11 +453,11 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
-	if err := s.store.SaveAssistantRun(ctx, messageScope, run); err != nil {
+	if err := s.store.SaveAssistantRun(persistCtx, messageScope, run); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	out.Status = run.Status
-	if err := s.updateProjectAssistantPermissionMessage(ctx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
+	if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	assistantReply := projectAssistantStoredContent(result.Content, assistantContent.String())
@@ -452,7 +465,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		assistantContent.WriteString(pending)
 	}
 	if strings.TrimSpace(assistantReply) != "" {
-		assistantMessage, err := s.appendResumedProjectAssistantMessage(ctx, messageScope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls))
+		assistantMessage, err := s.appendResumedProjectAssistantMessage(persistCtx, messageScope, assistantID, assistantReply, projectAssistantMessageMetadata("", streamedToolCalls))
 		if err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
@@ -476,6 +489,8 @@ func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(
 	if cause == nil {
 		cause = errors.New("assistant resume failed")
 	}
+	persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
+	defer cancelPersist()
 	failure := strings.TrimSpace(cause.Error())
 	if failure == "" {
 		failure = "assistant resume failed"
@@ -522,11 +537,11 @@ func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(
 		return projectAssistantResumeResponse{}, auditErr
 	}
 	run = updatedRun
-	if err := s.store.SaveAssistantRun(ctx, messageScope, run); err != nil {
+	if err := s.store.SaveAssistantRun(persistCtx, messageScope, run); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	out.Status = run.Status
-	if err := s.updateProjectAssistantPermissionMessage(ctx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
+	if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
 	return out, cause

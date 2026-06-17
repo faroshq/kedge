@@ -307,6 +307,10 @@ func (s *Server) generateProjectAssistantStream(
 	if id.orgUUID == "" || id.workspaceUUID == "" {
 		return "", errors.New("tenant context missing")
 	}
+	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name)
+	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
+	defer finishTurn()
+	r = r.WithContext(ctx)
 	recent, err := s.store.LoadRecentMessages(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name), 24)
 	if err != nil {
 		return "", err

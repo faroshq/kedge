@@ -94,12 +94,7 @@ func projectAssistantApprovedPlanAllowsOperation(plan *projectAssistantApprovedP
 		return false
 	}
 	if len(plan.Operations) == 0 {
-		switch toolName {
-		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
-			return true
-		default:
-			return false
-		}
+		return false
 	}
 	for _, op := range plan.Operations {
 		if projectToolBaseName(op) == toolName {

@@ -875,6 +875,10 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 		delete(metadata, projectMessageMetadataStatus)
 		delete(metadata, projectMessageMetadataAssistantInterrupt)
 	}
+	content := msg.Content
+	if strings.TrimSpace(response.AssistantContent) != "" {
+		content = response.AssistantContent
+	}
 	delete(metadata, projectMessageMetadataToolCalls)
 	if len(actions) > 0 {
 		metadata[projectMessageMetadataAssistantActions] = actions
@@ -885,7 +889,7 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 	return s.store.AppendMessage(ctx, scope, store.Message{
 		ID:        msg.ID,
 		Role:      msg.Role,
-		Content:   msg.Content,
+		Content:   content,
 		Metadata:  metadata,
 		CreatedAt: msg.CreatedAt,
 		UpdatedAt: now,

@@ -263,6 +263,9 @@ func (t projectEinoAssistantTool) resumeFollowUp(ctx context.Context, callID str
 
 func (t projectEinoAssistantTool) invokeApprovedPlanTool(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) string {
 	plan := projectAssistantApprovedPlanFromArguments(args)
+	if len(plan.Operations) == 0 {
+		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "allowedOperations is required")
+	}
 	t.runState.ApprovePlan(plan)
 	resultPayload := map[string]any{
 		"status":      "approved",

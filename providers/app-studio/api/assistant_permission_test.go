@@ -98,6 +98,26 @@ func TestProjectAssistantPlanApprovalAllowsScopedWritesButNotCommit(t *testing.T
 	}
 }
 
+func TestProjectAssistantPlanApprovalWithoutOperationsDoesNotAuthorizeWrites(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.ApprovePlan(projectAssistantApprovedPlan{
+		Summary:      "Build dashboard",
+		TargetPaths:  []string{"src/"},
+		ApprovedAt:   testProjectAssistantApprovalTime(),
+		ApprovalTool: projectToolRequestProjectPlanApproval,
+	})
+
+	decision := projectAssistantPermissionForToolWithRunState(projectAssistantToolSpec{
+		Name: projectToolWriteFile,
+		Risk: projectAssistantToolRiskWrite,
+	}, false, state, map[string]any{
+		"path": "src/App.tsx",
+	})
+	if decision != projectAssistantPermissionAsk {
+		t.Fatalf("write permission = %q, want %q", decision, projectAssistantPermissionAsk)
+	}
+}
+
 func TestProjectAssistantPermissionDeniedToolMessageIsVisibleToModel(t *testing.T) {
 	msg := projectAssistantPermissionDeniedToolMessage(chatToolCall{
 		ID: "call-1",

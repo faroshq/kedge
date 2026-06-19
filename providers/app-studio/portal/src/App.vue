@@ -1376,7 +1376,7 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
       setPanelError: (message) => {
         permissionErrors.value = { ...permissionErrors.value, [key]: message }
       },
-      restorePending: () => markInterruptPendingLocally(projectName, message.id, interrupt),
+      restorePending: responseApplied ? undefined : () => markInterruptPendingLocally(projectName, message.id, interrupt),
     })
   } finally {
     const next = { ...permissionBusy.value }
@@ -1421,7 +1421,7 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
       setPanelError: (message) => {
         followUpErrors.value = { ...followUpErrors.value, [key]: message }
       },
-      restorePending: () => markInterruptPendingLocally(projectName, message.id, interrupt),
+      restorePending: responseApplied ? undefined : () => markInterruptPendingLocally(projectName, message.id, interrupt),
     })
   } finally {
     const next = { ...followUpBusy.value }

@@ -357,6 +357,9 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 	}
 	var decision projectAssistantPermissionDecision
 	if preflightState.Eino != nil && preflightState.Eino.InterruptType == projectAssistantInterruptTypeFollowUp {
+		if strings.TrimSpace(req.Answer) == "" {
+			return projectAssistantResumeResponse{}, newValidationError("answer is required")
+		}
 		decision = ""
 	} else {
 		decision, err = parseProjectAssistantPermissionDecision(req.Decision)

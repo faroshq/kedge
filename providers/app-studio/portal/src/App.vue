@@ -284,8 +284,9 @@ const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCr
 const isBuilderVisible = computed(() => !isAppStudioLandingRoute.value || selected.value !== null)
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
+const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
 const canStartProjectFromPrompt = computed(() => prompt.value.trim().length > 0)
-const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0)
+const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0 && !messageStreaming.value && !assistantResumeBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
 const settingsDescription = computed(() =>
@@ -1133,7 +1134,7 @@ async function confirmDeleteProject() {
 
 async function sendMessage() {
   const content = prompt.value.trim()
-  if (!content || !selected.value || !llmSettings.value?.configured || messageStreaming.value) return
+  if (!content || !selected.value || !llmSettings.value?.configured || messageStreaming.value || assistantResumeBusy.value) return
   const projectName = selected.value.name
   prompt.value = ''
   busy.value = true
@@ -1224,6 +1225,10 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
         conversationStatus.value = content.valueString || 'Working'
         continue
       }
+      if (content.key === 'builder.event') {
+        conversationStatus.value = builderEventStatus(content.valueString)
+        continue
+      }
       if (content.key !== 'assistant.content' || !projectName || !assistantMessageID) continue
       conversationStatus.value = ''
       touchedAssistantMessageID = assistantMessageID
@@ -1259,6 +1264,19 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
   }
 
   return touchedAssistantMessageID
+}
+
+function builderEventStatus(eventType?: string): string {
+  switch ((eventType || '').trim()) {
+    case 'plan_ready':
+      return 'Plan ready'
+    case 'plan_approved':
+      return 'Applying plan'
+    case 'workspace_changed':
+      return 'Updating workspace'
+    default:
+      return 'Working'
+  }
 }
 
 function upsertAssistantAction(projectName: string, assistantMessageID: string, action: ProjectAssistantActionView) {
@@ -1341,7 +1359,6 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
   permissionErrors.value = { ...permissionErrors.value, [key]: '' }
   permissionBusy.value = { ...permissionBusy.value, [key]: decision }
   conversationStatus.value = 'Working'
-  messageStreaming.value = true
   let responseApplied = false
   try {
     markInterruptResolvedLocally(projectName, message.id, interrupt)
@@ -1359,13 +1376,13 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
       setPanelError: (message) => {
         permissionErrors.value = { ...permissionErrors.value, [key]: message }
       },
+      restorePending: () => markInterruptPendingLocally(projectName, message.id, interrupt),
     })
   } finally {
     const next = { ...permissionBusy.value }
     delete next[key]
     permissionBusy.value = next
     conversationStatus.value = ''
-    messageStreaming.value = false
   }
 }
 
@@ -1384,7 +1401,6 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
   followUpErrors.value = { ...followUpErrors.value, [key]: '' }
   followUpBusy.value = { ...followUpBusy.value, [key]: true }
   conversationStatus.value = 'Working'
-  messageStreaming.value = true
   let responseApplied = false
   try {
     markInterruptResolvedLocally(projectName, message.id, interrupt)
@@ -1405,13 +1421,13 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
       setPanelError: (message) => {
         followUpErrors.value = { ...followUpErrors.value, [key]: message }
       },
+      restorePending: () => markInterruptPendingLocally(projectName, message.id, interrupt),
     })
   } finally {
     const next = { ...followUpBusy.value }
     delete next[key]
     followUpBusy.value = next
     conversationStatus.value = ''
-    messageStreaming.value = false
   }
 }
 
@@ -1426,15 +1442,20 @@ function markInterruptResolvedLocally(projectName: string, assistantMessageID: s
   applyAssistantInterrupt(projectName, assistantMessageID, { ...interrupt, status: 'resolved' })
 }
 
+function markInterruptPendingLocally(projectName: string, assistantMessageID: string, interrupt: ProjectAssistantUIInterruptRequest) {
+  applyAssistantInterrupt(projectName, assistantMessageID, { ...interrupt, status: 'pending' })
+}
+
 async function handleResumeFailure(
   projectName: string,
   key: string,
   e: unknown,
-  options: { panelMessage: string; setPanelError: (message: string) => void },
+  options: { panelMessage: string; setPanelError: (message: string) => void; restorePending?: () => void },
 ) {
   try {
     await refreshSelectedProjectConversation(projectName)
   } catch {
+    options.restorePending?.()
     // Keep the original resume failure visible below.
   }
   if (hasPendingInterruptKey(key)) {
@@ -2567,7 +2588,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               rows="2"
               class="min-h-[58px] w-full resize-none rounded-md border-0 bg-transparent px-3 py-2.5 pb-12 pr-14 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
               placeholder="Message this project"
-              :disabled="busy"
+              :disabled="busy || assistantResumeBusy"
               @keydown.enter.exact.prevent="sendMessage"
             />
             <button

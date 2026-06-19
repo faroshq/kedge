@@ -1400,6 +1400,66 @@ func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T)
 	}
 }
 
+func TestResumeProjectAssistantRunRejectsEmptyFollowUpBeforeClaimingRun(t *testing.T) {
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
+			ID:   "call-follow-up",
+			Type: "function",
+			Function: einoschema.FunctionCall{
+				Name:      projectToolAskFollowUp,
+				Arguments: `{"questions":["What audience should this app target?"]}`,
+			},
+		}})},
+	}}
+	setProjectAssistantModelForTest(server, model)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "build an app"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	var inputErr *projectAssistantInputRequiredError
+	if !errors.As(err, &inputErr) {
+		t.Fatalf("generateProjectAssistantStream error = %v, want input required", err)
+	}
+
+	_, err = server.resumeProjectAssistantRunWithRepositoryAndClient(
+		context.Background(),
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+		inputErr.RunID,
+		projectAssistantResumeRequest{
+			RequestID: inputErr.RequestID,
+			Answer:    "   ",
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "answer is required") {
+		t.Fatalf("resumeProjectAssistantRun error = %v, want answer required", err)
+	}
+	run, err := messages.GetAssistantRun(context.Background(), messageScope, inputErr.RunID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun returned error: %v", err)
+	}
+	if run.Status != store.AssistantRunStatusPendingInput {
+		t.Fatalf("run status = %q, want pending input", run.Status)
+	}
+}
+
 func TestResumeProjectAssistantRunCompletesRunWhenContinuationLLMFailsAfterTool(t *testing.T) {
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})

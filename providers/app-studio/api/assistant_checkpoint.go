@@ -583,18 +583,21 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				out.RequestID = pendingRun.RequestID
 				out.Status = pendingRun.Status
 				out.AssistantContent = projectAssistantStoredContent(result.Content, assistantContent.String())
-				appendProjectAssistantResumeResolvedUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID), currentRequestID, currentToolCall)
-				appendProjectAssistantResumePendingUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID))
-				if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
+				assistantMessageID := strings.TrimSpace(resumeReq.AssistantMessageID)
+				appendProjectAssistantResumeResolvedUI(&out, assistantMessageID, currentRequestID, currentToolCall)
+				appendProjectAssistantResumePendingUI(&out, assistantMessageID)
+				messageUpdate := out
+				messageUpdate.RunID = run.ID
+				messageUpdate.RequestID = currentRequestID
+				if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, assistantMessageID, messageUpdate); err != nil {
 					return projectAssistantResumeResponse{}, err
 				}
 				if strings.TrimSpace(out.AssistantContent) != "" {
-					assistantMessage, err := s.findProjectMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID))
+					assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, streamedToolCalls)
 					if err != nil {
 						return projectAssistantResumeResponse{}, err
 					}
-					apiMessage := projectMessageToAPI(assistantMessage)
-					out.AssistantMessage = &apiMessage
+					out.AssistantMessage = assistantMessage
 				}
 				return out, nil
 			}
@@ -627,18 +630,21 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		out.RequestID = pendingRun.RequestID
 		out.Status = pendingRun.Status
 		out.AssistantContent = projectAssistantStoredContent(result.Content, assistantContent.String())
-		appendProjectAssistantResumeResolvedUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID), currentRequestID, currentToolCall)
-		appendProjectAssistantResumePendingUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID))
-		if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
+		assistantMessageID := strings.TrimSpace(resumeReq.AssistantMessageID)
+		appendProjectAssistantResumeResolvedUI(&out, assistantMessageID, currentRequestID, currentToolCall)
+		appendProjectAssistantResumePendingUI(&out, assistantMessageID)
+		messageUpdate := out
+		messageUpdate.RunID = run.ID
+		messageUpdate.RequestID = currentRequestID
+		if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, assistantMessageID, messageUpdate); err != nil {
 			return projectAssistantResumeResponse{}, err
 		}
 		if strings.TrimSpace(out.AssistantContent) != "" {
-			assistantMessage, err := s.findProjectMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID))
+			assistantMessage, err := s.resumedPendingProjectAssistantMessage(persistCtx, messageScope, assistantMessageID, assistantID, out, streamedToolCalls)
 			if err != nil {
 				return projectAssistantResumeResponse{}, err
 			}
-			apiMessage := projectMessageToAPI(assistantMessage)
-			out.AssistantMessage = &apiMessage
+			out.AssistantMessage = assistantMessage
 		}
 		return out, nil
 	}
@@ -690,6 +696,32 @@ func (s *Server) appendResumedProjectAssistantMessageFromContent(
 		return nil, nil
 	}
 	return s.appendResumedProjectAssistantMessage(ctx, scope, id, assistantReply, metadata)
+}
+
+func (s *Server) resumedPendingProjectAssistantMessage(
+	ctx context.Context,
+	scope store.Scope,
+	candidateID string,
+	fallbackID string,
+	response projectAssistantResumeResponse,
+	toolCalls []projectToolCallStreamEvent,
+) (*aiv1alpha1.ProjectMessage, error) {
+	if strings.TrimSpace(response.AssistantContent) == "" {
+		return nil, nil
+	}
+	if candidateID != "" {
+		msg, err := s.findProjectMessage(ctx, scope, candidateID)
+		if err == nil {
+			interrupt := projectAssistantUIInterruptFromMetadata(msg.Metadata[projectMessageMetadataAssistantInterrupt])
+			if msg.Role == aiv1alpha1.ProjectMessageRoleAssistant && msg.Content == response.AssistantContent && projectAssistantPermissionMessageMatchesResume(msg.Metadata, interrupt, response) {
+				apiMessage := projectMessageToAPI(msg)
+				return &apiMessage, nil
+			}
+		} else if !errors.Is(err, errProjectAssistantMessageNotFound) {
+			return nil, err
+		}
+	}
+	return s.appendResumedProjectAssistantMessage(ctx, scope, fallbackID, response.AssistantContent, projectAssistantMessageMetadata(string(response.Status), toolCalls))
 }
 
 func (s *Server) completeClaimedProjectAssistantRunAfterResumeError(

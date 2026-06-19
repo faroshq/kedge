@@ -88,6 +88,8 @@ interface PendingFollowUpView {
   interrupt: ProjectAssistantUIInterruptRequest
 }
 
+type LegacyProjectAssistantToolCall = Record<string, unknown>
+
 const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
 const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
@@ -101,6 +103,15 @@ const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account befo
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
+const PROJECT_ASSISTANT_ACTION_STATUSES = new Set<ProjectAssistantActionStatus>([
+  'requested',
+  'running',
+  'awaiting_approval',
+  'awaiting_input',
+  'succeeded',
+  'failed',
+  'rejected',
+])
 const assistantMarkdown = new MarkdownIt({
   html: false,
   breaks: true,
@@ -1524,14 +1535,17 @@ function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewSt
 function projectMessageActions(message: ProjectMessage): ProjectAssistantActionView[] {
   if (message.role !== 'assistant') return []
   const raw = message.metadata?.assistantActions
-  if (!Array.isArray(raw)) return []
-  return raw.filter(isProjectAssistantAction)
+  if (Array.isArray(raw)) {
+    const actions = raw.filter(isProjectAssistantAction)
+    if (actions.length > 0) return actions
+  }
+  return legacyProjectMessageActions(message)
 }
 
 function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
   if (message.role !== 'assistant') return undefined
   const raw = message.metadata?.assistantInterrupt
-  return isProjectAssistantInterrupt(raw) ? raw : undefined
+  return isProjectAssistantInterrupt(raw) ? raw : legacyProjectMessageInterrupt(message)
 }
 
 function isProjectAssistantAction(value: unknown): value is ProjectAssistantActionView {
@@ -1544,6 +1558,151 @@ function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantU
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<ProjectAssistantUIInterruptRequest>
   return typeof item.interruptId === 'string'
+}
+
+function legacyProjectMessageActions(message: ProjectMessage): ProjectAssistantActionView[] {
+  const actions: ProjectAssistantActionView[] = []
+  for (const toolCall of legacyProjectMessageToolCalls(message)) {
+    const status = legacyAssistantActionStatus(legacyString(toolCall.status), legacyString(toolCall.error))
+    const id = legacyString(toolCall.id)
+      || legacyString(legacyObject(toolCall.permission)?.toolCallID)
+      || legacyString(legacyObject(toolCall.followUp)?.toolCallID)
+    if (!id || !status) continue
+    const kind = legacyAssistantActionKind(
+      legacyString(toolCall.name)
+      || legacyString(legacyObject(toolCall.permission)?.toolName)
+      || (legacyObject(toolCall.followUp) ? 'ask_follow_up' : ''),
+    )
+    const next: ProjectAssistantActionView = {
+      id,
+      kind,
+      status,
+      label: toolActionGroupLabel({ id: `tool-action-${kind}`, kind, status, count: 1 }),
+      summary: toolActionGroupSummary({ id: `tool-action-${kind}`, kind, status, count: 1 }),
+      count: 1,
+    }
+    const existingIdx = actions.findIndex((item) => item.id === next.id)
+    if (existingIdx === -1) {
+      actions.push(next)
+    } else {
+      actions[existingIdx] = mergeAssistantAction(actions[existingIdx], next)
+    }
+  }
+  return actions
+}
+
+function legacyProjectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInterruptRequest | undefined {
+  if (message.metadata?.status !== 'pending_permission' && message.metadata?.status !== 'pending_input') return undefined
+  const toolCalls = legacyProjectMessageToolCalls(message)
+  for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
+    const toolCall = toolCalls[i]
+    const status = legacyString(toolCall.status)
+    const checkpoint = legacyObject(toolCall.checkpoint)
+    const runId = legacyString(checkpoint?.id)
+    if (!runId) continue
+    if (status === 'input_required') {
+      const followUp = legacyObject(toolCall.followUp)
+      const requestId = legacyString(followUp?.id)
+      if (!requestId) continue
+      return {
+        interruptId: requestId,
+        kind: 'follow_up',
+        description: legacyString(followUp?.prompt),
+        questions: legacyStringArray(followUp?.questions),
+        status: 'pending',
+        action: {
+          runId,
+          requestId,
+          assistantMessageId: message.id,
+        },
+      }
+    }
+    if (status === 'permission_required') {
+      const permission = legacyObject(toolCall.permission)
+      const requestId = legacyString(permission?.id)
+      if (!requestId) continue
+      return {
+        interruptId: requestId,
+        kind: 'permission',
+        description: legacyString(permission?.reason),
+        status: 'pending',
+        action: {
+          runId,
+          requestId,
+          assistantMessageId: message.id,
+        },
+      }
+    }
+  }
+  return undefined
+}
+
+function legacyProjectMessageToolCalls(message: ProjectMessage): LegacyProjectAssistantToolCall[] {
+  const raw = message.metadata?.toolCalls
+  if (!Array.isArray(raw)) return []
+  return raw.filter(isRecord)
+}
+
+function legacyAssistantActionStatus(status?: string, error?: string): ProjectAssistantActionStatus | undefined {
+  switch (status) {
+    case 'permission_required':
+      return 'awaiting_approval'
+    case 'input_required':
+      return 'awaiting_input'
+    default:
+      if (status && PROJECT_ASSISTANT_ACTION_STATUSES.has(status as ProjectAssistantActionStatus)) {
+        return status as ProjectAssistantActionStatus
+      }
+      return error ? 'failed' : undefined
+  }
+}
+
+function legacyAssistantActionKind(name?: string): ProjectAssistantActionView['kind'] {
+  const base = legacyToolBaseName(name)
+  switch (base) {
+    case 'ask_follow_up':
+      return 'clarify'
+    case 'request_project_plan_approval':
+      return 'plan'
+    case 'commit_project_files':
+    case 'commit_files':
+      return 'commit'
+    case 'write_file':
+    case 'apply_patch':
+    case 'mkdir':
+      return 'edit'
+    case 'list_project_files':
+    case 'read_project_file':
+    case 'search_project_files':
+      return 'inspect'
+    default:
+      return 'other'
+  }
+}
+
+function legacyToolBaseName(name?: string): string {
+  const value = (name || '').trim()
+  if (!value) return ''
+  const parts = value.split('__')
+  return parts[parts.length - 1] || value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object'
+}
+
+function legacyObject(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined
+}
+
+function legacyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function legacyStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const strings = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+  return strings.length > 0 ? strings : undefined
 }
 
 function isAbortError(err: unknown): boolean {
@@ -2301,6 +2460,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </ul>
               <textarea
                 class="mt-3 min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                aria-label="Clarification response"
                 placeholder="Answer here..."
                 :value="followUpAnswer(pendingFollowUp.interrupt)"
                 :disabled="followUpBusyState(pendingFollowUp.interrupt)"
@@ -2694,6 +2854,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </ul>
             <textarea
               class="min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+              aria-label="Clarification response"
               placeholder="Answer here..."
               :value="followUpAnswer(pendingFollowUp.interrupt)"
               :disabled="followUpBusyState(pendingFollowUp.interrupt)"

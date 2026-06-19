@@ -1728,96 +1728,117 @@ func TestResumeProjectAssistantRunClaimsBeforeCommitSideEffects(t *testing.T) {
 }
 
 func TestResumeProjectAssistantRunPersistsAssistantTextBeforeNextPause(t *testing.T) {
-	messages := store.NewMemoryStore()
-	workspaces := workspace.NewFileStore(t.TempDir())
-	server := NewWithWorkspace(nil, messages, workspaces, "", false)
-	project := projectWithRepository("demo-repo", "demo", "github")
-	project.Name = "demo"
-	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
-	firstCall := chatStreamingCall{Index: 0, ID: "call-first-write", Type: "function"}
-	firstCall.Function.Name = projectToolWriteFile
-	firstCall.Function.Arguments = `{"path":"src/App.tsx","content":"first\n"}`
-	secondCall := chatStreamingCall{Index: 0, ID: "call-second-write", Type: "function"}
-	secondCall.Function.Name = projectToolWriteFile
-	secondCall.Function.Arguments = `{"path":"src/Other.tsx","content":"second\n"}`
-	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
-		{Message: einoschema.AssistantMessage("", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{firstCall}))},
-		{Message: einoschema.AssistantMessage("First change applied. ", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{secondCall}))},
-	}}
-	setProjectAssistantModelForTest(server, model)
-	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
-	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
-	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write files"); err != nil {
-		t.Fatalf("appendProjectUserMessage returned error: %v", err)
-	}
-	var firstPermission projectAssistantPermission
-	var firstCheckpoint projectAssistantCheckpoint
-	_, err := server.generateProjectAssistantStream(
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		id,
-		client,
-		project,
-		projectAssistantStreamCallbacks{
-			OnAssistantEvent: func(event projectAssistantEvent) {
-				switch event.Type {
-				case projectAssistantEventPermissionNeeded:
-					if event.Permission != nil {
-						firstPermission = *event.Permission
-					}
-				case projectAssistantEventCheckpointSaved:
-					if event.Checkpoint != nil {
-						firstCheckpoint = *event.Checkpoint
-					}
-				}
-			},
-		},
-	)
-	var permissionErr *projectAssistantPermissionRequiredError
-	if !errors.As(err, &permissionErr) {
-		t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
-	}
-	assistantMessageID := "msg-assistant-two-step"
-	if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
-		ID:         firstCall.ID,
-		Name:       firstCall.Function.Name,
-		Status:     "permission_required",
-		Summary:    firstPermission.Reason,
-		Permission: &firstPermission,
-		Checkpoint: &firstCheckpoint,
-	}})); err != nil {
-		t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
-	}
+	for _, tt := range []struct {
+		name      string
+		staleID   bool
+		wantFresh bool
+	}{
+		{name: "valid assistant message", staleID: false, wantFresh: false},
+		{name: "stale assistant message", staleID: true, wantFresh: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := store.NewMemoryStore()
+			workspaces := workspace.NewFileStore(t.TempDir())
+			server := NewWithWorkspace(nil, messages, workspaces, "", false)
+			project := projectWithRepository("demo-repo", "demo", "github")
+			project.Name = "demo"
+			id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+			messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+			firstCall := chatStreamingCall{Index: 0, ID: "call-first-write", Type: "function"}
+			firstCall.Function.Name = projectToolWriteFile
+			firstCall.Function.Arguments = `{"path":"src/App.tsx","content":"first\n"}`
+			secondCall := chatStreamingCall{Index: 0, ID: "call-second-write", Type: "function"}
+			secondCall.Function.Name = projectToolWriteFile
+			secondCall.Function.Arguments = `{"path":"src/Other.tsx","content":"second\n"}`
+			model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+				{Message: einoschema.AssistantMessage("", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{firstCall}))},
+				{Message: einoschema.AssistantMessage("First change applied. ", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{secondCall}))},
+			}}
+			setProjectAssistantModelForTest(server, model)
+			settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+			client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+			if err := appendProjectUserMessage(context.Background(), messages, messageScope, "write files"); err != nil {
+				t.Fatalf("appendProjectUserMessage returned error: %v", err)
+			}
+			var firstPermission projectAssistantPermission
+			var firstCheckpoint projectAssistantCheckpoint
+			_, err := server.generateProjectAssistantStream(
+				httptest.NewRequest(http.MethodPost, "/", nil),
+				id,
+				client,
+				project,
+				projectAssistantStreamCallbacks{
+					OnAssistantEvent: func(event projectAssistantEvent) {
+						switch event.Type {
+						case projectAssistantEventPermissionNeeded:
+							if event.Permission != nil {
+								firstPermission = *event.Permission
+							}
+						case projectAssistantEventCheckpointSaved:
+							if event.Checkpoint != nil {
+								firstCheckpoint = *event.Checkpoint
+							}
+						}
+					},
+				},
+			)
+			var permissionErr *projectAssistantPermissionRequiredError
+			if !errors.As(err, &permissionErr) {
+				t.Fatalf("generateProjectAssistantStream error = %v, want permission required", err)
+			}
+			assistantMessageID := "msg-assistant-two-step"
+			if err := appendProjectAssistantMessage(context.Background(), messages, messageScope, assistantMessageID, "", projectAssistantMessageMetadata(projectMessageStatusPendingPermission, []projectToolCallStreamEvent{{
+				ID:         firstCall.ID,
+				Name:       firstCall.Function.Name,
+				Status:     "permission_required",
+				Summary:    firstPermission.Reason,
+				Permission: &firstPermission,
+				Checkpoint: &firstCheckpoint,
+			}})); err != nil {
+				t.Fatalf("appendProjectAssistantMessage returned error: %v", err)
+			}
+			resumeAssistantMessageID := assistantMessageID
+			if tt.staleID {
+				resumeAssistantMessageID = "missing-assistant-message"
+			}
 
-	resp, err := server.resumeProjectAssistantRunWithRepositoryAndClient(
-		context.Background(),
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		id,
-		client,
-		project,
-		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
-		permissionErr.RunID,
-		projectAssistantResumeRequest{
-			RequestID:          permissionErr.RequestID,
-			Decision:           string(projectAssistantPermissionAllow),
-			AssistantMessageID: assistantMessageID,
-		},
-	)
-	if err != nil {
-		t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
-	}
-	if resp.Status != store.AssistantRunStatusPendingPermission || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "First change applied. " {
-		t.Fatalf("resume response = %#v, want pending permission with preserved assistant text", resp)
-	}
-	updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
-	if err != nil {
-		t.Fatalf("findProjectMessage returned error: %v", err)
-	}
-	if updatedMessage.Content != "First change applied. " {
-		t.Fatalf("assistant content = %q, want preserved resumed text", updatedMessage.Content)
-	}
-	if interrupt := projectAssistantUIInterruptFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt == nil || interrupt.Status != "pending" || interrupt.Action == nil || interrupt.Action.RunID != resp.RunID {
-		t.Fatalf("assistant interrupt = %#v, want pending next approval", interrupt)
+			resp, err := server.resumeProjectAssistantRunWithRepositoryAndClient(
+				context.Background(),
+				httptest.NewRequest(http.MethodPost, "/", nil),
+				id,
+				client,
+				project,
+				&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
+				permissionErr.RunID,
+				projectAssistantResumeRequest{
+					RequestID:          permissionErr.RequestID,
+					Decision:           string(projectAssistantPermissionAllow),
+					AssistantMessageID: resumeAssistantMessageID,
+				},
+			)
+			if err != nil {
+				t.Fatalf("resumeProjectAssistantRun returned error: %v", err)
+			}
+			if resp.Status != store.AssistantRunStatusPendingPermission || resp.AssistantMessage == nil || resp.AssistantMessage.Content != "First change applied. " {
+				t.Fatalf("resume response = %#v, want pending permission with preserved assistant text", resp)
+			}
+			updatedMessage, err := server.findProjectMessage(context.Background(), messageScope, resp.AssistantMessage.ID)
+			if err != nil {
+				t.Fatalf("findProjectMessage returned error: %v", err)
+			}
+			if updatedMessage.Content != "First change applied. " {
+				t.Fatalf("assistant content = %q, want preserved resumed text", updatedMessage.Content)
+			}
+			if tt.wantFresh && updatedMessage.ID == assistantMessageID {
+				t.Fatalf("assistant message id = %q, want fresh message for stale resume id", updatedMessage.ID)
+			}
+			if !tt.wantFresh && updatedMessage.ID != assistantMessageID {
+				t.Fatalf("assistant message id = %q, want existing message %q", updatedMessage.ID, assistantMessageID)
+			}
+			if interrupt := projectAssistantUIInterruptFromMetadata(updatedMessage.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt == nil || interrupt.Status != "pending" || interrupt.Action == nil || interrupt.Action.RunID != resp.RunID {
+				t.Fatalf("assistant interrupt = %#v, want pending next approval", interrupt)
+			}
+		})
 	}
 }
 

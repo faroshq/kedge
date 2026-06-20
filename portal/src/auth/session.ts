@@ -111,11 +111,14 @@ export async function authFetch(
   const { tenant, headers, ...init } = opts
   const token = await getBearerToken()
 
-  const merged: Record<string, string> = {
-    ...(tenant ? tenantHeaders() : {}),
-    ...(headers as Record<string, string> | undefined),
-  }
-  if (token) merged['Authorization'] = `Bearer ${token}`
+  // Build via the Headers API so every HeadersInit shape a caller might
+  // pass (plain object, [name,value][], or a Headers instance) is merged
+  // correctly — a plain spread/cast would silently drop the latter two.
+  // Order matters: tenant headers first, then caller headers (so a caller
+  // can override them), then Authorization last so it always wins.
+  const merged = new Headers(tenant ? tenantHeaders() : undefined)
+  if (headers) new Headers(headers).forEach((value, key) => merged.set(key, value))
+  if (token) merged.set('Authorization', `Bearer ${token}`)
 
   const res = await fetch(path, {
     credentials: 'same-origin',

@@ -935,7 +935,9 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up ## Run the A
 
 ## Apply the App Studio CatalogEntry into root:kedge:providers. Idempotent.
 ## Renders only the CatalogEntry from the Helm chart so host-cluster objects
-## from the full chart never touch the KCP workspace.
+## from the full chart never touch the KCP workspace. The chart normally renders
+## the CatalogEntry into a ConfigMap for in-cluster init self-registration; dev
+## registration renders the CatalogEntry directly for kcp.
 install-provider-app-studio: ## Apply App Studio CatalogEntry into root:kedge:providers
 	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
@@ -946,6 +948,7 @@ install-provider-app-studio: ## Apply App Studio CatalogEntry into root:kedge:pr
 		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
 		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
 		--set-string catalogEntry.backendURL=$(APP_STUDIO_CATALOGENTRY_BACKEND_URL) \
+		--set catalogEntry.renderAsConfigMap=false \
 		--show-only templates/catalogentry.yaml \
 		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
@@ -992,6 +995,7 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--namespace $(APP_STUDIO_HELM_NAMESPACE) \
 		--set-string catalogEntry.uiURL=$(APP_STUDIO_CATALOGENTRY_UI_URL) \
 		--set-string catalogEntry.backendURL=$(APP_STUDIO_CATALOGENTRY_BACKEND_URL) \
+		--set catalogEntry.renderAsConfigMap=false \
 		--show-only templates/catalogentry.yaml \
 		> $(APP_STUDIO_CATALOGENTRY_RENDERED)
 	-kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \

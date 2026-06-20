@@ -17,10 +17,16 @@ limitations under the License.
 package github
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	gogithub "github.com/google/go-github/v66/github"
 
+	codev1alpha1 "github.com/faroshq/provider-code/apis/v1alpha1"
 	"github.com/faroshq/provider-code/backend"
 )
 
@@ -103,5 +109,95 @@ func TestCommitMessageHasIdempotencyKey(t *testing.T) {
 	}
 	if commitMessageHasIdempotencyKey("Initial app Kedge-RepositoryCommit: root:acme/demo", "root:acme/demo") {
 		t.Fatal("commitMessageHasIdempotencyKey returned true for an inline substring")
+	}
+}
+
+func TestCommitFilesRecoversWhenConcurrentUpdateAlreadyAppliedDesiredTree(t *testing.T) {
+	const (
+		baseTreeSHA    = "tree-base"
+		desiredTreeSHA = "tree-desired"
+		baseCommitSHA  = "commit-base"
+		nextCommitSHA  = "commit-next"
+		idempotencyKey = "commit-uid"
+	)
+	var getRefCalls int
+	var updateRefCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/ref/heads/main" && r.Method == http.MethodGet {
+			getRefCalls++
+			w.Header().Set("Content-Type", "application/json")
+			sha := baseCommitSHA
+			if getRefCalls > 1 {
+				sha = nextCommitSHA
+			}
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, sha)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/commits" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+baseCommitSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, baseCommitSHA, baseTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+nextCommitSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"html_url":"https://example.test/acme/widgets/commit/%s","message":"Update\n\n%s %s","tree":{"sha":%q}}`, nextCommitSHA, nextCommitSHA, repositoryCommitIdempotencyTrailer, idempotencyKey, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees" && r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q}`, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits" && r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, nextCommitSHA, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/refs/heads/main" && r.Method == http.MethodPatch {
+			updateRefCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Update is not a fast forward"}`))
+			return
+		}
+		t.Fatalf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	got, err := New().CommitFiles(context.Background(),
+		&codev1alpha1.Connection{Spec: codev1alpha1.ConnectionSpec{Owner: "acme", BaseURL: srv.URL}},
+		backend.Credential{Token: "token"},
+		&codev1alpha1.Repository{Spec: codev1alpha1.RepositorySpec{Name: "widgets", DefaultBranch: "main"}},
+		backend.RepositoryCommitInput{
+			Message:        "Update",
+			IdempotencyKey: idempotencyKey,
+			Files:          []backend.RepositoryCommitFile{{Path: "index.html", Content: "hello"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CommitFiles returned error: %v", err)
+	}
+	if got.CommitSHA != nextCommitSHA {
+		t.Fatalf("commit SHA = %q, want %q", got.CommitSHA, nextCommitSHA)
+	}
+	if len(got.Files) != 1 || got.Files[0] != "index.html" {
+		t.Fatalf("files = %#v, want index.html", got.Files)
+	}
+	if got.Branch != "main" {
+		t.Fatalf("branch = %q, want main", got.Branch)
+	}
+	if !strings.Contains(got.CommitURL, nextCommitSHA) {
+		t.Fatalf("commit URL = %q, want SHA", got.CommitURL)
+	}
+	if updateRefCalls != 1 {
+		t.Fatalf("update ref calls = %d, want 1", updateRefCalls)
+	}
+	if getRefCalls != 2 {
+		t.Fatalf("get ref calls = %d, want initial + recovery", getRefCalls)
 	}
 }

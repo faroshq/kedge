@@ -258,6 +258,13 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 		_, resp, err = c.Git.UpdateRef(ctx, org, repo.Spec.Name, nextRef, false)
 	}
 	if err != nil {
+		if headSHA != "" && isNotFastForward(resp, err) {
+			if res, ok, recoverErr := recoverConcurrentCommit(ctx, c, org, repo, branch, tree.GetSHA(), files); recoverErr != nil {
+				return backend.RepositoryCommitResult{}, recoverErr
+			} else if ok {
+				return res, nil
+			}
+		}
 		return backend.RepositoryCommitResult{}, classify(resp, err)
 	}
 	return backend.RepositoryCommitResult{
@@ -270,6 +277,36 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 
 func shouldReuseHeadCommit(parent *gogithub.Commit, tree *gogithub.Tree, baseTree string) bool {
 	return parent != nil && tree != nil && tree.GetSHA() != "" && tree.GetSHA() == baseTree
+}
+
+func recoverConcurrentCommit(ctx context.Context, c *gogithub.Client, org string, repo *codev1alpha1.Repository, branch, desiredTree string, files []string) (backend.RepositoryCommitResult, bool, error) {
+	ref, resp, err := c.Git.GetRef(ctx, org, repo.Spec.Name, "heads/"+branch)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, false, classify(resp, err)
+	}
+	if ref == nil || ref.GetObject() == nil || ref.GetObject().GetSHA() == "" {
+		return backend.RepositoryCommitResult{}, false, nil
+	}
+	head, resp, err := c.Git.GetCommit(ctx, org, repo.Spec.Name, ref.GetObject().GetSHA())
+	if err != nil {
+		return backend.RepositoryCommitResult{}, false, classify(resp, err)
+	}
+	if head == nil || head.GetTree() == nil || head.GetTree().GetSHA() != desiredTree {
+		return backend.RepositoryCommitResult{}, false, nil
+	}
+	return backend.RepositoryCommitResult{
+		CommitSHA: head.GetSHA(),
+		CommitURL: commitURL(org, repo, head),
+		Branch:    branch,
+		Files:     files,
+	}, true, nil
+}
+
+func isNotFastForward(resp *gogithub.Response, err error) bool {
+	if resp == nil || resp.StatusCode != http.StatusUnprocessableEntity || err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not a fast forward")
 }
 
 func commitMessageWithIdempotencyKey(message, key string) string {

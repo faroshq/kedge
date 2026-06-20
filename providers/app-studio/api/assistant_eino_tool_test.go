@@ -43,3 +43,43 @@ func TestEinoApprovePlanToolRejectsMissingAllowedOperations(t *testing.T) {
 		t.Fatalf("approved plan = %#v, want nil after malformed approve_plan", plan)
 	}
 }
+
+func TestEinoToolPassesSessionSnapshotToLocalTool(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.SetSessionSnapshot(projectEinoAssistantSessionSnapshot{
+		LastRuntimeDeployment: &projectEinoAssistantSessionRuntime{
+			Status: "ready",
+			URL:    "https://demo.apps.example.com",
+		},
+	})
+	var got *projectEinoAssistantSessionSnapshot
+	localTool := projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{
+			Name: "capture_session_snapshot",
+			Risk: projectAssistantToolRiskRead,
+		},
+		call: func(_ context.Context, req projectAssistantToolCallRequest) (string, error) {
+			got = req.SessionSnapshot
+			return `{"status":"captured"}`, nil
+		},
+	}
+	tool := projectEinoAssistantTool{
+		tool:     localTool,
+		req:      projectAssistantRunRequest{},
+		runState: runState,
+	}
+
+	if _, err := tool.invokeAllowedTool(context.Background(), "call-session", localTool.Spec(), nil); err != nil {
+		t.Fatalf("invokeAllowedTool returned error: %v", err)
+	}
+	if got == nil || got.LastRuntimeDeployment == nil {
+		t.Fatalf("session snapshot = %#v, want runtime deployment snapshot", got)
+	}
+	if got.LastRuntimeDeployment.URL != "https://demo.apps.example.com" {
+		t.Fatalf("runtime URL = %q, want session snapshot URL", got.LastRuntimeDeployment.URL)
+	}
+	got.LastRuntimeDeployment.Status = "mutated"
+	if runState.SessionSnapshot().LastRuntimeDeployment.Status != "ready" {
+		t.Fatal("tool received mutable run-state session snapshot")
+	}
+}

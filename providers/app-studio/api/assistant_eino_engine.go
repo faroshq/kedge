@@ -462,17 +462,13 @@ func projectEinoAssistantMessageOutput(
 			continue
 		}
 		chunks = append(chunks, msg)
+		if output.Role == schema.Assistant && streamCallbacks.OnChunk != nil && msg.Content != "" {
+			streamCallbacks.OnChunk(msg.Content)
+		}
 	}
 	msg, err := schema.ConcatMessages(chunks)
 	if err != nil {
 		return nil, err
-	}
-	if output.Role == schema.Assistant && streamCallbacks.OnChunk != nil {
-		for _, chunk := range chunks {
-			if chunk != nil && chunk.Content != "" {
-				streamCallbacks.OnChunk(chunk.Content)
-			}
-		}
 	}
 	return msg, nil
 }

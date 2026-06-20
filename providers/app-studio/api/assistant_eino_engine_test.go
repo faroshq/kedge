@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -70,6 +71,63 @@ func TestProjectEinoAssistantMessageOutputPublishesAssistantStreamChunks(t *test
 	}
 	if strings.Join(chunks, "") != "Hello world" || len(chunks) != 2 {
 		t.Fatalf("chunks = %#v, want two public assistant chunks", chunks)
+	}
+}
+
+func TestProjectEinoAssistantMessageOutputPublishesAssistantStreamChunksBeforeEOF(t *testing.T) {
+	stream, writer := schema.Pipe[*schema.Message](0)
+	output := &adk.TypedMessageVariant[*schema.Message]{
+		IsStreaming:   true,
+		MessageStream: stream,
+		Role:          schema.Assistant,
+	}
+	chunks := make(chan string, 2)
+	result := make(chan struct {
+		msg *schema.Message
+		err error
+	}, 1)
+	go func() {
+		msg, err := projectEinoAssistantMessageOutput(context.Background(), output, projectAssistantStreamCallbacks{
+			OnChunk: func(chunk string) { chunks <- chunk },
+		})
+		result <- struct {
+			msg *schema.Message
+			err error
+		}{msg: msg, err: err}
+	}()
+
+	if closed := writer.Send(schema.AssistantMessage("Hello ", nil), nil); closed {
+		t.Fatal("stream closed before first chunk was sent")
+	}
+	select {
+	case got := <-chunks:
+		if got != "Hello " {
+			t.Fatalf("first streamed chunk = %q, want %q", got, "Hello ")
+		}
+	case <-time.After(250 * time.Millisecond):
+		writer.Close()
+		<-result
+		t.Fatal("first assistant chunk was not published before stream EOF")
+	}
+
+	if closed := writer.Send(schema.AssistantMessage("world", nil), nil); closed {
+		t.Fatal("stream closed before second chunk was sent")
+	}
+	writer.Close()
+	got := <-result
+	if got.err != nil {
+		t.Fatalf("message output returned error: %v", got.err)
+	}
+	if got.msg == nil || got.msg.Content != "Hello world" {
+		t.Fatalf("message = %#v, want concatenated assistant content", got.msg)
+	}
+	select {
+	case chunk := <-chunks:
+		if chunk != "world" {
+			t.Fatalf("second streamed chunk = %q, want %q", chunk, "world")
+		}
+	default:
+		t.Fatal("second assistant chunk was not published")
 	}
 }
 

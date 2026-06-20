@@ -18,9 +18,6 @@ template in the kedge portal — or asks an MCP-driven LLM — supplies
 inputs, and this provider creates the kro instance CR on their behalf
 using cloud credentials pulled from the tenant's own kcp workspace.
 
-Full design + staged plan:
-[/Users/mjudeikis/.claude/plans/zippy-baking-jellyfish.md](../../../../../../.claude/plans/zippy-baking-jellyfish.md)
-
 ## What's here
 
 | Surface | Where |

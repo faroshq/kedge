@@ -57,7 +57,5 @@ metadata:
 data:
   catalogentry.yaml: |
 {{ include "appstudio.catalogEntry" . | indent 4 }}
-{{- else if .Values.catalogEntry.renderDirect }}
-{{ include "appstudio.catalogEntry" . }}
 {{- end }}
 {{- end }}

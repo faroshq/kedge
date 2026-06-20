@@ -24,13 +24,7 @@ service:
 # different rollout cadence).
 catalogEntry:
   enabled: true
-  # Production Helm installs render the kcp CatalogEntry into a ConfigMap that
-  # the init container self-applies. Local/Tilt dev registration sets
-  # renderAsConfigMap=false and renderDirect=true only with
-  # `helm template --show-only templates/catalogentry.yaml`, so the CatalogEntry
-  # can be rendered directly for kubectl apply against kcp.
   renderAsConfigMap: true
-  renderDirect: false
   uiURL: ""
   backendURL: ""
 

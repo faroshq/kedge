@@ -136,27 +136,22 @@ provider runs in stub mode (three baked-in templates). To run for real:
 
 kro ships its CRDs in the chart, so a Helm install is all you need.
 
-Vanilla kro (upstream OCI chart):
+The [`faroshq/kro-multicluster`](https://github.com/faroshq/kro-multicluster)
+fork publishes its image and Helm chart to GHCR. Install from the OCI chart and
+enable the multicluster provider. The chart still defaults to the upstream
+image, so you **must** point `image.repository`/`tag` at the fork or the
+multicluster features are missing:
 
 ```sh
-helm install kro oci://registry.k8s.io/kro/charts/kro \
-  --version <kro-version> \
-  -n kro-system --create-namespace
-```
+KRO_VERSION=v0.0.1-mc.7   # latest faroshq/kro-multicluster release tag
 
-For the multicluster build (kcp-aware host/member split, used when the central
-runtime is itself driven from kcp), install the
-[`faroshq/kro-multicluster`](https://github.com/faroshq/kro-multicluster) fork's
-chart from source and enable the multicluster provider:
-
-```sh
-git clone https://github.com/faroshq/kro-multicluster
-helm install kro ./kro-multicluster/helm \
+helm install kro oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro \
+  --version "$KRO_VERSION" \
   -n kro-system --create-namespace \
-  --set image.repository=<your-fork-image-repo> \
-  --set image.tag=<tag> \
+  --set image.repository=ghcr.io/faroshq/kro-multicluster/kro \
+  --set image.tag="$KRO_VERSION" \
   --set multicluster.enabled=true \
-  --set multicluster.provider=kubeconfig   # or kcp-apiexport (see helm/values.yaml)
+  --set multicluster.provider=kubeconfig   # or kcp-apiexport (see the fork's helm/values.yaml)
 ```
 
 Verify:

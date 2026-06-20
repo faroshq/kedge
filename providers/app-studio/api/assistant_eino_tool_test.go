@@ -47,10 +47,8 @@ func TestEinoApprovePlanToolRejectsMissingAllowedOperations(t *testing.T) {
 func TestEinoToolPassesSessionSnapshotToLocalTool(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	runState.SetSessionSnapshot(projectEinoAssistantSessionSnapshot{
-		LastRuntimeDeployment: &projectEinoAssistantSessionRuntime{
-			Status: "ready",
-			URL:    "https://demo.apps.example.com",
-		},
+		LastFileSnapshot:  []string{"package.json"},
+		RecommendedChecks: []string{"build"},
 	})
 	var got *projectEinoAssistantSessionSnapshot
 	localTool := projectAssistantToolFunc{
@@ -72,14 +70,14 @@ func TestEinoToolPassesSessionSnapshotToLocalTool(t *testing.T) {
 	if _, err := tool.invokeAllowedTool(context.Background(), "call-session", localTool.Spec(), nil); err != nil {
 		t.Fatalf("invokeAllowedTool returned error: %v", err)
 	}
-	if got == nil || got.LastRuntimeDeployment == nil {
-		t.Fatalf("session snapshot = %#v, want runtime deployment snapshot", got)
+	if got == nil || !stringSliceEqual(got.LastFileSnapshot, []string{"package.json"}) {
+		t.Fatalf("session snapshot = %#v, want file snapshot", got)
 	}
-	if got.LastRuntimeDeployment.URL != "https://demo.apps.example.com" {
-		t.Fatalf("runtime URL = %q, want session snapshot URL", got.LastRuntimeDeployment.URL)
+	if !stringSliceEqual(got.RecommendedChecks, []string{"build"}) {
+		t.Fatalf("recommended checks = %#v, want build", got.RecommendedChecks)
 	}
-	got.LastRuntimeDeployment.Status = "mutated"
-	if runState.SessionSnapshot().LastRuntimeDeployment.Status != "ready" {
+	got.LastFileSnapshot[0] = "mutated"
+	if !stringSliceEqual(runState.SessionSnapshot().LastFileSnapshot, []string{"package.json"}) {
 		t.Fatal("tool received mutable run-state session snapshot")
 	}
 }

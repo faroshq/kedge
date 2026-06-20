@@ -439,49 +439,6 @@ func TestProjectAssistantDeployRuntimeWorkflowReportsMissingRuntimeProvider(t *t
 	}
 }
 
-func TestProjectAssistantRuntimeStatusAndPreviewWorkflowsReportSessionRuntime(t *testing.T) {
-	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
-	snapshot := &projectEinoAssistantSessionSnapshot{
-		LastRuntimeDeployment: &projectEinoAssistantSessionRuntime{
-			Status: "ready",
-			URL:    "https://demo.apps.example.com",
-		},
-	}
-	tests := []struct {
-		name        string
-		wantStatus  string
-		wantPreview string
-	}{
-		{name: "get_runtime_status", wantStatus: "ready", wantPreview: "https://demo.apps.example.com"},
-		{name: "get_preview_url", wantStatus: "ready", wantPreview: "https://demo.apps.example.com"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tool, ok := server.projectAssistantToolRegistry().Get(tt.name)
-			if !ok {
-				t.Fatalf("%s tool missing from registry", tt.name)
-			}
-			result, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
-				Project:         projectWithRepository("demo-repo", "demo", "github"),
-				SessionSnapshot: snapshot,
-			})
-			if err != nil {
-				t.Fatalf("%s returned error: %v", tt.name, err)
-			}
-			var decoded map[string]any
-			if err := json.Unmarshal([]byte(result), &decoded); err != nil {
-				t.Fatalf("decode result: %v\n%s", err, result)
-			}
-			if got := projectToolString(decoded["status"]); got != tt.wantStatus {
-				t.Fatalf("status = %q, want %q", got, tt.wantStatus)
-			}
-			if got := projectToolString(decoded["previewURL"]); got != tt.wantPreview {
-				t.Fatalf("previewURL = %q, want %q", got, tt.wantPreview)
-			}
-		})
-	}
-}
-
 func TestProjectAssistantRuntimeStatusAndPreviewWorkflowsReportNotConfiguredWithoutSessionRuntime(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	for _, name := range []string{"get_runtime_status", "get_preview_url"} {

@@ -73,7 +73,7 @@ func TestProjectEinoAssistantMessageOutputPublishesAssistantStreamChunks(t *test
 	}
 }
 
-func TestProjectEinoAssistantMessageOutputSuppressesToolCallNarration(t *testing.T) {
+func TestProjectEinoAssistantMessageOutputStreamsToolCallContent(t *testing.T) {
 	var chunks []string
 	output := &adk.TypedMessageVariant[*schema.Message]{
 		IsStreaming: true,
@@ -100,8 +100,8 @@ func TestProjectEinoAssistantMessageOutputSuppressesToolCallNarration(t *testing
 	if msg == nil || len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != projectToolCheckProjectReadiness {
 		t.Fatalf("message = %#v, want preserved tool call for existing tool summary UX", msg)
 	}
-	if len(chunks) != 0 {
-		t.Fatalf("chunks = %#v, want tool-call narration suppressed from public assistant content", chunks)
+	if strings.Join(chunks, "") != "I will inspect the project." {
+		t.Fatalf("chunks = %#v, want assistant content streamed even when a tool call follows", chunks)
 	}
 }
 

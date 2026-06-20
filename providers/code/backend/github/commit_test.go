@@ -19,6 +19,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -200,4 +201,305 @@ func TestCommitFilesRecoversWhenConcurrentUpdateAlreadyAppliedDesiredTree(t *tes
 	if getRefCalls != 2 {
 		t.Fatalf("get ref calls = %d, want initial + recovery", getRefCalls)
 	}
+}
+
+func TestCommitFilesRetriesWhenConcurrentUpdateMovedBranchToDifferentTree(t *testing.T) {
+	const (
+		baseTreeSHA       = "tree-base"
+		concurrentTreeSHA = "tree-concurrent"
+		mergedTreeSHA     = "tree-merged"
+		baseCommitSHA     = "commit-base"
+		concurrentSHA     = "commit-concurrent"
+		orphanCommitSHA   = "commit-orphan"
+		retryCommitSHA    = "commit-retry"
+	)
+	var getRefCalls int
+	var createTreeBases []string
+	var createCommitParents []string
+	var updateRefSHAs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/ref/heads/main" && r.Method == http.MethodGet {
+			getRefCalls++
+			w.Header().Set("Content-Type", "application/json")
+			sha := baseCommitSHA
+			if getRefCalls > 1 {
+				sha = concurrentSHA
+			}
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, sha)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/commits" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+baseCommitSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, baseCommitSHA, baseTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+concurrentSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, concurrentSHA, concurrentTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees" && r.Method == http.MethodPost {
+			body := mustReadRequestBody(t, r)
+			if strings.Contains(body, baseTreeSHA) {
+				createTreeBases = append(createTreeBases, baseTreeSHA)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"sha":"tree-orphan"}`)
+				return
+			}
+			if strings.Contains(body, concurrentTreeSHA) {
+				createTreeBases = append(createTreeBases, concurrentTreeSHA)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"sha":%q}`, mergedTreeSHA)
+				return
+			}
+			t.Fatalf("unexpected CreateTree body: %s", body)
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits" && r.Method == http.MethodPost {
+			body := mustReadRequestBody(t, r)
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(body, baseCommitSHA) {
+				createCommitParents = append(createCommitParents, baseCommitSHA)
+				_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":"tree-orphan"}}`, orphanCommitSHA)
+				return
+			}
+			if strings.Contains(body, concurrentSHA) {
+				createCommitParents = append(createCommitParents, concurrentSHA)
+				_, _ = fmt.Fprintf(w, `{"sha":%q,"html_url":"https://example.test/acme/widgets/commit/%s","tree":{"sha":%q}}`, retryCommitSHA, retryCommitSHA, mergedTreeSHA)
+				return
+			}
+			t.Fatalf("unexpected CreateCommit body: %s", body)
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/refs/heads/main" && r.Method == http.MethodPatch {
+			body := mustReadRequestBody(t, r)
+			if strings.Contains(body, orphanCommitSHA) {
+				updateRefSHAs = append(updateRefSHAs, orphanCommitSHA)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Update is not a fast forward"}`))
+				return
+			}
+			if strings.Contains(body, retryCommitSHA) {
+				updateRefSHAs = append(updateRefSHAs, retryCommitSHA)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, retryCommitSHA)
+				return
+			}
+			t.Fatalf("unexpected UpdateRef body: %s", body)
+		}
+		t.Fatalf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	got, err := New().CommitFiles(context.Background(),
+		&codev1alpha1.Connection{Spec: codev1alpha1.ConnectionSpec{Owner: "acme", BaseURL: srv.URL}},
+		backend.Credential{Token: "token"},
+		&codev1alpha1.Repository{Spec: codev1alpha1.RepositorySpec{Name: "widgets", DefaultBranch: "main"}},
+		backend.RepositoryCommitInput{
+			Message:        "Update",
+			IdempotencyKey: "commit-uid",
+			Files:          []backend.RepositoryCommitFile{{Path: "index.html", Content: "hello"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CommitFiles returned error: %v", err)
+	}
+	if got.CommitSHA != retryCommitSHA {
+		t.Fatalf("commit SHA = %q, want %q", got.CommitSHA, retryCommitSHA)
+	}
+	if strings.Join(createTreeBases, ",") != baseTreeSHA+","+concurrentTreeSHA {
+		t.Fatalf("CreateTree bases = %#v, want base then concurrent tree", createTreeBases)
+	}
+	if strings.Join(createCommitParents, ",") != baseCommitSHA+","+concurrentSHA {
+		t.Fatalf("CreateCommit parents = %#v, want base then concurrent commit", createCommitParents)
+	}
+	if strings.Join(updateRefSHAs, ",") != orphanCommitSHA+","+retryCommitSHA {
+		t.Fatalf("UpdateRef SHAs = %#v, want orphan then retry commit", updateRefSHAs)
+	}
+}
+
+func TestCommitFilesRetriesWhenConcurrentUpdateAlreadyAppliedSameTreeWithoutProof(t *testing.T) {
+	const (
+		baseTreeSHA     = "tree-base"
+		desiredTreeSHA  = "tree-desired"
+		baseCommitSHA   = "commit-base"
+		orphanCommitSHA = "commit-orphan"
+		concurrentSHA   = "commit-concurrent"
+		retryCommitSHA  = "commit-retry"
+	)
+	var getRefCalls int
+	var createCommitParents []string
+	var updateRefSHAs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/ref/heads/main" && r.Method == http.MethodGet {
+			getRefCalls++
+			w.Header().Set("Content-Type", "application/json")
+			sha := baseCommitSHA
+			if getRefCalls > 1 {
+				sha = concurrentSHA
+			}
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, sha)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/commits" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+baseCommitSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, baseCommitSHA, baseTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+concurrentSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q},"message":"Other automation wrote the same files"}`, concurrentSHA, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees" && r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q}`, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits" && r.Method == http.MethodPost {
+			body := mustReadRequestBody(t, r)
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(body, baseCommitSHA) {
+				createCommitParents = append(createCommitParents, baseCommitSHA)
+				_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, orphanCommitSHA, desiredTreeSHA)
+				return
+			}
+			if strings.Contains(body, concurrentSHA) {
+				createCommitParents = append(createCommitParents, concurrentSHA)
+				_, _ = fmt.Fprintf(w, `{"sha":%q,"html_url":"https://example.test/acme/widgets/commit/%s","tree":{"sha":%q}}`, retryCommitSHA, retryCommitSHA, desiredTreeSHA)
+				return
+			}
+			t.Fatalf("unexpected CreateCommit body: %s", body)
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/refs/heads/main" && r.Method == http.MethodPatch {
+			body := mustReadRequestBody(t, r)
+			if strings.Contains(body, orphanCommitSHA) {
+				updateRefSHAs = append(updateRefSHAs, orphanCommitSHA)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Update is not a fast forward"}`))
+				return
+			}
+			if strings.Contains(body, retryCommitSHA) {
+				updateRefSHAs = append(updateRefSHAs, retryCommitSHA)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, retryCommitSHA)
+				return
+			}
+			t.Fatalf("unexpected UpdateRef body: %s", body)
+		}
+		t.Fatalf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	got, err := New().CommitFiles(context.Background(),
+		&codev1alpha1.Connection{Spec: codev1alpha1.ConnectionSpec{Owner: "acme", BaseURL: srv.URL}},
+		backend.Credential{Token: "token"},
+		&codev1alpha1.Repository{Spec: codev1alpha1.RepositorySpec{Name: "widgets", DefaultBranch: "main"}},
+		backend.RepositoryCommitInput{
+			Message: "Update",
+			Files:   []backend.RepositoryCommitFile{{Path: "index.html", Content: "hello"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CommitFiles returned error: %v", err)
+	}
+	if got.CommitSHA != retryCommitSHA {
+		t.Fatalf("commit SHA = %q, want retried commit %q", got.CommitSHA, retryCommitSHA)
+	}
+	if strings.Join(createCommitParents, ",") != baseCommitSHA+","+concurrentSHA {
+		t.Fatalf("CreateCommit parents = %#v, want base then concurrent commit", createCommitParents)
+	}
+	if strings.Join(updateRefSHAs, ",") != orphanCommitSHA+","+retryCommitSHA {
+		t.Fatalf("UpdateRef SHAs = %#v, want orphan then retry commit", updateRefSHAs)
+	}
+}
+
+func TestCommitFilesRecoversWhenConcurrentCreateRefAlreadyAppliedDesiredTree(t *testing.T) {
+	const (
+		desiredTreeSHA = "tree-desired"
+		nextCommitSHA  = "commit-next"
+		idempotencyKey = "commit-uid"
+	)
+	var getRefCalls int
+	var createRefCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/ref/heads/main" && r.Method == http.MethodGet {
+			getRefCalls++
+			if getRefCalls == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, nextCommitSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+nextCommitSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"html_url":"https://example.test/acme/widgets/commit/%s","message":"Initial app\n\n%s %s","tree":{"sha":%q}}`, nextCommitSHA, nextCommitSHA, repositoryCommitIdempotencyTrailer, idempotencyKey, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees" && r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q}`, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits" && r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, nextCommitSHA, desiredTreeSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/refs" && r.Method == http.MethodPost {
+			createRefCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Reference already exists"}`))
+			return
+		}
+		t.Fatalf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	got, err := New().CommitFiles(context.Background(),
+		&codev1alpha1.Connection{Spec: codev1alpha1.ConnectionSpec{Owner: "acme", BaseURL: srv.URL}},
+		backend.Credential{Token: "token"},
+		&codev1alpha1.Repository{Spec: codev1alpha1.RepositorySpec{Name: "widgets", DefaultBranch: "main"}},
+		backend.RepositoryCommitInput{
+			Message:        "Initial app",
+			IdempotencyKey: idempotencyKey,
+			Files:          []backend.RepositoryCommitFile{{Path: "index.html", Content: "hello"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CommitFiles returned error: %v", err)
+	}
+	if got.CommitSHA != nextCommitSHA {
+		t.Fatalf("commit SHA = %q, want %q", got.CommitSHA, nextCommitSHA)
+	}
+	if createRefCalls != 1 {
+		t.Fatalf("create ref calls = %d, want 1", createRefCalls)
+	}
+	if getRefCalls != 2 {
+		t.Fatalf("get ref calls = %d, want initial miss + recovery", getRefCalls)
+	}
+}
+
+func mustReadRequestBody(t *testing.T, r *http.Request) string {
+	t.Helper()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+	return string(body)
 }

@@ -419,7 +419,7 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 		if role == "" && msg != nil {
 			role = msg.Role
 		}
-		if msg != nil && role == schema.Assistant && strings.TrimSpace(msg.Content) != "" && !projectEinoAssistantMessageSuppressesPublicContent(msg) {
+		if msg != nil && role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
 			outcome.result.Content = msg.Content
 			outcome.receivedOutput = true
 		}
@@ -467,7 +467,7 @@ func projectEinoAssistantMessageOutput(
 	if err != nil {
 		return nil, err
 	}
-	if output.Role == schema.Assistant && !projectEinoAssistantMessageSuppressesPublicContent(msg) && streamCallbacks.OnChunk != nil {
+	if output.Role == schema.Assistant && streamCallbacks.OnChunk != nil {
 		for _, chunk := range chunks {
 			if chunk != nil && chunk.Content != "" {
 				streamCallbacks.OnChunk(chunk.Content)
@@ -475,33 +475,6 @@ func projectEinoAssistantMessageOutput(
 		}
 	}
 	return msg, nil
-}
-
-func projectEinoAssistantMessageHasToolCalls(msg *schema.Message) bool {
-	return msg != nil && len(msg.ToolCalls) > 0
-}
-
-func projectEinoAssistantMessageSuppressesPublicContent(msg *schema.Message) bool {
-	return projectEinoAssistantMessageHasToolCalls(msg) && projectEinoAssistantToolNarration(msg.Content)
-}
-
-func projectEinoAssistantToolNarration(content string) bool {
-	content = strings.TrimSpace(strings.ToLower(content))
-	if content == "" {
-		return false
-	}
-	for _, prefix := range []string{
-		"i will ",
-		"i'll ",
-		"i am going to ",
-		"i'm going to ",
-		"let me ",
-	} {
-		if strings.HasPrefix(content, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func (e projectEinoAssistantEngine) projectAssistantToolLoopFinalAnswer(

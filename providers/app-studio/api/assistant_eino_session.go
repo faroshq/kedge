@@ -28,19 +28,18 @@ import (
 const projectEinoAssistantSessionSnapshotKey = "appStudioProjectSnapshot"
 
 type projectEinoAssistantSessionSnapshot struct {
-	ProjectName           string                              `json:"projectName"`
-	DisplayName           string                              `json:"displayName,omitempty"`
-	RepoReady             bool                                `json:"repoReady"`
-	RepositoryRef         string                              `json:"repositoryRef,omitempty"`
-	RepositoryStatus      string                              `json:"repositoryStatus,omitempty"`
-	RepositoryMessage     string                              `json:"repositoryMessage,omitempty"`
-	LastKnownBranch       string                              `json:"lastKnownBranch"`
-	LastFileSnapshot      []string                            `json:"lastFileSnapshot"`
-	RecommendedChecks     []string                            `json:"recommendedChecks,omitempty"`
-	Memory                projectEinoAssistantSessionMemory   `json:"memory"`
-	LastBuildRun          *projectEinoAssistantSessionBuild   `json:"lastBuildRun,omitempty"`
-	LastRuntimeDeployment *projectEinoAssistantSessionRuntime `json:"lastRuntimeDeployment,omitempty"`
-	ContextIssue          string                              `json:"contextIssue,omitempty"`
+	ProjectName       string                            `json:"projectName"`
+	DisplayName       string                            `json:"displayName,omitempty"`
+	RepoReady         bool                              `json:"repoReady"`
+	RepositoryRef     string                            `json:"repositoryRef,omitempty"`
+	RepositoryStatus  string                            `json:"repositoryStatus,omitempty"`
+	RepositoryMessage string                            `json:"repositoryMessage,omitempty"`
+	LastKnownBranch   string                            `json:"lastKnownBranch"`
+	LastFileSnapshot  []string                          `json:"lastFileSnapshot"`
+	RecommendedChecks []string                          `json:"recommendedChecks,omitempty"`
+	Memory            projectEinoAssistantSessionMemory `json:"memory"`
+	LastBuildRun      *projectEinoAssistantSessionBuild `json:"lastBuildRun,omitempty"`
+	ContextIssue      string                            `json:"contextIssue,omitempty"`
 }
 
 type projectEinoAssistantSessionMemory struct {
@@ -57,11 +56,6 @@ type projectEinoAssistantSessionBuild struct {
 	CommitURL string `json:"commitURL,omitempty"`
 	Message   string `json:"message,omitempty"`
 	FileCount int64  `json:"fileCount,omitempty"`
-}
-
-type projectEinoAssistantSessionRuntime struct {
-	Status string `json:"status,omitempty"`
-	URL    string `json:"url,omitempty"`
 }
 
 func init() {
@@ -161,10 +155,6 @@ func cloneProjectEinoAssistantSessionSnapshot(src *projectEinoAssistantSessionSn
 	if src.LastBuildRun != nil {
 		build := *src.LastBuildRun
 		out.LastBuildRun = &build
-	}
-	if src.LastRuntimeDeployment != nil {
-		runtime := *src.LastRuntimeDeployment
-		out.LastRuntimeDeployment = &runtime
 	}
 	return &out
 }

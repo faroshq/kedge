@@ -224,7 +224,7 @@ func newProjectAssistantRuntimeStatusWorkflowTool() projectAssistantTool {
 	return projectAssistantToolFunc{
 		spec: projectAssistantToolSpec{
 			Name:        projectToolGetRuntimeStatus,
-			Description: "Return deterministic App Studio runtime deployment status from Eino session state, or a structured not-configured result when no runtime deployment exists.",
+			Description: "Return a structured not-configured App Studio runtime status until a runtime provider state reader is configured.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
@@ -242,7 +242,7 @@ func newProjectAssistantPreviewURLWorkflowTool() projectAssistantTool {
 	return projectAssistantToolFunc{
 		spec: projectAssistantToolSpec{
 			Name:        projectToolGetPreviewURL,
-			Description: "Return the current App Studio preview URL from Eino session state, or a structured unavailable result when no runtime preview exists.",
+			Description: "Return a structured not-configured App Studio preview URL result until a runtime provider state reader is configured.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:        projectAssistantToolRiskRead,
 		},
@@ -666,42 +666,12 @@ func formatProjectAssistantRuntimeStatusResult(ctx context.Context, input projec
 	if err := ctx.Err(); err != nil {
 		return projectAssistantRuntimeWorkflowResult{}, err
 	}
-	if runtime := projectAssistantRuntimeFromSession(input.SessionSnapshot); runtime != nil {
-		result := projectAssistantRuntimeWorkflowResult{
-			Status:     strings.TrimSpace(runtime.Status),
-			Runtime:    runtime,
-			PreviewURL: strings.TrimSpace(runtime.URL),
-		}
-		if result.Status == "" {
-			result.Status = "unknown"
-		}
-		result.Summary = "Runtime deployment status is " + result.Status + "."
-		return result, nil
-	}
 	return projectAssistantRuntimeNotConfiguredResult("Runtime deployment status is unavailable because no runtime deployment is recorded.")
 }
 
 func formatProjectAssistantPreviewURLResult(ctx context.Context, input projectAssistantRuntimeWorkflowInput) (projectAssistantRuntimeWorkflowResult, error) {
 	if err := ctx.Err(); err != nil {
 		return projectAssistantRuntimeWorkflowResult{}, err
-	}
-	if runtime := projectAssistantRuntimeFromSession(input.SessionSnapshot); runtime != nil {
-		result := projectAssistantRuntimeWorkflowResult{
-			Status:     strings.TrimSpace(runtime.Status),
-			Runtime:    runtime,
-			PreviewURL: strings.TrimSpace(runtime.URL),
-		}
-		if result.PreviewURL == "" {
-			result.Status = "unavailable"
-			result.Blockers = []string{"No preview URL is recorded for the current runtime deployment."}
-			result.Summary = "Preview URL is unavailable for the current runtime deployment."
-			return result, nil
-		}
-		if result.Status == "" {
-			result.Status = "ready"
-		}
-		result.Summary = "Preview URL is available."
-		return result, nil
 	}
 	return projectAssistantRuntimeNotConfiguredResult("Preview URL is unavailable because no runtime deployment is recorded.")
 }
@@ -724,16 +694,6 @@ func projectAssistantRuntimeNotConfigured() *projectAssistantDeploymentRuntime {
 	return &projectAssistantDeploymentRuntime{
 		Status:  "not_configured",
 		Message: "Runtime deployment is not configured for this App Studio project.",
-	}
-}
-
-func projectAssistantRuntimeFromSession(snapshot *projectEinoAssistantSessionSnapshot) *projectAssistantDeploymentRuntime {
-	if snapshot == nil || snapshot.LastRuntimeDeployment == nil {
-		return nil
-	}
-	return &projectAssistantDeploymentRuntime{
-		Status: strings.TrimSpace(snapshot.LastRuntimeDeployment.Status),
-		URL:    strings.TrimSpace(snapshot.LastRuntimeDeployment.URL),
 	}
 }
 

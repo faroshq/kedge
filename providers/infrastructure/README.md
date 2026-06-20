@@ -132,18 +132,40 @@ namespaces (`kedge-tenants-<hash>`). You point the provider at it with
 `centralKro.kubeconfigSecretRef` (see below). With no kro kubeconfig the
 provider runs in stub mode (three baked-in templates). To run for real:
 
-### 1. Deploy kro into the cluster
+### 1. Deploy kro into the cluster (kcp-apiexport mode)
 
-kro ships its CRDs in the chart, so a Helm install is all you need.
+In production kro runs in **`kcp-apiexport`** mode: kcp is the host, and each
+tenant workspace bound to the provider's APIExport is a member. kro watches the
+`infrastructure` APIExportEndpointSlice (for APIExport
+`infrastructure.providers.kedge.faros.sh` in `root:kedge:providers:infrastructure`)
+to discover the virtual-workspace URL, then reconciles the instance CRs tenants
+create. (Tilt's dev flow instead uses the simpler `kubeconfig` provider against a
+kind cluster — see the `providers-kro` group in the [Tiltfile](../../Tiltfile).)
 
-The [`faroshq/kro-multicluster`](https://github.com/faroshq/kro-multicluster)
-fork publishes its image and Helm chart to GHCR. Install from the OCI chart and
-enable the multicluster provider. The chart still defaults to the upstream
+> [!IMPORTANT]
+> **Install order: provider first, kro second.** The APIExport and the
+> `infrastructure` APIExportEndpointSlice that kro watches are created by the
+> infrastructure provider's bootstrap (`infrastructure init`, run by the chart's
+> init container — see "Deploy with Helm" below). Until that slice exists and
+> reports endpoint URLs, kro's kcp-apiexport provider has nothing to watch and
+> tenant instances go unreconciled. So **register + bootstrap the provider
+> first, then install kro.**
+
+kro ships its CRDs in the chart, so a Helm install is all you need. The
+[`faroshq/kro-multicluster`](https://github.com/faroshq/kro-multicluster) fork
+publishes its image and chart to GHCR. The chart still defaults to the upstream
 image, so you **must** point `image.repository`/`tag` at the fork or the
 multicluster features are missing:
 
 ```sh
 KRO_VERSION=v0.0.1-mc.7   # latest faroshq/kro-multicluster release tag
+
+# kcp kubeconfig scoped to the provider workspace
+# (root:kedge:providers:infrastructure) so kro can read the APIExportEndpointSlice
+# and watch the VW. The workspace-admin kubeconfig used to bootstrap the provider
+# works here.
+kubectl -n kro-system create secret generic kcp-kubeconfig \
+  --from-file=kubeconfig=provider-workspace.kubeconfig
 
 helm install kro oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro \
   --version "$KRO_VERSION" \
@@ -151,20 +173,38 @@ helm install kro oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro \
   --set image.repository=ghcr.io/faroshq/kro-multicluster/kro \
   --set image.tag="$KRO_VERSION" \
   --set multicluster.enabled=true \
-  --set multicluster.provider=kubeconfig   # or kcp-apiexport (see the fork's helm/values.yaml)
+  --set multicluster.provider=kcp-apiexport \
+  --set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
+  --set multicluster.kcp.apiExportEndpointSlice=infrastructure \
+  --set controller.deployToLocalRuntime=true
 ```
 
-Verify:
+`controller.deployToLocalRuntime=true` is the control-plane/data-plane split:
+the instance object + status stay in the tenant kcp workspace, while its child
+resources are materialized on this (host) runtime cluster.
+
+Verify (the controller log should report it discovered the APIExport VW URL):
 
 ```sh
 kubectl -n kro-system rollout status deploy/kro
-kubectl get crd resourcegraphdefinitions.kro.run
+kubectl -n kro-system logs deploy/kro | grep -i apiexport
 ```
 
 Then apply the RGD templates you want to expose, labeled
 `kedge.faros.sh/expose=true` (see [docs/credentials.md](docs/credentials.md)).
 
-### 2. Mint a dedicated kubeconfig for the provider
+> For a quick standalone/dev setup you can instead run kro in `kubeconfig` mode
+> against its own cluster (`--set multicluster.provider=kubeconfig`, or
+> `multicluster.enabled=false`); there kro is installed **first** and the
+> provider points at it via `centralKro.kubeconfigSecretRef` using a minted
+> kubeconfig (step 2).
+
+### 2. Mint a dedicated kubeconfig for the provider (kubeconfig mode only)
+
+> Only needed for the standalone `kubeconfig`-mode setup above, where the
+> provider talks directly to a kro cluster via `centralKro.kubeconfigSecretRef`.
+> In `kcp-apiexport` mode the provider drives tenant workspaces through its own
+> kubeconfig and kro consumes the kcp kubeconfig from step 1 — skip this.
 
 Create a ServiceAccount in the kro cluster, grant it the access the broker needs
 (namespaces, secrets, RGD discovery, and the RGD-defined instance CRs), and a

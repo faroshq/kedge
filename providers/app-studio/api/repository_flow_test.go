@@ -2695,7 +2695,7 @@ func TestCommitProjectWorkspaceFilesCommitsThroughCodeProvider(t *testing.T) {
 			if !strings.Contains(seen[projectBuildConfigPath], `"builder": "railpack"`) {
 				t.Fatalf("build config content = %q, want railpack builder", seen[projectBuildConfigPath])
 			}
-			if !strings.Contains(seen[projectBuildWorkflowPath], "iloveitaly/github-action-railpack@master") {
+			if !strings.Contains(seen[projectBuildWorkflowPath], projectBuildRailpackAction) {
 				t.Fatalf("workflow content = %q, want railpack action", seen[projectBuildWorkflowPath])
 			}
 			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":[".kedge/build.json",".github/workflows/kedge-app-studio-build.yml"],"commitSHA":"buildabcdef123456"}}}`)

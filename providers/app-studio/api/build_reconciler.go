@@ -34,6 +34,7 @@ const (
 	projectBuildArtifactName        = "kedge-app-studio-build"
 	projectBuildConfigCommitMessage = "chore(app-studio): configure Railpack build"
 	projectBuildBuilderRailpack     = "railpack"
+	projectBuildRailpackAction      = "iloveitaly/github-action-railpack@167ed71230addc378f3fb13122046c09f71c0e5f"
 )
 
 type projectBuildReconcileResponse struct {
@@ -245,7 +246,7 @@ func projectBuildConfigJSON(profile string) string {
 		Builder:       projectBuildBuilderRailpack,
 		Profile:       profile,
 		Railpack: projectBuildRailpackBlock{
-			ActionRef: "iloveitaly/github-action-railpack@master",
+			ActionRef: projectBuildRailpackAction,
 			Context:   ".",
 		},
 		CI: projectBuildCIBlock{
@@ -343,7 +344,7 @@ func projectBuildWorkflowYAML() string {
 		"          password: ${{ secrets.GITHUB_TOKEN }}",
 		"",
 		"      - name: Build and push image with Railpack",
-		"        uses: iloveitaly/github-action-railpack@master",
+		"        uses: " + projectBuildRailpackAction,
 		"        with:",
 		"          context: .",
 		"          push: true",

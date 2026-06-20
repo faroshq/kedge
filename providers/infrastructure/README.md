@@ -127,6 +127,160 @@ Open the portal at `https://<hub>/ui/providers/infrastructure/`.
 docker build -t kedge-infrastructure-provider:dev .
 ```
 
+## Central kro cluster (prerequisite)
+
+The provider brokers templates from a **central kro cluster** — it discovers
+`ResourceGraphDefinition`s there and materializes instances in per-tenant
+namespaces (`kedge-tenants-<hash>`). You point the provider at it with
+`centralKro.kubeconfigSecretRef` (see below). With no kro kubeconfig the
+provider runs in stub mode (three baked-in templates). To run for real:
+
+### 1. Deploy kro into the cluster
+
+kro ships its CRDs in the chart, so a Helm install is all you need.
+
+Vanilla kro (upstream OCI chart):
+
+```sh
+helm install kro oci://registry.k8s.io/kro/charts/kro \
+  --version <kro-version> \
+  -n kro-system --create-namespace
+```
+
+For the multicluster build (kcp-aware host/member split, used when the central
+runtime is itself driven from kcp), install the
+[`faroshq/kro-multicluster`](https://github.com/faroshq/kro-multicluster) fork's
+chart from source and enable the multicluster provider:
+
+```sh
+git clone https://github.com/faroshq/kro-multicluster
+helm install kro ./kro-multicluster/helm \
+  -n kro-system --create-namespace \
+  --set image.repository=<your-fork-image-repo> \
+  --set image.tag=<tag> \
+  --set multicluster.enabled=true \
+  --set multicluster.provider=kubeconfig   # or kcp-apiexport (see helm/values.yaml)
+```
+
+Verify:
+
+```sh
+kubectl -n kro-system rollout status deploy/kro
+kubectl get crd resourcegraphdefinitions.kro.run
+```
+
+Then apply the RGD templates you want to expose, labeled
+`kedge.faros.sh/expose=true` (see [docs/credentials.md](docs/credentials.md)).
+
+### 2. Mint a dedicated kubeconfig for the provider
+
+Create a ServiceAccount in the kro cluster, grant it the access the broker needs
+(namespaces, secrets, RGD discovery, and the RGD-defined instance CRs), and a
+long-lived token, then assemble a kubeconfig from it:
+
+```sh
+KRO_CTX=<your-kro-cluster-context>   # kubectl context for the central kro cluster
+SA=kedge-infrastructure-broker
+NS=kro-system
+
+# ServiceAccount
+kubectl --context "$KRO_CTX" -n "$NS" create serviceaccount "$SA"
+
+# RBAC. namespaces + secrets are core; resourcegraphdefinitions is discovery.
+# RGD-generated instance CRDs live in whatever API group each RGD declares, so
+# the broker needs to act on those kinds too — scope this down to your RGDs'
+# groups in production instead of the broad rule below.
+cat <<EOF | kubectl --context "$KRO_CTX" apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kedge-infrastructure-broker
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  - apiGroups: ["kro.run"]
+    resources: ["resourcegraphdefinitions"]
+    verbs: ["get", "list", "watch"]
+  # Instance CRs created from RGDs. Replace "*" with your RGDs' actual API
+  # groups/resources for least privilege.
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kedge-infrastructure-broker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kedge-infrastructure-broker
+subjects:
+  - kind: ServiceAccount
+    name: $SA
+    namespace: $NS
+EOF
+
+# Long-lived token Secret (k8s >=1.24 no longer auto-creates SA token secrets).
+cat <<EOF | kubectl --context "$KRO_CTX" apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${SA}-token
+  namespace: $NS
+  annotations:
+    kubernetes.io/service-account.name: $SA
+type: kubernetes.io/service-account-token
+EOF
+
+# Assemble the kubeconfig from the SA token + cluster CA + API endpoint.
+SERVER="$(kubectl --context "$KRO_CTX" config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+CA="$(kubectl --context "$KRO_CTX" -n "$NS" get secret ${SA}-token -o jsonpath='{.data.ca\.crt}')"
+TOKEN="$(kubectl --context "$KRO_CTX" -n "$NS" get secret ${SA}-token -o jsonpath='{.data.token}' | base64 -d)"
+
+cat > central-kro.kubeconfig <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+  - name: central-kro
+    cluster:
+      server: ${SERVER}
+      certificate-authority-data: ${CA}
+contexts:
+  - name: central-kro
+    context:
+      cluster: central-kro
+      user: ${SA}
+      namespace: ${NS}
+current-context: central-kro
+users:
+  - name: ${SA}
+    user:
+      token: ${TOKEN}
+EOF
+
+# Sanity check the minted kubeconfig.
+kubectl --kubeconfig central-kro.kubeconfig get resourcegraphdefinitions
+```
+
+> [!NOTE]
+> If the central kro API endpoint in the source context is a loopback/proxy
+> address (e.g. kind's `https://127.0.0.1:<port>`), rewrite `server:` to an
+> address reachable from the provider pod before using the kubeconfig
+> in-cluster.
+
+`central-kro.kubeconfig` is the file you feed to the provider — create the
+Secret it references (see "Deploy with Helm" → `centralKro.kubeconfigSecretRef`):
+
+```sh
+kubectl -n kedge-prod-provider-infrastructure create secret generic central-kro-kubeconfig \
+  --from-file=kubeconfig=central-kro.kubeconfig
+```
+
 ## Deploy with Helm
 
 There are two ways the provider gets its runtime kubeconfig (the

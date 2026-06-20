@@ -122,7 +122,7 @@ helm upgrade --install kuery oci://ghcr.io/faroshq/charts/kedge-kuery-provider:0
   --set hub.url=https://kedge-kedge-hub.kedge-prod.svc.cluster.local:9443 \
   --set hub.insecure=true \
   --set hub.tokenSecretRef.name="" \
-  --set apiExport.edgesIdentityHash="9ccae1ffb56499c0ead8799eda1d1a7e93d519c9e0ae63d76897517cc114a237" \
+  --set apiExport.edgesIdentityHash="<identity-hash>" \
   --set catalogEntry.enabled=true \
   --set store.driver=postgres \
   --set store.persistence.enabled=false \

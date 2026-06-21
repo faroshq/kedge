@@ -169,7 +169,7 @@ gateway_ip = '10.96.2.2'
 # and editing portal code doesn't rebuild Go until the dist actually changes.
 local_resource(
     'portal-build',
-    cmd='make build-portal && rm -rf pkg/hub/portal/dist && cp -r portal/dist pkg/hub/portal/',
+    cmd='make build-portal && mkdir -p pkg/hub/portal && rm -rf pkg/hub/portal/dist && cp -r portal/dist pkg/hub/portal/dist',
     deps=[
         'portal/src',
         'portal/package.json',

@@ -61,7 +61,9 @@ build-hub: build-mcp-provider-portal build-kubernetes-edges-provider-portal buil
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
 build-hub-portal: build-portal ## Build hub with embedded portal
-	cp -r portal/dist pkg/hub/portal/
+	mkdir -p pkg/hub/portal
+	rm -rf pkg/hub/portal/dist
+	cp -r portal/dist pkg/hub/portal/dist
 	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
 
 build-portal: portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal ## Build the portal Vue.js SPA (and built-in provider micro-frontends it depends on)

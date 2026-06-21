@@ -1,4 +1,4 @@
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-sandbox-runner docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-sandbox-provider build-sandbox-provider-portal codegen-sandbox-provider run-provider-sandbox install-provider-sandbox init-provider-sandbox uninstall-provider-sandbox load-sandbox-runner-image build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure portal-provider-symlinks build-mcp-provider-portal build-kubernetes-edges-provider-portal build-server-edges-provider-portal e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -137,6 +137,12 @@ build-app-studio-provider-portal: ## Build the App Studio provider's micro-front
 build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
 	cd providers/app-studio && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider .
 
+build-sandbox-provider-portal: ## Build the Sandbox provider's micro-frontend (Vite + Vue → portal/dist)
+	cd providers/sandbox/portal && npm install --no-audit --no-fund && npm run build
+
+build-sandbox-provider: build-sandbox-provider-portal ## Build the Sandbox provider binary (portal embedded)
+	cd providers/sandbox && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/sandbox-provider .
+
 build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + Vue → portal/dist)
 	cd providers/code/portal && npm install --no-audit --no-fund && npm run build
 
@@ -183,6 +189,17 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 	   providers/app-studio/deploy/chart/files/schemas/projects.ai.kedge.faros.sh.yaml
 	./hack/ensure-boilerplate.sh
 
+codegen-sandbox-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the Sandbox provider's local API (+ manifest + chart schema)
+	@mkdir -p providers/sandbox/config/crds providers/sandbox/config/kcp providers/sandbox/deploy/chart/files/schemas
+	cd providers/sandbox && \
+		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
+		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
+			output:crd:artifacts:config=$(CURDIR)/providers/sandbox/config/crds
+	./$(KCP_APIGEN_GEN) --input-dir providers/sandbox/config/crds --output-dir providers/sandbox/config/kcp
+	cp providers/sandbox/config/kcp/apiresourceschema-devenvironments.sandbox.kedge.faros.sh.yaml \
+	   providers/sandbox/deploy/chart/files/schemas/devenvironments.sandbox.kedge.faros.sh.yaml
+	./hack/ensure-boilerplate.sh
+
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
 
@@ -209,7 +226,7 @@ verify-boilerplate: ## Verify license boilerplate on all Go files
 crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSchemas
 	./hack/update-codegen-crds.sh
 
-codegen: crds codegen-code-provider codegen-app-studio-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
+codegen: crds codegen-code-provider codegen-app-studio-provider codegen-sandbox-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
 
 verify-codegen: codegen ## Verify codegen is up to date
 	@if ! git diff --quiet HEAD; then \
@@ -1092,6 +1109,72 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
+
+# --- Sandbox provider (live development runtimes) ---
+SANDBOX_PORT ?= 8086
+SANDBOX_MANIFEST ?= providers/sandbox/manifest.yaml
+SANDBOX_PROVIDER_MANIFEST ?= providers/sandbox/provider.yaml
+SANDBOX_WORKSPACE_PATH ?= root:kedge:providers:sandbox
+SANDBOX_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/sandbox-runtime.kubeconfig
+SANDBOX_SCHEMAS_DIR ?= providers/sandbox/deploy/chart/files/schemas
+SANDBOX_RUNNER_IMAGE ?= ghcr.io/faroshq/kedge-sandbox-runner:dev
+SANDBOX_RUNNER_PLATFORM ?= linux/$(ARCH)
+
+docker-build-sandbox-runner: ## Build the provider-sandbox runtime image used by DevEnvironment pods
+	docker build -f providers/sandbox/Dockerfile \
+		--platform $(SANDBOX_RUNNER_PLATFORM) \
+		--provenance=false \
+		-t $(SANDBOX_RUNNER_IMAGE) .
+
+load-sandbox-runner-image: docker-build-sandbox-runner ## Load the sandbox runner image into the local kind runtime cluster
+	@echo ">>> loading $(SANDBOX_RUNNER_IMAGE) into kind cluster $(KRO_KIND_NAME)"
+	kind load docker-image $(SANDBOX_RUNNER_IMAGE) --name $(KRO_KIND_NAME)
+
+run-provider-sandbox: build-sandbox-provider ## Run the Sandbox provider (requires: make run-hub-embedded-static + make install-provider-sandbox)
+	@echo "Starting Sandbox provider on :$(SANDBOX_PORT)"
+	PORT=$(SANDBOX_PORT) \
+	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=sandbox \
+	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( [ -f "$(SANDBOX_RUNTIME_KUBECONFIG)" ] && echo "$(SANDBOX_RUNTIME_KUBECONFIG)" )} \
+	SANDBOX_RUNTIME_KUBECONFIG=$${SANDBOX_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
+		$(BINDIR)/sandbox-provider serve
+
+install-provider-sandbox: ## Apply Sandbox Provider + CatalogEntry into root:kedge:providers
+	@test -f $(KROMC_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(SANDBOX_PROVIDER_MANIFEST) -f $(SANDBOX_MANIFEST)
+
+init-provider-sandbox: build-sandbox-provider ## Bootstrap Sandbox APIExport + write dev runtime kubeconfig
+	@test -f $(KROMC_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@mkdir -p $(KCP_DATA_DIR)
+	@echo "Writing dev kubeconfig $(SANDBOX_RUNTIME_KUBECONFIG) (workspace $(SANDBOX_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
+	@kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) config view --minify --flatten > $(SANDBOX_RUNTIME_KUBECONFIG)
+	@CL=$$(kubectl --kubeconfig=$(SANDBOX_RUNTIME_KUBECONFIG) config view -o jsonpath='{.clusters[0].name}'); \
+		kubectl --kubeconfig=$(SANDBOX_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
+			--server=$(KROMC_KCP_SERVER)/clusters/$(SANDBOX_WORKSPACE_PATH) \
+			--insecure-skip-tls-verify=true >/dev/null
+	KEDGE_PROVIDER_KUBECONFIG=$(SANDBOX_RUNTIME_KUBECONFIG) \
+	SANDBOX_WORKSPACE_PATH=$(SANDBOX_WORKSPACE_PATH) \
+	KEDGE_SCHEMAS_DIR=$(SANDBOX_SCHEMAS_DIR) \
+		$(BINDIR)/sandbox-provider init
+
+uninstall-provider-sandbox: ## Delete Sandbox CatalogEntry + Provider
+	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(SANDBOX_MANIFEST) -f $(SANDBOX_PROVIDER_MANIFEST)
 
 ## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.

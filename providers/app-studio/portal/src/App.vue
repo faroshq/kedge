@@ -18,6 +18,7 @@ import {
   MessageSquare,
   PanelRight,
   Plus,
+  RefreshCw,
   Search,
   Send,
   Settings2,
@@ -77,7 +78,7 @@ type ProjectMessageView = ProjectMessage & {
   actions?: ProjectAssistantActionView[]
   interrupt?: ProjectAssistantUIInterruptRequest
 }
-type WorkbenchTab = 'review' | 'providers'
+type WorkbenchTab = 'preview' | 'review' | 'providers'
 interface PendingApprovalView {
   message: ProjectMessageView
   interrupt: ProjectAssistantUIInterruptRequest
@@ -249,6 +250,10 @@ const deletingProject = ref(false)
 const prompt = ref('')
 const projectQuery = ref('')
 const providerQuery = ref('')
+const developmentSyncBusy = ref(false)
+const developmentSyncStatus = ref<string | null>(null)
+const developmentSyncError = ref<string | null>(null)
+const developmentPreviewFrameKey = ref(0)
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
@@ -509,6 +514,32 @@ const filteredProviderTools = computed(() => {
   )
 })
 
+const developmentEnvironment = computed(() => {
+  const envs = selected.value?.environments ?? []
+  return (
+    envs.find((env) => env.name === 'development') ??
+    envs.find((env) => env.mode === 'live') ??
+    null
+  )
+})
+
+const developmentBinding = computed(() => {
+  const bindings = developmentEnvironment.value?.bindings ?? []
+  return (
+    bindings.find((binding) => binding.name === 'dev' && binding.provider === 'sandbox') ??
+    bindings.find((binding) => binding.provider === 'sandbox') ??
+    bindings[0] ??
+    null
+  )
+})
+
+const developmentPreviewURL = computed(() => {
+  const binding = developmentBinding.value
+  return binding?.previewURL || binding?.outputs?.previewURL || binding?.url || ''
+})
+
+const developmentPreviewPhase = computed(() => developmentEnvironment.value?.phase || developmentBinding.value?.phase || 'Pending')
+
 onMounted(() => {
   void load()
   void loadProviders()
@@ -528,6 +559,15 @@ watch(
   () => {
     void loadProviders()
     void loadLLMSettings()
+  },
+)
+
+watch(
+  () => selected.value?.name,
+  () => {
+    developmentSyncStatus.value = null
+    developmentSyncError.value = null
+    developmentPreviewFrameKey.value += 1
   },
 )
 
@@ -1099,6 +1139,24 @@ async function refreshSelectedProjectConversation(projectName: string) {
   selected.value = project
   messages.value = loadedMessages.map(toProjectMessageView)
   projects.value = projectList
+}
+
+async function syncDevelopmentPreview() {
+  const projectName = selected.value?.name
+  if (!projectName || developmentSyncBusy.value) return
+  developmentSyncBusy.value = true
+  developmentSyncStatus.value = null
+  developmentSyncError.value = null
+  try {
+    await api.syncDevelopment(props.ctx, projectName)
+    selected.value = await api.getProject(props.ctx, projectName)
+    developmentPreviewFrameKey.value += 1
+    developmentSyncStatus.value = 'Synced'
+  } catch (e) {
+    developmentSyncError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    developmentSyncBusy.value = false
+  }
 }
 
 function workbenchTabButtonClass(tab: WorkbenchTab): string {
@@ -2817,6 +2875,16 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             <button
               type="button"
               class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
+              :class="workbenchTabButtonClass('preview')"
+              title="Preview"
+              @click="workbenchTab = 'preview'"
+            >
+              <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Preview
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition"
               :class="workbenchTabButtonClass('review')"
               title="Review"
               @click="workbenchTab = 'review'"
@@ -2839,7 +2907,56 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
       </header>
 
       <div v-if="!selectedTool" class="min-h-0 flex-1 overflow-auto p-3">
-        <div v-if="workbenchTab === 'review'" class="grid gap-3">
+        <div v-if="workbenchTab === 'preview'" class="flex h-full min-h-[420px] flex-col gap-3">
+          <div class="flex min-w-0 items-center justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-2">
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+                <AppWindow class="h-4 w-4 text-accent" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0">
+                <div class="truncate text-[13px] font-semibold text-text-primary">Development</div>
+                <div class="truncate text-[12px] text-text-muted">{{ developmentBinding?.provider || 'sandbox' }}</div>
+              </div>
+              <StatusBadge :status="developmentPreviewPhase" />
+            </div>
+            <button
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="!selected || !developmentBinding || developmentSyncBusy"
+              title="Sync"
+              @click="syncDevelopmentPreview"
+            >
+              <Loader2 v-if="developmentSyncBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+              <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Sync
+            </button>
+          </div>
+          <div v-if="developmentSyncError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
+            {{ developmentSyncError }}
+          </div>
+          <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success">
+            {{ developmentSyncStatus }}
+          </div>
+          <div v-if="developmentPreviewURL" class="min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-surface">
+            <iframe
+              :key="developmentPreviewFrameKey"
+              :src="developmentPreviewURL"
+              title="Development preview"
+              class="h-full min-h-[360px] w-full border-0 bg-white"
+            />
+          </div>
+          <div v-else class="flex min-h-[360px] flex-1 items-center justify-center rounded-md border border-border-subtle bg-surface/80 p-6 text-center">
+            <div class="max-w-xs">
+              <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+                <AppWindow class="h-5 w-5 text-text-muted" :stroke-width="1.75" />
+              </div>
+              <div class="mt-3 text-[13px] font-semibold text-text-primary">Preview unavailable</div>
+              <div class="mt-1 text-[12px] leading-5 text-text-muted">Sandbox binding is not ready.</div>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="workbenchTab === 'review'" class="grid gap-3">
           <div v-if="pendingFollowUp" class="grid gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3">
             <div class="flex min-w-0 items-start justify-between gap-3">
               <div class="min-w-0">

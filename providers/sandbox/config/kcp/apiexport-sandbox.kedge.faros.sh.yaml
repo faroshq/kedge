@@ -1,0 +1,12 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: sandbox.kedge.faros.sh
+spec:
+  resources:
+  - group: sandbox.kedge.faros.sh
+    name: devenvironments
+    schema: v260621-b6870ca.devenvironments.sandbox.kedge.faros.sh
+    storage:
+      crd: {}
+status: {}

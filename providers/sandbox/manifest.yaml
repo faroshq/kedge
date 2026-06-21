@@ -1,0 +1,21 @@
+# sandbox provider — live development runtimes for App Studio.
+---
+apiVersion: providers.kedge.faros.sh/v1alpha1
+kind: CatalogEntry
+metadata:
+  name: sandbox
+spec:
+  displayName: "Sandbox"
+  description: "Live development runtimes, file sync, logs, restarts, and preview URLs for App Studio projects."
+  vendor: "kedge"
+  version: "0.1.0"
+  category: "Developer"
+  iconURL: "/ui/providers/sandbox/icon.svg"
+  ui:
+    url: "http://localhost:8086"
+    indexPath: "/"
+  backend:
+    url: "http://localhost:8086"
+    healthPath: "/healthz"
+  apiExport:
+    name: "sandbox.kedge.faros.sh"

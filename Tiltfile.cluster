@@ -418,6 +418,7 @@ QUICKSTART_REWRITE_CMD, QUICKSTART_MANIFEST_REWRITTEN = rewrite_manifest_cmd('pr
 INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/infrastructure/manifest.yaml')
 APP_STUDIO_REWRITE_CMD, APP_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/app-studio/manifest.yaml')
 CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
+SANDBOX_REWRITE_CMD, SANDBOX_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/sandbox/manifest.yaml')
 KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
 
 # --- providers-quickstart ---
@@ -874,6 +875,88 @@ local_resource(
     auto_init=False,
     resource_deps=['kedge-hub'],
     labels=['providers-code'],
+)
+
+# --- providers-sandbox (live development runtimes) ---
+local_resource(
+    'sandbox-runner-image',
+    cmd=('KRO_KIND_NAME={name} make load-sandbox-runner-image').format(
+        name=cluster_name),
+    deps=[
+        'providers/sandbox/Dockerfile',
+        'providers/sandbox/go.mod',
+        'providers/sandbox/go.sum',
+        'providers/sandbox/runner',
+    ],
+    labels=['providers-sandbox'],
+)
+
+local_resource(
+    'sandbox',
+    cmd='make build-sandbox-provider',
+    serve_cmd=('SANDBOX_RUNTIME_KUBECONFIG={kc} KRO_KIND_KUBECONFIG={kc} ' +
+               'make run-provider-sandbox').format(kc=KIND_HOST_KUBECONFIG),
+    deps=[
+        'providers/sandbox/main.go',
+        'providers/sandbox/heartbeat.go',
+        'providers/sandbox/assets.go',
+        'providers/sandbox/controller_manager.go',
+        'providers/sandbox/init_cmd.go',
+        'providers/sandbox/apis',
+        'providers/sandbox/controller',
+        'providers/sandbox/install',
+        'providers/sandbox/server',
+        'providers/sandbox/tenant',
+        'providers/sandbox/runner',
+        'providers/sandbox/portal/src',
+        'providers/sandbox/portal/package.json',
+        'providers/sandbox/portal/vite.config.ts',
+        'providers/sandbox/manifest.yaml',
+        'providers/sandbox/go.mod',
+        'providers/sandbox/go.sum',
+        '.kcp/sandbox-runtime.kubeconfig',
+    ],
+    resource_deps=['kedge-hub', 'sandbox-runner-image'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8086, path='/healthz'),
+    ),
+    labels=['providers-sandbox'],
+)
+
+local_resource(
+    'sandbox-register',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'SANDBOX_MANIFEST={mf} make install-provider-sandbox').format(
+             rewrite=SANDBOX_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=SANDBOX_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-sandbox'],
+)
+
+local_resource(
+    'sandbox-init',
+    cmd=('KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'make init-provider-sandbox').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'sandbox-register'],
+    labels=['providers-sandbox'],
+)
+
+local_resource(
+    'sandbox-unregister',
+    cmd=('{rewrite} && KROMC_KCP_KUBECONFIG={kc} KROMC_KCP_SERVER={sv} ' +
+         'SANDBOX_MANIFEST={mf} make uninstall-provider-sandbox').format(
+             rewrite=SANDBOX_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=SANDBOX_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-sandbox'],
 )
 
 # ---------------------------------------------------------------------------

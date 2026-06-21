@@ -1,0 +1,7 @@
+# Provider — declarative provisioning record (admin.kedge.faros.sh, admin-only).
+apiVersion: admin.kedge.faros.sh/v1alpha1
+kind: Provider
+metadata:
+  name: sandbox
+spec:
+  displayName: "Sandbox"

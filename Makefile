@@ -1117,6 +1117,7 @@ SANDBOX_PORT ?= 8086
 SANDBOX_MANIFEST ?= providers/sandbox/manifest.yaml
 SANDBOX_PROVIDER_MANIFEST ?= providers/sandbox/provider.yaml
 SANDBOX_WORKSPACE_PATH ?= root:kedge:providers:sandbox
+SANDBOX_KCP_KUBECONFIG ?= $(KROMC_KCP_KUBECONFIG)
 SANDBOX_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/sandbox-runtime.kubeconfig
 SANDBOX_SCHEMAS_DIR ?= providers/sandbox/deploy/chart/files/schemas
 SANDBOX_RUNNER_IMAGE ?= ghcr.io/faroshq/kedge-sandbox-runner:dev
@@ -1139,7 +1140,7 @@ run-provider-sandbox: build-sandbox-provider ## Run the Sandbox provider (requir
 	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=sandbox \
-	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( [ -f "$(SANDBOX_RUNTIME_KUBECONFIG)" ] && echo "$(SANDBOX_RUNTIME_KUBECONFIG)" )} \
+	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(SANDBOX_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 	SANDBOX_RUNTIME_KUBECONFIG=$${SANDBOX_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 		$(BINDIR)/sandbox-provider serve
 

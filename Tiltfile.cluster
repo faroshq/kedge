@@ -894,8 +894,11 @@ local_resource(
 local_resource(
     'sandbox',
     cmd='make build-sandbox-provider',
-    serve_cmd=('SANDBOX_RUNTIME_KUBECONFIG={kc} KRO_KIND_KUBECONFIG={kc} ' +
-               'make run-provider-sandbox').format(kc=KIND_HOST_KUBECONFIG),
+    # Provider/tenant API calls need the kcp front-proxy kubeconfig; runner
+    # orchestration stays pointed at the local kind runtime cluster.
+    serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kcp} SANDBOX_RUNTIME_KUBECONFIG={kind} ' +
+               'KRO_KIND_KUBECONFIG={kind} make run-provider-sandbox').format(
+                   kcp=KCP_ADMIN_KUBECONFIG, kind=KIND_HOST_KUBECONFIG),
     deps=[
         'providers/sandbox/main.go',
         'providers/sandbox/heartbeat.go',

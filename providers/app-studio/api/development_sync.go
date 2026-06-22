@@ -139,6 +139,12 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, id identity, 
 	if id.tenantPath != "" {
 		req.Header.Set("X-Kedge-Tenant", id.tenantPath)
 	}
+	if id.orgUUID != "" {
+		req.Header.Set("X-Kedge-Org", id.orgUUID)
+	}
+	if id.workspaceUUID != "" {
+		req.Header.Set("X-Kedge-Workspace", id.workspaceUUID)
+	}
 
 	client := &http.Client{Timeout: projectSandboxSyncTimeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
 	resp, err := client.Do(req)

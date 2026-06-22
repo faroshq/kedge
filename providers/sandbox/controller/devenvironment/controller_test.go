@@ -169,6 +169,20 @@ func TestDeploymentAvailabilityDrivesRunningStatus(t *testing.T) {
 	}
 }
 
+func TestRuntimeStartCommandDefaultSupportsNodeStartFallback(t *testing.T) {
+	env := &sandboxv1alpha1.DevEnvironment{}
+	got := runtimeStartCommand(env)
+	for _, want := range []string{
+		"npm install --no-audit --no-fund",
+		"npm run dev -- --host 0.0.0.0 --port \"$PORT\"",
+		"npm start",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtimeStartCommand() = %q, want substring %q", got, want)
+		}
+	}
+}
+
 func TestRuntimeObjectNamesAreDeterministicAndKubernetesSafe(t *testing.T) {
 	ns := runtimeNamespace("root:kedge:tenants:org:workspace")
 	if !strings.HasPrefix(ns, "sandbox-") || strings.Contains(ns, ":") || len(ns) > 63 {

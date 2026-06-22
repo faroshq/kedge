@@ -42,8 +42,11 @@ const (
 	LabelTenantHash          = "sandbox.kedge.faros.sh/tenant-hash"
 	AnnotationLogicalCluster = "sandbox.kedge.faros.sh/logical-cluster"
 
-	DefaultRunnerImage    = "ghcr.io/faroshq/kedge-sandbox-runner:dev"
-	DefaultStartCommand   = "npm run dev -- --host 0.0.0.0"
+	DefaultRunnerImage  = "ghcr.io/faroshq/kedge-sandbox-runner:dev"
+	DefaultStartCommand = `export PORT="${SANDBOX_PORT:-3000}"; ` +
+		`if [ -f package.json ]; then ` +
+		`npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port "$PORT" || npm start); ` +
+		`else npx --yes vite --host 0.0.0.0 --port "$PORT"; fi`
 	DefaultRuntimePort    = int32(3000)
 	DefaultRuntimeWorkDir = "/workspace"
 )

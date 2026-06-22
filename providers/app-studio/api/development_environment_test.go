@@ -129,6 +129,8 @@ func TestProjectDevelopmentSyncTargetReadsSandboxBindingName(t *testing.T) {
 func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToSandbox(t *testing.T) {
 	var gotAuth string
 	var gotTenant string
+	var gotOrg string
+	var gotWorkspace string
 	var gotFiles []map[string]string
 	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.Path, "/services/providers/sandbox/api/dev-environments/todo-dev/sync"; got != want {
@@ -136,6 +138,8 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToSandbox(t *testing.T) 
 		}
 		gotAuth = r.Header.Get("Authorization")
 		gotTenant = r.Header.Get("X-Kedge-Tenant")
+		gotOrg = r.Header.Get("X-Kedge-Org")
+		gotWorkspace = r.Header.Get("X-Kedge-Workspace")
 		var body struct {
 			Files   []map[string]string `json:"files"`
 			Restart string              `json:"restart"`
@@ -177,6 +181,12 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToSandbox(t *testing.T) 
 	}
 	if got, want := gotTenant, id.tenantPath; got != want {
 		t.Fatalf("X-Kedge-Tenant = %q, want %q", got, want)
+	}
+	if got, want := gotOrg, id.orgUUID; got != want {
+		t.Fatalf("X-Kedge-Org = %q, want %q", got, want)
+	}
+	if got, want := gotWorkspace, id.workspaceUUID; got != want {
+		t.Fatalf("X-Kedge-Workspace = %q, want %q", got, want)
 	}
 	if len(gotFiles) != 1 || gotFiles[0]["path"] != "src/App.tsx" || gotFiles[0]["content"] != "hello\n" {
 		t.Fatalf("files = %#v, want src/App.tsx content", gotFiles)

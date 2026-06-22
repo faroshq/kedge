@@ -26,36 +26,53 @@ spec:
   # its outputs (URL, DB secret) land.
   agent:
     usage: |
-      Provisions a 3-tier web app — a public frontend (UI), an internal backend
-      API, and a PostgreSQL database — served on ONE public URL. Choose this when
-      the user wants to deploy a containerized web app with a database behind a
-      single endpoint.
+      Deploys a 3-tier web app on ONE public URL — UI at `/`, API at `/api/*`, and
+      a managed PostgreSQL database. Choose this when the user wants to ship a
+      containerized web app backed by a relational database behind a single
+      endpoint, and you can supply (or build) the two container images.
 
-      Required inputs: frontendImage and backendImage (container images). Optional:
-      name (resource prefix + hostname prefix), frontend/backendPort + Replicas,
-      database.version (15|16), and the oidc block (auth).
+      WHAT YOU PROVIDE: exactly two images — frontendImage and backendImage. The
+      platform runs them, wires them to each other and to a Postgres database it
+      provisions, exposes them on one URL, and (in byo mode) authenticates in
+      front. You do NOT create the database, networking, Secrets, or ingress — you
+      only supply the two images, which MUST honor this runtime contract:
 
-      Single-URL routing: `/` serves the UI (frontendImage); `/api/*` is the
-      backend (backendImage). The backend reaches Postgres via the DATABASE_URL
-      it is given; the frontend calls `/api` from the browser (same origin).
+      BACKEND (backendImage) — the platform routes `/api/*` here:
+        • Reads env var DATABASE_URL — a ready-to-use PostgreSQL connection string
+          (postgres:// URI; port 5432, database `appdb`, user `appuser`). Connect
+          using it directly; do NOT read any Kubernetes Secret yourself.
+        • The database engine is PostgreSQL, major version = the database.version
+          input ("15" or "16", default "16"). It starts EMPTY — create your schema
+          / run migrations on startup, idempotently (safe to re-run).
+        • Postgres may not be reachable the instant the backend starts (it boots
+          alongside you) — RETRY the initial connection rather than exiting.
+        • Listens on backendPort (input, default 8080). Serve the API under the
+          `/api/` path prefix; the platform sends `/api/*` here and everything else
+          to the frontend. (A health endpoint is recommended.)
 
-      Exposure & auth — set via oidc.mode:
-        - none: NO auth gate. The Ingress routes `/`→frontend and `/api`→backend
-          directly. Demo/dev only — anyone with the URL can reach it.
-        - byo: guarded by oauth2-proxy with the caller's OIDC IdP. Set
-          oidc.issuerURL + oidc.clientID and supply the client secret (see
-          prerequisites). oauth2-proxy path-routes `/` and `/api` behind login.
-        - platform: kedge SSO — NOT yet supported.
+      FRONTEND (frontendImage) — the platform routes `/` here:
+        • Listens on frontendPort (input, default 8080); serves the UI on `/`.
+        • Calls the backend from the BROWSER at `/api/*` on the SAME origin. There
+          is no separate backend host/URL — do NOT hardcode one or expect a backend
+          env var; the platform path-routes `/api`. The frontend has no DB access.
 
-      The platform computes the public hostname and stamps spec.expose.fqdn and
-      spec.credentialsSecretName automatically — never set those by hand.
+      Exposure & auth — set via the oidc.mode input:
+        • none — no auth gate; the URL is public. Demo/dev only.
+        • byo  — oauth2-proxy gates BOTH `/` and `/api` with the caller's OIDC IdP
+          (set oidc.issuerURL + oidc.clientID; client secret via prerequisites).
+        • platform — kedge SSO; NOT yet supported.
+
+      Inputs you set: frontendImage, backendImage (required); name, frontendPort,
+      backendPort, frontendReplicas, backendReplicas, database.version, oidc.*.
+      The platform stamps spec.expose.fqdn and spec.credentialsSecretName — never
+      set those yourself.
     prerequisites:
-      - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, with key 'oidc_client_secret' holding the OAuth2 client secret."
+      - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, key 'oidc_client_secret' = the OAuth2 client secret for your oidc.clientID."
     outputs:
-      - "status.url — the public HTTPS URL the app is served on (status.host is the bare hostname)."
-      - "Secret '<name>-db-credentials' in the instance namespace — the Postgres connection. Key 'uri' is the full postgres:// string; also host, port, user, dbname, password."
-      - "status.redirectURL — the OIDC callback URL to register with the IdP (byo mode)."
-      - "Per-tier readiness: status.frontendReady / backendReady / databaseReady / oauthReady."
+      - "status.url — the public HTTPS URL the app is served on (status.host = bare hostname)."
+      - "status.redirectURL — the OIDC redirect/callback URL to register with your IdP (byo mode)."
+      - "Per-tier readiness: status.frontendReady / backendReady / databaseReady / oauthReady (ready replica counts)."
+      - "The backend's DATABASE_URL env is sourced from Secret '<name>-db-credentials' (key 'uri') in the instance namespace — informational; the image just reads the DATABASE_URL env, it never reads the Secret."
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1

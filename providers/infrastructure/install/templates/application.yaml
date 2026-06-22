@@ -21,6 +21,41 @@ spec:
       version: "16"
     oidc:
       mode: none
+  # Operational guidance for AI agents discovering this template over MCP. Not
+  # shown in the portal UI — it tells an LLM how to use the template and where
+  # its outputs (URL, DB secret) land.
+  agent:
+    usage: |
+      Provisions a 3-tier web app — a public frontend (UI), an internal backend
+      API, and a PostgreSQL database — served on ONE public URL. Choose this when
+      the user wants to deploy a containerized web app with a database behind a
+      single endpoint.
+
+      Required inputs: frontendImage and backendImage (container images). Optional:
+      name (resource prefix + hostname prefix), frontend/backendPort + Replicas,
+      database.version (15|16), and the oidc block (auth).
+
+      Single-URL routing: `/` serves the UI (frontendImage); `/api/*` is the
+      backend (backendImage). The backend reaches Postgres via the DATABASE_URL
+      it is given; the frontend calls `/api` from the browser (same origin).
+
+      Exposure & auth — set via oidc.mode:
+        - none: NO auth gate. The Ingress routes `/`→frontend and `/api`→backend
+          directly. Demo/dev only — anyone with the URL can reach it.
+        - byo: guarded by oauth2-proxy with the caller's OIDC IdP. Set
+          oidc.issuerURL + oidc.clientID and supply the client secret (see
+          prerequisites). oauth2-proxy path-routes `/` and `/api` behind login.
+        - platform: kedge SSO — NOT yet supported.
+
+      The platform computes the public hostname and stamps spec.expose.fqdn and
+      spec.credentialsSecretName automatically — never set those by hand.
+    prerequisites:
+      - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, with key 'oidc_client_secret' holding the OAuth2 client secret."
+    outputs:
+      - "status.url — the public HTTPS URL the app is served on (status.host is the bare hostname)."
+      - "Secret '<name>-db-credentials' in the instance namespace — the Postgres connection. Key 'uri' is the full postgres:// string; also host, port, user, dbname, password."
+      - "status.redirectURL — the OIDC callback URL to register with the IdP (byo mode)."
+      - "Per-tier readiness: status.frontendReady / backendReady / databaseReady / oauthReady."
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1

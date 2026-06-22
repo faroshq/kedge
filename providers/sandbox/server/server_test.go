@@ -137,6 +137,86 @@ func TestPreviewTokenFromRequestSetsScopedCookieAndRedirects(t *testing.T) {
 	}
 }
 
+func TestRewritePreviewHTMLRootAbsoluteURLs(t *testing.T) {
+	basePath := "/services/providers/sandbox/api/dev-environments/todo-dev/preview/" + previewScopePrefix + "/abc123abc123abcd/"
+	raw := []byte(`<html><head><title>Todo</title></head><body><script src="/app.js"></script><a href="/tasks">Tasks</a><form action="/api/todos"></form></body></html>`)
+
+	got := string(rewritePreviewResponseBody("text/html; charset=utf-8", basePath, raw))
+
+	for _, want := range []string{
+		`<base href="` + basePath + `">`,
+		`src="` + basePath + `app.js"`,
+		`href="` + basePath + `tasks"`,
+		`action="` + basePath + `api/todos"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten HTML = %q, want substring %q", got, want)
+		}
+	}
+}
+
+func TestRewritePreviewHTMLKubernetesProxyURLs(t *testing.T) {
+	basePath := "/services/providers/sandbox/api/dev-environments/todo-dev/preview/" + previewScopePrefix + "/abc123abc123abcd/"
+	upstreamBasePath := "/api/v1/namespaces/sandbox-123/services/todo-dev-preview:preview/proxy/"
+	raw := []byte(`<html><head></head><body><script src="/api/v1/namespaces/sandbox-123/services/todo-dev-preview:preview/proxy/app.js"></script></body></html>`)
+
+	got := string(rewritePreviewResponseBody("text/html", basePath, raw, upstreamBasePath))
+
+	if want := `src="` + basePath + `app.js"`; !strings.Contains(got, want) {
+		t.Fatalf("rewritten HTML = %q, want substring %q", got, want)
+	}
+	if strings.Contains(got, basePath+"api/v1/namespaces/") {
+		t.Fatalf("rewritten HTML kept Kubernetes proxy path under scoped preview path: %q", got)
+	}
+}
+
+func TestRewritePreviewJavaScriptRootAbsoluteFetchURLs(t *testing.T) {
+	basePath := "/services/providers/sandbox/api/dev-environments/todo-dev/preview/" + previewScopePrefix + "/abc123abc123abcd/"
+	raw := []byte("fetch('/api/todos'); fetch(\"/api/todos/1\"); fetch(`/api/todos/${id}`)")
+
+	got := string(rewritePreviewResponseBody("text/javascript", basePath, raw))
+
+	for _, want := range []string{
+		`fetch('` + basePath + `api/todos')`,
+		`fetch("` + basePath + `api/todos/1")`,
+		"fetch(`" + basePath + "api/todos/${id}`)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten JavaScript = %q, want substring %q", got, want)
+		}
+	}
+}
+
+func TestPreviewRouteAllowsAppMutationMethods(t *testing.T) {
+	s := NewWithOptions(nil, nil, Options{PreviewTokenSecret: []byte("test-secret")}).(*Server)
+	token, err := s.previewSigner.sign(previewTokenPayload{
+		TenantPath:     "root:kedge:tenants:org:ws",
+		ClusterName:    "logical-cluster",
+		DevEnvironment: "todo-dev",
+	})
+	if err != nil {
+		t.Fatalf("sign preview token: %v", err)
+	}
+	scope := previewTokenScope(token)
+	cookie := &http.Cookie{
+		Name:  previewCookieName("todo-dev", scope),
+		Value: token,
+		Path:  externalScopedPreviewPath("todo-dev", scope),
+	}
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		req := httptest.NewRequest(method, "/api/dev-environments/todo-dev/preview/"+previewScopePrefix+"/"+scope+"/api/todos/1", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+
+		s.ServeHTTP(rec, req)
+
+		if got, want := rec.Code, http.StatusNotImplemented; got != want {
+			t.Fatalf("%s status = %d, want %d to confirm preview route matched", method, got, want)
+		}
+	}
+}
+
 func TestPreviewURLRouteRequiresTenantContext(t *testing.T) {
 	handler := NewWithOptions(nil, nil, Options{PreviewTokenSecret: []byte("test-secret")})
 	req := httptest.NewRequest(http.MethodGet, "/api/dev-environments/todo-dev/preview-url", nil)

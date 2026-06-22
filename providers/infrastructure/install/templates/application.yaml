@@ -354,9 +354,10 @@ spec:
                   - name: frontend
                     image: ${schema.spec.frontendImage}
                     env:
-                      # In-cluster URL of the backend tier.
+                      # In-cluster URL of the backend tier. Port is an int, so
+                      # string(...) it — CEL has no string+int concatenation.
                       - name: BACKEND_URL
-                        value: http://${schema.spec.name}-backend:${schema.spec.backendPort}
+                        value: http://${schema.spec.name}-backend:${string(schema.spec.backendPort)}
                     ports:
                       - containerPort: ${schema.spec.frontendPort}
       - id: frontendService
@@ -486,7 +487,7 @@ spec:
                       - --oidc-issuer-url=${schema.spec.oidc.issuerURL}
                       - --client-id=${schema.spec.oidc.clientID}
                       - --redirect-url=https://${schema.spec.expose.fqdn}/oauth2/callback
-                      - --upstream=http://${schema.spec.name}-frontend:${schema.spec.frontendPort}
+                      - --upstream=http://${schema.spec.name}-frontend:${string(schema.spec.frontendPort)}
                       - --http-address=0.0.0.0:4180
                       - --scope=${schema.spec.oidc.scopes}
                       # v1: allow any successfully-authenticated user. In

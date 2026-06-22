@@ -365,11 +365,9 @@ spec:
                 containers:
                   - name: frontend
                     image: ${schema.spec.frontendImage}
-                    env:
-                      # In-cluster URL of the backend tier. Port is an int, so
-                      # string(...) it — CEL has no string+int concatenation.
-                      - name: BACKEND_URL
-                        value: http://${schema.spec.name}-backend:${string(schema.spec.backendPort)}
+                    # UI only — it calls the backend from the browser at
+                    # /api/* on the same origin (the exposure layer routes /api
+                    # to the backend), so no BACKEND_URL / server-side proxy.
                     ports:
                       - containerPort: ${schema.spec.frontendPort}
       - id: frontendService
@@ -499,6 +497,12 @@ spec:
                       - --oidc-issuer-url=${schema.spec.oidc.issuerURL}
                       - --client-id=${schema.spec.oidc.clientID}
                       - --redirect-url=https://${schema.spec.expose.fqdn}/oauth2/callback
+                      # Path-routed upstreams, both behind this gate: /api/* →
+                      # backend, everything else → frontend. oauth2-proxy picks
+                      # the longest matching path prefix. This is the byo-mode
+                      # equivalent of the Ingress /api path used in mode=none, and
+                      # keeps the backend authenticated (never exposed directly).
+                      - --upstream=http://${schema.spec.name}-backend:${string(schema.spec.backendPort)}/api/
                       - --upstream=http://${schema.spec.name}-frontend:${string(schema.spec.frontendPort)}
                       - --http-address=0.0.0.0:4180
                       - --scope=${schema.spec.oidc.scopes}
@@ -573,6 +577,34 @@ spec:
                           name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-frontend" : schema.spec.name + "-oauth"}'
                           port:
                             number: '${schema.spec.oidc.mode == "none" ? schema.spec.frontendPort : 4180}'
+
+      # In mode=none there is no oauth2-proxy to path-route, so a second Ingress
+      # adds /api → backend alongside the "/" → frontend rule above (same host;
+      # the ingress controller merges them and longest-prefix wins). Gated to
+      # none — in byo this path would bypass the gate, so there oauth2-proxy does
+      # the /api routing instead (see its upstreams).
+      - id: ingressAPI
+        includeWhen:
+          - '${schema.spec.oidc.mode == "none"}'
+        template:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: ${schema.spec.name}-api
+            namespace: default
+          spec:
+            ingressClassName: ${kedge.ingressClass}
+            rules:
+              - host: ${schema.spec.expose.fqdn}
+                http:
+                  paths:
+                    - path: /api
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: ${schema.spec.name}-backend
+                          port:
+                            number: ${schema.spec.backendPort}
     # Projected onto the instance in the tenant's kcp workspace. url/host are
     # read from the Ingress (this kro fork forbids ${schema.*} in status — status
     # may reference resources only — so we source the controller-stamped fqdn from

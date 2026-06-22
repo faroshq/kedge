@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +19,10 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 )
 
 func TestRuntimeClusterNamePrefersLogicalClusterAnnotation(t *testing.T) {
@@ -146,6 +149,43 @@ func TestPreviewURLRouteRequiresTenantContext(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "tenant context missing") {
 		t.Fatalf("body = %q, want tenant context missing", rec.Body.String())
+	}
+}
+
+func TestPreviewReadinessReturnsNotReadyWithoutRuntimeEndpoints(t *testing.T) {
+	s := NewWithOptions(nil, nil, Options{PreviewTokenSecret: []byte("test-secret")}).(*Server)
+	s.runtimeClient = kubernetesfake.NewSimpleClientset()
+
+	got := s.previewReadiness(context.Background(), "logical-cluster", "todo-dev")
+
+	if got.Ready {
+		t.Fatal("previewReadiness returned ready without runtime endpoints")
+	}
+	if got.PreviewURL != "" {
+		t.Fatalf("previewURL = %q, want empty when not ready", got.PreviewURL)
+	}
+	if got.Message == "" {
+		t.Fatal("message is empty, want user-facing not-ready message")
+	}
+}
+
+func TestPreviewReadinessReturnsReadyWithReadyEndpoint(t *testing.T) {
+	clusterName := "logical-cluster"
+	s := NewWithOptions(nil, nil, Options{PreviewTokenSecret: []byte("test-secret")}).(*Server)
+	s.runtimeClient = kubernetesfake.NewSimpleClientset(&corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName("todo-dev"),
+			Namespace: runtimeNamespace(clusterName),
+		},
+		Subsets: []corev1.EndpointSubset{{
+			Addresses: []corev1.EndpointAddress{{IP: "127.0.0.1"}},
+		}},
+	})
+
+	got := s.previewReadiness(context.Background(), clusterName, "todo-dev")
+
+	if !got.Ready {
+		t.Fatalf("previewReadiness returned not ready: %#v", got)
 	}
 }
 

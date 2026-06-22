@@ -57,11 +57,21 @@ type projectDevelopmentSyncResponse struct {
 
 type projectDevelopmentPreviewAuthorizeResponse struct {
 	Target     projectDevelopmentSyncTargetInfo `json:"target"`
-	PreviewURL string                           `json:"previewURL"`
+	Ready      bool                             `json:"ready"`
+	PreviewURL string                           `json:"previewURL,omitempty"`
+	Message    string                           `json:"message,omitempty"`
+	Reason     string                           `json:"reason,omitempty"`
 }
 
 type projectSandboxPreviewURLResponse struct {
-	PreviewURL string `json:"previewURL"`
+	Ready      bool   `json:"ready"`
+	PreviewURL string `json:"previewURL,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+type projectSandboxStatusResponse struct {
+	Reason string `json:"reason"`
 }
 
 func projectDevelopmentSyncTarget(p *aiv1alpha1.Project) (projectDevelopmentSyncTargetInfo, bool) {
@@ -130,12 +140,18 @@ func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *ht
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox development environment binding")
 		return
 	}
-	previewURL, err := s.authorizeProjectDevelopmentPreviewTarget(r.Context(), id, target)
+	preview, err := s.authorizeProjectDevelopmentPreviewTarget(r.Context(), id, target)
 	if err != nil {
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, projectDevelopmentPreviewAuthorizeResponse{Target: target, PreviewURL: previewURL})
+	writeJSON(w, http.StatusOK, projectDevelopmentPreviewAuthorizeResponse{
+		Target:     target,
+		Ready:      preview.Ready,
+		PreviewURL: preview.PreviewURL,
+		Message:    preview.Message,
+		Reason:     preview.Reason,
+	})
 }
 
 func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
@@ -193,14 +209,14 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, id identity, 
 	return json.RawMessage(body), nil
 }
 
-func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, id identity, target projectDevelopmentSyncTargetInfo) (string, error) {
+func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, id identity, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
 	endpoint, err := s.sandboxPreviewURLEndpoint(target)
 	if err != nil {
-		return "", err
+		return projectSandboxPreviewURLResponse{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", fmt.Errorf("new sandbox preview URL request: %w", err)
+		return projectSandboxPreviewURLResponse{}, fmt.Errorf("new sandbox preview URL request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	if id.token != "" {
@@ -223,24 +239,51 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, i
 		resp, err = client.Do(req)
 	}
 	if err != nil {
-		return "", fmt.Errorf("GET %s: %w", endpoint, err)
+		return projectSandboxPreviewURLResponse{}, fmt.Errorf("GET %s: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("read sandbox preview URL body: %w", err)
+		return projectSandboxPreviewURLResponse{}, fmt.Errorf("read sandbox preview URL body: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("sandbox preview URL returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusServiceUnavailable {
+			return projectSandboxPreviewNotReadyResponse(body, resp.StatusCode), nil
+		}
+		return projectSandboxPreviewURLResponse{}, fmt.Errorf("sandbox preview URL returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var decoded projectSandboxPreviewURLResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return "", fmt.Errorf("decode sandbox preview URL response: %w", err)
+		return projectSandboxPreviewURLResponse{}, fmt.Errorf("decode sandbox preview URL response: %w", err)
 	}
-	if strings.TrimSpace(decoded.PreviewURL) == "" {
-		return "", fmt.Errorf("sandbox preview URL response was empty")
+	decoded.PreviewURL = strings.TrimSpace(decoded.PreviewURL)
+	decoded.Message = strings.TrimSpace(decoded.Message)
+	decoded.Reason = strings.TrimSpace(decoded.Reason)
+	if decoded.PreviewURL != "" {
+		decoded.Ready = true
 	}
-	return strings.TrimSpace(decoded.PreviewURL), nil
+	if decoded.Ready && decoded.PreviewURL == "" {
+		return projectSandboxPreviewURLResponse{}, fmt.Errorf("sandbox preview URL response was empty")
+	}
+	if !decoded.Ready && decoded.Message == "" {
+		decoded.Message = "Preview is getting ready. The sandbox runtime is not serving traffic yet."
+	}
+	return decoded, nil
+}
+
+func projectSandboxPreviewNotReadyResponse(body []byte, statusCode int) projectSandboxPreviewURLResponse {
+	resp := projectSandboxPreviewURLResponse{
+		Ready:   false,
+		Reason:  http.StatusText(statusCode),
+		Message: "Preview is getting ready. The sandbox runtime is not serving traffic yet.",
+	}
+	var status projectSandboxStatusResponse
+	if err := json.Unmarshal(body, &status); err == nil {
+		if strings.TrimSpace(status.Reason) != "" {
+			resp.Reason = strings.TrimSpace(status.Reason)
+		}
+	}
+	return resp
 }
 
 func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, error) {

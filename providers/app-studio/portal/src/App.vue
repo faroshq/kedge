@@ -89,6 +89,13 @@ interface PendingFollowUpView {
   interrupt: ProjectAssistantUIInterruptRequest
 }
 
+interface ProjectDevelopmentPreviewAuthorization {
+  ready: boolean
+  previewURL: string
+  message: string
+  reason: string
+}
+
 type LegacyProjectAssistantToolCall = Record<string, unknown>
 
 const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
@@ -103,6 +110,7 @@ const CREATE_PROJECT_ROUTE = '~new'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
+const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const PROJECT_ASSISTANT_ACTION_STATUSES = new Set<ProjectAssistantActionStatus>([
   'requested',
@@ -255,6 +263,7 @@ const developmentSyncStatus = ref<string | null>(null)
 const developmentSyncError = ref<string | null>(null)
 const developmentPreviewAuthorizing = ref(false)
 const developmentPreviewAuthorizationError = ref<string | null>(null)
+const developmentPreviewReadinessMessage = ref<string | null>(null)
 const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewFrameKey = ref(0)
@@ -288,6 +297,7 @@ let landingPlaceholderDelayTimer: number | undefined
 let landingPlaceholderTypingTimer: number | undefined
 let landingPlaceholderIndex = 0
 let developmentPreviewAuthorizationSerial = 0
+let developmentPreviewAuthorizationRetryTimer: number | undefined
 let activeMessageStreamController: AbortController | null = null
 
 const routeSegment = computed(() => {
@@ -554,10 +564,15 @@ const developmentPreviewURL = computed(() => {
 })
 
 const developmentPreviewPhase = computed(() => developmentEnvironment.value?.phase || developmentBinding.value?.phase || 'Pending')
-const developmentPreviewUnavailableTitle = computed(() => (developmentPreviewAuthorizing.value ? 'Preparing preview' : 'Preview unavailable'))
-const developmentPreviewUnavailableMessage = computed(() =>
-  developmentPreviewAuthorizing.value ? 'Authorizing sandbox preview.' : 'Sandbox binding is not ready.',
-)
+const developmentPreviewUnavailableTitle = computed(() => (
+  developmentPreviewAuthorizing.value || developmentPreviewReadinessMessage.value
+    ? 'Preview is getting ready'
+    : 'Preview unavailable'
+))
+const developmentPreviewUnavailableMessage = computed(() => {
+  if (developmentPreviewAuthorizing.value) return 'Checking the sandbox runtime.'
+  return developmentPreviewReadinessMessage.value || 'Sandbox binding is not ready.'
+})
 
 onMounted(() => {
   void load()
@@ -587,8 +602,10 @@ watch(
     developmentSyncStatus.value = null
     developmentSyncError.value = null
     developmentPreviewAuthorizationError.value = null
+    developmentPreviewReadinessMessage.value = null
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
+    clearDevelopmentPreviewAuthorizationRetry()
     developmentPreviewFrameKey.value += 1
   },
 )
@@ -646,6 +663,7 @@ useEscapeKey(() => {
 
 onBeforeUnmount(() => {
   clearInitializationRetry()
+  clearDevelopmentPreviewAuthorizationRetry()
   clearLandingPlaceholderRotation()
   cancelMessageStream()
   detachMountedTool()
@@ -715,6 +733,12 @@ function clearInitializationRetry() {
   if (initializationRetryTimer === undefined) return
   window.clearTimeout(initializationRetryTimer)
   initializationRetryTimer = undefined
+}
+
+function clearDevelopmentPreviewAuthorizationRetry() {
+  if (developmentPreviewAuthorizationRetryTimer === undefined) return
+  window.clearTimeout(developmentPreviewAuthorizationRetryTimer)
+  developmentPreviewAuthorizationRetryTimer = undefined
 }
 
 async function loadProviders() {
@@ -1190,6 +1214,8 @@ async function syncDevelopmentPreview() {
     if (previewURL) {
       developmentPreviewOverrideURL.value = previewURL
       developmentPreviewAuthorizationKey.value = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
+      developmentPreviewReadinessMessage.value = null
+      clearDevelopmentPreviewAuthorizationRetry()
     }
     developmentPreviewFrameKey.value += 1
     developmentSyncStatus.value = 'Synced'
@@ -1204,32 +1230,59 @@ async function authorizeDevelopmentPreview() {
   const projectName = selected.value?.name
   const rawURL = developmentPreviewRawURL.value
   if (!projectName || !developmentPreviewNeedsAuthorization.value) {
+    developmentPreviewAuthorizationSerial += 1
     developmentPreviewAuthorizing.value = false
     developmentPreviewAuthorizationError.value = null
+    developmentPreviewReadinessMessage.value = null
+    developmentPreviewOverrideURL.value = null
+    developmentPreviewAuthorizationKey.value = ''
+    clearDevelopmentPreviewAuthorizationRetry()
     return
   }
   const key = developmentPreviewKey(projectName, rawURL)
   if (developmentPreviewOverrideURL.value && developmentPreviewAuthorizationKey.value === key) return
 
+  clearDevelopmentPreviewAuthorizationRetry()
   const serial = ++developmentPreviewAuthorizationSerial
   developmentPreviewAuthorizing.value = true
   developmentPreviewAuthorizationError.value = null
   try {
     const result = await api.authorizeDevelopmentPreview(props.ctx, projectName)
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
-    const previewURL = projectDevelopmentPreviewURL(result)
+    const authorization = projectDevelopmentPreviewAuthorization(result)
+    if (!authorization.ready) {
+      developmentPreviewOverrideURL.value = null
+      developmentPreviewAuthorizationKey.value = key
+      developmentPreviewReadinessMessage.value = authorization.message || 'Preview is getting ready. The sandbox runtime is not serving traffic yet.'
+      scheduleDevelopmentPreviewAuthorizationRetry(projectName, key)
+      return
+    }
+    const previewURL = authorization.previewURL
     if (!previewURL) throw new Error('sandbox preview authorization returned no preview URL')
     developmentPreviewOverrideURL.value = previewURL
     developmentPreviewAuthorizationKey.value = key
+    developmentPreviewReadinessMessage.value = null
+    clearDevelopmentPreviewAuthorizationRetry()
     developmentPreviewFrameKey.value += 1
   } catch (e) {
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewReadinessMessage.value = null
+    clearDevelopmentPreviewAuthorizationRetry()
     developmentPreviewAuthorizationError.value = e instanceof Error ? e.message : String(e)
   } finally {
     if (serial === developmentPreviewAuthorizationSerial) developmentPreviewAuthorizing.value = false
   }
+}
+
+function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: string) {
+  clearDevelopmentPreviewAuthorizationRetry()
+  developmentPreviewAuthorizationRetryTimer = window.setTimeout(() => {
+    developmentPreviewAuthorizationRetryTimer = undefined
+    if (selected.value?.name !== projectName || developmentPreviewAuthorizationKey.value !== key) return
+    void authorizeDevelopmentPreview()
+  }, DEVELOPMENT_PREVIEW_AUTH_RETRY_MS)
 }
 
 function developmentPreviewKey(projectName: string, rawURL: string): string {
@@ -1244,6 +1297,26 @@ function projectDevelopmentPreviewURL(result: unknown): string {
   if (!body || typeof body !== 'object') return ''
   const previewURL = (body as { previewURL?: unknown }).previewURL
   return typeof previewURL === 'string' ? previewURL : ''
+}
+
+function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelopmentPreviewAuthorization {
+  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', message: '', reason: '' }
+  const previewURL = projectDevelopmentPreviewURL(result)
+  const ready = typeof (result as { ready?: unknown }).ready === 'boolean'
+    ? Boolean((result as { ready?: unknown }).ready)
+    : previewURL !== ''
+  return {
+    ready,
+    previewURL,
+    message: projectDevelopmentPreviewString(result, 'message'),
+    reason: projectDevelopmentPreviewString(result, 'reason'),
+  }
+}
+
+function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reason'): string {
+  if (!result || typeof result !== 'object') return ''
+  const value = (result as Record<string, unknown>)[key]
+  return typeof value === 'string' ? value : ''
 }
 
 function workbenchTabButtonClass(tab: WorkbenchTab): string {

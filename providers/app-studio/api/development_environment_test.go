@@ -209,7 +209,7 @@ func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedSandboxURL(t *testing
 		gotTenant = r.Header.Get("X-Kedge-Tenant")
 		gotOrg = r.Header.Get("X-Kedge-Org")
 		gotWorkspace = r.Header.Get("X-Kedge-Workspace")
-		fmt.Fprint(w, `{"previewURL":"/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"}`)
+		fmt.Fprint(w, `{"ready":true,"previewURL":"/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"}`)
 	}))
 	defer sandbox.Close()
 
@@ -219,8 +219,11 @@ func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedSandboxURL(t *testing
 	if err != nil {
 		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
 	}
-	if want := "/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"; got != want {
-		t.Fatalf("previewURL = %q, want %q", got, want)
+	if !got.Ready {
+		t.Fatalf("ready = false, want true: %#v", got)
+	}
+	if want := "/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"; got.PreviewURL != want {
+		t.Fatalf("previewURL = %q, want %q", got.PreviewURL, want)
 	}
 	if got, want := gotAuth, "Bearer caller-token"; got != want {
 		t.Fatalf("Authorization = %q, want %q", got, want)
@@ -233,6 +236,56 @@ func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedSandboxURL(t *testing
 	}
 	if got, want := gotWorkspace, id.workspaceUUID; got != want {
 		t.Fatalf("X-Kedge-Workspace = %q, want %q", got, want)
+	}
+}
+
+func TestAuthorizeProjectDevelopmentPreviewTargetReturnsNotReady(t *testing.T) {
+	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/services/providers/sandbox/api/dev-environments/todo-dev/preview-url"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		fmt.Fprint(w, `{"ready":false,"reason":"no_ready_endpoints","message":"Preview is starting."}`)
+	}))
+	defer sandbox.Close()
+
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", token: "caller-token"}
+	server := NewWithWorkspace(nil, nil, nil, sandbox.URL, false)
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), id, projectDevelopmentSyncTargetInfo{ResourceName: "todo-dev"})
+	if err != nil {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+	}
+	if got.Ready {
+		t.Fatalf("ready = true, want false: %#v", got)
+	}
+	if got.PreviewURL != "" {
+		t.Fatalf("previewURL = %q, want empty while not ready", got.PreviewURL)
+	}
+	if got.Message != "Preview is starting." {
+		t.Fatalf("message = %q, want sandbox not-ready message", got.Message)
+	}
+}
+
+func TestAuthorizeProjectDevelopmentPreviewTargetTreatsSandboxUnavailableAsNotReady(t *testing.T) {
+	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"no endpoints available for service \"todo-dev-preview\"","reason":"ServiceUnavailable","code":503}`)
+	}))
+	defer sandbox.Close()
+
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", token: "caller-token"}
+	server := NewWithWorkspace(nil, nil, nil, sandbox.URL, false)
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), id, projectDevelopmentSyncTargetInfo{ResourceName: "todo-dev"})
+	if err != nil {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+	}
+	if got.Ready {
+		t.Fatalf("ready = true, want false: %#v", got)
+	}
+	if got.Reason != "ServiceUnavailable" {
+		t.Fatalf("reason = %q, want ServiceUnavailable", got.Reason)
+	}
+	if got.Message != "Preview is getting ready. The sandbox runtime is not serving traffic yet." {
+		t.Fatalf("message = %q, want user-facing not-ready message", got.Message)
 	}
 }
 

@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -21,10 +22,20 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
 
 const previewScopePrefix = "__kedge_preview"
+
+type previewURLResponse struct {
+	Ready      bool   `json:"ready"`
+	PreviewURL string `json:"previewURL,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
 
 func (s *Server) previewURLDevEnvironment(w http.ResponseWriter, r *http.Request) {
 	id, ok := identityFromRequest(w, r)
@@ -36,9 +47,59 @@ func (s *Server) previewURLDevEnvironment(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"previewURL": s.signedPreviewURL(id.tenantPath, runtimeClusterName(id.tenantPath, env), name),
-	})
+	clusterName := runtimeClusterName(id.tenantPath, env)
+	readiness := s.previewReadiness(r.Context(), clusterName, name)
+	if !readiness.Ready {
+		writeJSON(w, http.StatusOK, readiness)
+		return
+	}
+	readiness.PreviewURL = s.signedPreviewURL(id.tenantPath, clusterName, name)
+	writeJSON(w, http.StatusOK, readiness)
+}
+
+func (s *Server) previewReadiness(ctx context.Context, clusterName, name string) previewURLResponse {
+	if s.runtimeClient == nil {
+		return previewURLResponse{
+			Ready:   false,
+			Reason:  "runtime_not_configured",
+			Message: "Preview is getting ready. The sandbox runtime is still being configured.",
+		}
+	}
+	endpoints, err := s.runtimeClient.CoreV1().Endpoints(runtimeNamespace(clusterName)).Get(ctx, serviceName(name), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return previewURLResponse{
+			Ready:   false,
+			Reason:  "service_not_found",
+			Message: "Preview is getting ready. The preview service has not been created yet.",
+		}
+	}
+	if err != nil {
+		return previewURLResponse{
+			Ready:   false,
+			Reason:  "service_unavailable",
+			Message: "Preview is getting ready. The sandbox runtime is not reachable yet.",
+		}
+	}
+	if !hasReadyEndpoint(endpoints) {
+		return previewURLResponse{
+			Ready:   false,
+			Reason:  "no_ready_endpoints",
+			Message: "Preview is getting ready. The sandbox runtime is not serving traffic yet.",
+		}
+	}
+	return previewURLResponse{Ready: true}
+}
+
+func hasReadyEndpoint(endpoints *corev1.Endpoints) bool {
+	if endpoints == nil {
+		return false
+	}
+	for _, subset := range endpoints.Subsets {
+		if len(subset.Addresses) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) previewDevEnvironment(w http.ResponseWriter, r *http.Request) {

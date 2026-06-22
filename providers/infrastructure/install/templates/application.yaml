@@ -26,46 +26,58 @@ spec:
   # its outputs (URL, DB secret) land.
   agent:
     usage: |
-      Deploys a 3-tier web app on ONE public URL — UI at `/`, API at `/api/*`, and
-      a managed PostgreSQL database. Choose this when the user wants to ship a
-      containerized web app backed by a relational database behind a single
-      endpoint, and you can supply (or build) the two container images.
+      Deploys a 3-tier web app on ONE public URL: UI at `/`, API at `/api/*`, and a
+      managed PostgreSQL database. Choose this to ship a containerized web app with
+      a relational DB behind a single endpoint when you can supply both images.
 
-      WHAT YOU PROVIDE: exactly two images — frontendImage and backendImage. The
-      platform runs them, wires them to each other and to a Postgres database it
-      provisions, exposes them on one URL, and (in byo mode) authenticates in
-      front. You do NOT create the database, networking, Secrets, or ingress — you
-      only supply the two images, which MUST honor this runtime contract:
+      YOU SUPPLY exactly two container images — frontendImage and backendImage —
+      and nothing else app-side. The platform provisions Postgres, injects the DB
+      connection, path-routes one URL to both tiers, and (in byo mode) authenticates
+      in front; you do NOT create the database, Secrets, Services, or Ingress. This
+      contract is fully self-contained — build BOTH images from it BEFORE you
+      provision; the only runtime couplings are the env var and ports below.
 
-      BACKEND (backendImage) — the platform routes `/api/*` here:
-        • Reads env var DATABASE_URL — a ready-to-use PostgreSQL connection string
-          (postgres:// URI; port 5432, database `appdb`, user `appuser`). Connect
-          using it directly; do NOT read any Kubernetes Secret yourself.
-        • The database engine is PostgreSQL, major version = the database.version
-          input ("15" or "16", default "16"). It starts EMPTY — create your schema
-          / run migrations on startup, idempotently (safe to re-run).
-        • Postgres may not be reachable the instant the backend starts (it boots
-          alongside you) — RETRY the initial connection rather than exiting.
-        • Listens on backendPort (input, default 8080). Serve the API under the
-          `/api/` path prefix; the platform sends `/api/*` here and everything else
-          to the frontend. (A health endpoint is recommended.)
+      BOTH IMAGES:
+        • Plain HTTP server, any language/base image. Bind to 0.0.0.0 on the port
+          below (NOT 127.0.0.1), or the platform cannot route to it.
+        • Stateless — no local/persistent disk; ALL state lives in Postgres. Pods
+          may be restarted or scaled (the *Replicas inputs).
 
-      FRONTEND (frontendImage) — the platform routes `/` here:
-        • Listens on frontendPort (input, default 8080); serves the UI on `/`.
-        • Calls the backend from the BROWSER at `/api/*` on the SAME origin. There
-          is no separate backend host/URL — do NOT hardcode one or expect a backend
-          env var; the platform path-routes `/api`. The frontend has no DB access.
+      BACKEND (backendImage) — the platform routes `/api/*` to it:
+        • Env DATABASE_URL is injected — a PostgreSQL URI of the form
+          `postgres://appuser:<password>@<host>:5432/appdb`. Connect from this env
+          ONLY (never read a Kubernetes Secret). The URI has NO sslmode and the
+          in-cluster Postgres has TLS disabled, so connect with sslmode=disable
+          (append `?sslmode=disable` / set it if your driver defaults to requiring
+          TLS, e.g. Node `pg`, JDBC).
+        • Engine: PostgreSQL, major version = the database.version input ("15"|"16",
+          default "16"). Database `appdb`, user `appuser`. It starts EMPTY — create
+          your schema / run migrations on startup, idempotently.
+        • Postgres may not be ready the moment you start (it boots alongside you) —
+          RETRY the initial connection instead of exiting.
+        • Listen on backendPort (input, default 8080). Serve your routes under the
+          `/api/` prefix; the path is PRESERVED (you receive e.g. `/api/items`, not
+          `/items`). A readiness endpoint that pings the DB is recommended.
+        • The HTTP API shape (routes, JSON) is YOUR design — you also build the
+          frontend that calls it; the only platform constraint is the `/api` prefix.
 
-      Exposure & auth — set via the oidc.mode input:
+      FRONTEND (frontendImage) — the platform routes `/` to it:
+        • No env is injected. Listen on frontendPort (input, default 8080); serve
+          the UI on `/`.
+        • Call the backend from the BROWSER at `/api/*` on the SAME origin (e.g.
+          `fetch("/api/items")`). There is NO separate backend host/URL — do not
+          hardcode one or expect a backend env var. No database access.
+
+      EXPOSURE & AUTH (oidc.mode input):
         • none — no auth gate; the URL is public. Demo/dev only.
         • byo  — oauth2-proxy gates BOTH `/` and `/api` with the caller's OIDC IdP
           (set oidc.issuerURL + oidc.clientID; client secret via prerequisites).
         • platform — kedge SSO; NOT yet supported.
 
-      Inputs you set: frontendImage, backendImage (required); name, frontendPort,
-      backendPort, frontendReplicas, backendReplicas, database.version, oidc.*.
-      The platform stamps spec.expose.fqdn and spec.credentialsSecretName — never
-      set those yourself.
+      INPUTS you set when provisioning: frontendImage, backendImage (required);
+      name, frontendPort, backendPort, frontendReplicas, backendReplicas,
+      database.version, oidc.*. The platform stamps spec.expose.fqdn and
+      spec.credentialsSecretName — do not set those.
     prerequisites:
       - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, key 'oidc_client_secret' = the OAuth2 client secret for your oidc.clientID."
     outputs:

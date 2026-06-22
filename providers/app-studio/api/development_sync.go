@@ -55,6 +55,15 @@ type projectDevelopmentSyncResponse struct {
 	Result json.RawMessage                  `json:"result,omitempty"`
 }
 
+type projectDevelopmentPreviewAuthorizeResponse struct {
+	Target     projectDevelopmentSyncTargetInfo `json:"target"`
+	PreviewURL string                           `json:"previewURL"`
+}
+
+type projectSandboxPreviewURLResponse struct {
+	PreviewURL string `json:"previewURL"`
+}
+
 func projectDevelopmentSyncTarget(p *aiv1alpha1.Project) (projectDevelopmentSyncTargetInfo, bool) {
 	if p == nil {
 		return projectDevelopmentSyncTargetInfo{}, false
@@ -109,6 +118,24 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, projectDevelopmentSyncResponse{Target: target, Result: result})
+}
+
+func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *http.Request) {
+	_, id, p, ok := s.requireProjectWithClient(w, r)
+	if !ok {
+		return
+	}
+	target, ok := projectDevelopmentSyncTarget(p)
+	if !ok {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox development environment binding")
+		return
+	}
+	previewURL, err := s.authorizeProjectDevelopmentPreviewTarget(r.Context(), id, target)
+	if err != nil {
+		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, projectDevelopmentPreviewAuthorizeResponse{Target: target, PreviewURL: previewURL})
 }
 
 func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
@@ -166,6 +193,56 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, id identity, 
 	return json.RawMessage(body), nil
 }
 
+func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, id identity, target projectDevelopmentSyncTargetInfo) (string, error) {
+	endpoint, err := s.sandboxPreviewURLEndpoint(target)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("new sandbox preview URL request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if id.token != "" {
+		req.Header.Set("Authorization", "Bearer "+id.token)
+	}
+	if id.tenantPath != "" {
+		req.Header.Set("X-Kedge-Tenant", id.tenantPath)
+	}
+	if id.orgUUID != "" {
+		req.Header.Set("X-Kedge-Org", id.orgUUID)
+	}
+	if id.workspaceUUID != "" {
+		req.Header.Set("X-Kedge-Workspace", id.workspaceUUID)
+	}
+
+	client := &http.Client{Timeout: projectSandboxSyncTimeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
+	resp, err := client.Do(req)
+	if err != nil && projectMCPShouldRetryInsecure(endpoint, err, s.mcpInsecureSkipTLSVerify) {
+		client = &http.Client{Timeout: projectSandboxSyncTimeout, Transport: projectMCPTransport(true)}
+		resp, err = client.Do(req)
+	}
+	if err != nil {
+		return "", fmt.Errorf("GET %s: %w", endpoint, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("read sandbox preview URL body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("sandbox preview URL returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var decoded projectSandboxPreviewURLResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return "", fmt.Errorf("decode sandbox preview URL response: %w", err)
+	}
+	if strings.TrimSpace(decoded.PreviewURL) == "" {
+		return "", fmt.Errorf("sandbox preview URL response was empty")
+	}
+	return strings.TrimSpace(decoded.PreviewURL), nil
+}
+
 func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, error) {
 	list, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit})
 	if err != nil {
@@ -194,6 +271,17 @@ func (s *Server) sandboxSyncEndpoint(target projectDevelopmentSyncTargetInfo) (s
 		return "", fmt.Errorf("sandbox development environment name is empty")
 	}
 	return base + "/services/providers/sandbox/api/dev-environments/" + target.ResourceName + "/sync", nil
+}
+
+func (s *Server) sandboxPreviewURLEndpoint(target projectDevelopmentSyncTargetInfo) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(s.hubBase), "/")
+	if base == "" {
+		return "", fmt.Errorf("hub base URL is not configured")
+	}
+	if target.ResourceName == "" {
+		return "", fmt.Errorf("sandbox development environment name is empty")
+	}
+	return base + "/services/providers/sandbox/api/dev-environments/" + target.ResourceName + "/preview-url", nil
 }
 
 func shouldSyncDevelopmentAfterTool(name string) bool {

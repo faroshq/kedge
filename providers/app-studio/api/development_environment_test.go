@@ -193,6 +193,49 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToSandbox(t *testing.T) 
 	}
 }
 
+func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedSandboxURL(t *testing.T) {
+	var gotAuth string
+	var gotTenant string
+	var gotOrg string
+	var gotWorkspace string
+	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Method, http.MethodGet; got != want {
+			t.Fatalf("method = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Path, "/services/providers/sandbox/api/dev-environments/todo-dev/preview-url"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		gotTenant = r.Header.Get("X-Kedge-Tenant")
+		gotOrg = r.Header.Get("X-Kedge-Org")
+		gotWorkspace = r.Header.Get("X-Kedge-Workspace")
+		fmt.Fprint(w, `{"previewURL":"/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"}`)
+	}))
+	defer sandbox.Close()
+
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
+	server := NewWithWorkspace(nil, nil, nil, sandbox.URL, false)
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), id, projectDevelopmentSyncTargetInfo{ResourceName: "todo-dev"})
+	if err != nil {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+	}
+	if want := "/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"; got != want {
+		t.Fatalf("previewURL = %q, want %q", got, want)
+	}
+	if got, want := gotAuth, "Bearer caller-token"; got != want {
+		t.Fatalf("Authorization = %q, want %q", got, want)
+	}
+	if got, want := gotTenant, id.tenantPath; got != want {
+		t.Fatalf("X-Kedge-Tenant = %q, want %q", got, want)
+	}
+	if got, want := gotOrg, id.orgUUID; got != want {
+		t.Fatalf("X-Kedge-Org = %q, want %q", got, want)
+	}
+	if got, want := gotWorkspace, id.workspaceUUID; got != want {
+		t.Fatalf("X-Kedge-Workspace = %q, want %q", got, want)
+	}
+}
+
 func TestReconcileProjectLiveBindingsCreatesSandboxDevEnvironment(t *testing.T) {
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), &unstructured.Unstructured{
 		Object: map[string]any{

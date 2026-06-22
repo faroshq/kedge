@@ -253,7 +253,10 @@ const providerQuery = ref('')
 const developmentSyncBusy = ref(false)
 const developmentSyncStatus = ref<string | null>(null)
 const developmentSyncError = ref<string | null>(null)
+const developmentPreviewAuthorizing = ref(false)
+const developmentPreviewAuthorizationError = ref<string | null>(null)
 const developmentPreviewOverrideURL = ref<string | null>(null)
+const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewFrameKey = ref(0)
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
@@ -284,6 +287,7 @@ let initializationRetryTimer: number | undefined
 let landingPlaceholderDelayTimer: number | undefined
 let landingPlaceholderTypingTimer: number | undefined
 let landingPlaceholderIndex = 0
+let developmentPreviewAuthorizationSerial = 0
 let activeMessageStreamController: AbortController | null = null
 
 const routeSegment = computed(() => {
@@ -534,13 +538,26 @@ const developmentBinding = computed(() => {
   )
 })
 
-const developmentPreviewURL = computed(() => {
-  if (developmentPreviewOverrideURL.value) return developmentPreviewOverrideURL.value
+const developmentPreviewRawURL = computed(() => {
   const binding = developmentBinding.value
   return binding?.previewURL || binding?.outputs?.previewURL || binding?.url || ''
 })
 
+const developmentPreviewNeedsAuthorization = computed(() => {
+  return developmentBinding.value?.provider === 'sandbox' && developmentPreviewRawURL.value !== ''
+})
+
+const developmentPreviewURL = computed(() => {
+  if (developmentPreviewOverrideURL.value) return developmentPreviewOverrideURL.value
+  if (developmentPreviewNeedsAuthorization.value) return ''
+  return developmentPreviewRawURL.value
+})
+
 const developmentPreviewPhase = computed(() => developmentEnvironment.value?.phase || developmentBinding.value?.phase || 'Pending')
+const developmentPreviewUnavailableTitle = computed(() => (developmentPreviewAuthorizing.value ? 'Preparing preview' : 'Preview unavailable'))
+const developmentPreviewUnavailableMessage = computed(() =>
+  developmentPreviewAuthorizing.value ? 'Authorizing sandbox preview.' : 'Sandbox binding is not ready.',
+)
 
 onMounted(() => {
   void load()
@@ -569,8 +586,24 @@ watch(
   () => {
     developmentSyncStatus.value = null
     developmentSyncError.value = null
+    developmentPreviewAuthorizationError.value = null
     developmentPreviewOverrideURL.value = null
+    developmentPreviewAuthorizationKey.value = ''
     developmentPreviewFrameKey.value += 1
+  },
+)
+
+watch(
+  () => [
+    selected.value?.name,
+    developmentBinding.value?.provider,
+    developmentPreviewRawURL.value,
+    props.ctx?.token,
+    props.ctx?.tenant,
+    props.ctx?.subPath,
+  ],
+  () => {
+    void authorizeDevelopmentPreview()
   },
 )
 
@@ -1152,9 +1185,12 @@ async function syncDevelopmentPreview() {
   developmentSyncError.value = null
   try {
     const result = await api.syncDevelopment(props.ctx, projectName)
-    const previewURL = projectDevelopmentSyncPreviewURL(result)
+    const previewURL = projectDevelopmentPreviewURL(result)
     selected.value = await api.getProject(props.ctx, projectName)
-    if (previewURL) developmentPreviewOverrideURL.value = previewURL
+    if (previewURL) {
+      developmentPreviewOverrideURL.value = previewURL
+      developmentPreviewAuthorizationKey.value = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
+    }
     developmentPreviewFrameKey.value += 1
     developmentSyncStatus.value = 'Synced'
   } catch (e) {
@@ -1164,8 +1200,46 @@ async function syncDevelopmentPreview() {
   }
 }
 
-function projectDevelopmentSyncPreviewURL(result: unknown): string {
+async function authorizeDevelopmentPreview() {
+  const projectName = selected.value?.name
+  const rawURL = developmentPreviewRawURL.value
+  if (!projectName || !developmentPreviewNeedsAuthorization.value) {
+    developmentPreviewAuthorizing.value = false
+    developmentPreviewAuthorizationError.value = null
+    return
+  }
+  const key = developmentPreviewKey(projectName, rawURL)
+  if (developmentPreviewOverrideURL.value && developmentPreviewAuthorizationKey.value === key) return
+
+  const serial = ++developmentPreviewAuthorizationSerial
+  developmentPreviewAuthorizing.value = true
+  developmentPreviewAuthorizationError.value = null
+  try {
+    const result = await api.authorizeDevelopmentPreview(props.ctx, projectName)
+    if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
+    const previewURL = projectDevelopmentPreviewURL(result)
+    if (!previewURL) throw new Error('sandbox preview authorization returned no preview URL')
+    developmentPreviewOverrideURL.value = previewURL
+    developmentPreviewAuthorizationKey.value = key
+    developmentPreviewFrameKey.value += 1
+  } catch (e) {
+    if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
+    developmentPreviewOverrideURL.value = null
+    developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewAuthorizationError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (serial === developmentPreviewAuthorizationSerial) developmentPreviewAuthorizing.value = false
+  }
+}
+
+function developmentPreviewKey(projectName: string, rawURL: string): string {
+  return [projectName, rawURL, props.ctx?.tenant ?? '', props.ctx?.subPath ?? '', props.ctx?.token ? 'token' : ''].join('\u001f')
+}
+
+function projectDevelopmentPreviewURL(result: unknown): string {
   if (!result || typeof result !== 'object') return ''
+  const directPreviewURL = (result as { previewURL?: unknown }).previewURL
+  if (typeof directPreviewURL === 'string') return directPreviewURL
   const body = 'result' in result ? (result as { result?: unknown }).result : result
   if (!body || typeof body !== 'object') return ''
   const previewURL = (body as { previewURL?: unknown }).previewURL
@@ -2944,8 +3018,8 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               Sync
             </button>
           </div>
-          <div v-if="developmentSyncError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
-            {{ developmentSyncError }}
+          <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
+            {{ developmentSyncError || developmentPreviewAuthorizationError }}
           </div>
           <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success">
             {{ developmentSyncStatus }}
@@ -2963,8 +3037,8 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
                 <AppWindow class="h-5 w-5 text-text-muted" :stroke-width="1.75" />
               </div>
-              <div class="mt-3 text-[13px] font-semibold text-text-primary">Preview unavailable</div>
-              <div class="mt-1 text-[12px] leading-5 text-text-muted">Sandbox binding is not ready.</div>
+              <div class="mt-3 text-[13px] font-semibold text-text-primary">{{ developmentPreviewUnavailableTitle }}</div>
+              <div class="mt-1 text-[12px] leading-5 text-text-muted">{{ developmentPreviewUnavailableMessage }}</div>
             </div>
           </div>
         </div>

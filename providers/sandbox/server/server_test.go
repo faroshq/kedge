@@ -134,6 +134,21 @@ func TestPreviewTokenFromRequestSetsScopedCookieAndRedirects(t *testing.T) {
 	}
 }
 
+func TestPreviewURLRouteRequiresTenantContext(t *testing.T) {
+	handler := NewWithOptions(nil, nil, Options{PreviewTokenSecret: []byte("test-secret")})
+	req := httptest.NewRequest(http.MethodGet, "/api/dev-environments/todo-dev/preview-url", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusUnauthorized; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	if !strings.Contains(rec.Body.String(), "tenant context missing") {
+		t.Fatalf("body = %q, want tenant context missing", rec.Body.String())
+	}
+}
+
 func TestPreviewTargetSignedTokenTakesPrecedenceOverPartialHubHeaders(t *testing.T) {
 	s := NewWithOptions(nil, nil, Options{PreviewTokenSecret: []byte("test-secret")}).(*Server)
 	token, err := s.previewSigner.sign(previewTokenPayload{

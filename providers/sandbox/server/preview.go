@@ -26,6 +26,21 @@ import (
 
 const previewScopePrefix = "__kedge_preview"
 
+func (s *Server) previewURLDevEnvironment(w http.ResponseWriter, r *http.Request) {
+	id, ok := identityFromRequest(w, r)
+	if !ok {
+		return
+	}
+	name := mux.Vars(r)["name"]
+	env, ok := s.devEnvironment(w, r, id, name)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"previewURL": s.signedPreviewURL(id.tenantPath, runtimeClusterName(id.tenantPath, env), name),
+	})
+}
+
 func (s *Server) previewDevEnvironment(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
 	clusterName, suffix, ok := s.previewTarget(w, r, name)

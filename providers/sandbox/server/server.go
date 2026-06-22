@@ -77,6 +77,7 @@ func NewWithOptions(runtimeConfig *rest.Config, tenantFactory *tenant.ClientFact
 	s.mux.HandleFunc("/api/dev-environments/{name}/restart", s.restartDevEnvironment).Methods(http.MethodPost)
 	s.mux.HandleFunc("/api/dev-environments/{name}/logs", s.logsDevEnvironment).Methods(http.MethodGet)
 	s.mux.HandleFunc("/api/dev-environments/{name}/status", s.statusDevEnvironment).Methods(http.MethodGet)
+	s.mux.HandleFunc("/api/dev-environments/{name}/preview-url", s.previewURLDevEnvironment).Methods(http.MethodGet)
 	s.mux.PathPrefix("/api/dev-environments/{name}/preview/").HandlerFunc(s.previewDevEnvironment).Methods(http.MethodGet, http.MethodHead)
 	return s
 }

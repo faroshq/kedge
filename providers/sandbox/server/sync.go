@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,7 +62,7 @@ func (s *Server) controlOperation(w http.ResponseWriter, r *http.Request, op str
 		return
 	}
 	if op == "sync" && status >= 200 && status < 300 {
-		respBody = syncResponseWithPreviewURL(respBody, name)
+		respBody = s.syncResponseWithPreviewURL(respBody, id.tenantPath, runtimeClusterName(id.tenantPath, env), name)
 		_ = s.touchLastSync(r, id, name)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -128,19 +129,32 @@ func (s *Server) runtimeControlToken(ctx context.Context, clusterName, name stri
 	return token, nil
 }
 
-func syncResponseWithPreviewURL(raw []byte, name string) []byte {
+func (s *Server) syncResponseWithPreviewURL(raw []byte, tenantPath, clusterName, name string) []byte {
 	body := map[string]any{}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return raw
 	}
 	if _, ok := body["previewURL"]; !ok {
-		body["previewURL"] = "/services/providers/sandbox/api/dev-environments/" + name + "/preview/"
+		body["previewURL"] = s.signedPreviewURL(tenantPath, clusterName, name)
 	}
 	next, err := json.Marshal(body)
 	if err != nil {
 		return raw
 	}
 	return next
+}
+
+func (s *Server) signedPreviewURL(tenantPath, clusterName, name string) string {
+	previewURL := externalPreviewPath(name)
+	token, err := s.previewSigner.sign(previewTokenPayload{
+		TenantPath:     tenantPath,
+		ClusterName:    clusterName,
+		DevEnvironment: name,
+	})
+	if err != nil {
+		return previewURL
+	}
+	return previewURL + "?" + previewTokenQuery + "=" + url.QueryEscape(token)
 }
 
 func patchLastSync(ctx context.Context, dyn dynamic.Interface, name string, t metav1.Time) error {

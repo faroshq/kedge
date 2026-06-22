@@ -11,11 +11,16 @@ You may obtain a copy of the License at
 package server
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,16 +38,29 @@ var devEnvironmentGVR = schema.GroupVersionResource{
 	Resource: "devenvironments",
 }
 
-const logicalClusterAnnotation = "kcp.io/cluster"
+const (
+	logicalClusterAnnotation = "kcp.io/cluster"
+	previewTokenQuery        = "kedgePreviewToken"
+	previewTokenTTL          = time.Hour
+)
 
 type Server struct {
 	runtimeConfig *rest.Config
 	runtimeClient kubernetes.Interface
 	tenantFactory *tenant.ClientFactory
+	previewSigner *previewSigner
 	mux           *mux.Router
 }
 
+type Options struct {
+	PreviewTokenSecret []byte
+}
+
 func New(runtimeConfig *rest.Config, tenantFactory *tenant.ClientFactory) http.Handler {
+	return NewWithOptions(runtimeConfig, tenantFactory, Options{})
+}
+
+func NewWithOptions(runtimeConfig *rest.Config, tenantFactory *tenant.ClientFactory, opts Options) http.Handler {
 	var runtimeClient kubernetes.Interface
 	if runtimeConfig != nil {
 		runtimeClient, _ = kubernetes.NewForConfig(runtimeConfig)
@@ -51,6 +69,7 @@ func New(runtimeConfig *rest.Config, tenantFactory *tenant.ClientFactory) http.H
 		runtimeConfig: runtimeConfig,
 		runtimeClient: runtimeClient,
 		tenantFactory: tenantFactory,
+		previewSigner: newPreviewSigner(opts.PreviewTokenSecret),
 		mux:           mux.NewRouter(),
 	}
 	s.mux.HandleFunc("/healthz", healthz).Methods(http.MethodGet)
@@ -68,6 +87,74 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type previewTokenPayload struct {
+	TenantPath     string `json:"tenantPath"`
+	ClusterName    string `json:"clusterName"`
+	DevEnvironment string `json:"devEnvironment"`
+	ExpiresAt      int64  `json:"expiresAt"`
+}
+
+type previewSigner struct {
+	secret []byte
+	now    func() time.Time
+}
+
+func newPreviewSigner(secret []byte) *previewSigner {
+	if len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			sum := sha256.Sum256([]byte(time.Now().String()))
+			secret = sum[:]
+		}
+	}
+	return &previewSigner{secret: append([]byte(nil), secret...), now: time.Now}
+}
+
+func (s *previewSigner) sign(payload previewTokenPayload) (string, error) {
+	payload.ExpiresAt = s.now().Add(previewTokenTTL).Unix()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	mac := hmac.New(sha256.New, s.secret)
+	_, _ = mac.Write([]byte(encoded))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return encoded + "." + sig, nil
+}
+
+func (s *previewSigner) verify(token, name string) (previewTokenPayload, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return previewTokenPayload{}, fmt.Errorf("invalid preview token")
+	}
+	mac := hmac.New(sha256.New, s.secret)
+	_, _ = mac.Write([]byte(parts[0]))
+	want := mac.Sum(nil)
+	got, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !hmac.Equal(got, want) {
+		return previewTokenPayload{}, fmt.Errorf("invalid preview token")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return previewTokenPayload{}, fmt.Errorf("invalid preview token")
+	}
+	var payload previewTokenPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return previewTokenPayload{}, fmt.Errorf("invalid preview token")
+	}
+	if payload.DevEnvironment != name {
+		return previewTokenPayload{}, fmt.Errorf("preview token is for a different environment")
+	}
+	if payload.TenantPath == "" || payload.ClusterName == "" {
+		return previewTokenPayload{}, fmt.Errorf("preview token is incomplete")
+	}
+	if s.now().Unix() > payload.ExpiresAt {
+		return previewTokenPayload{}, fmt.Errorf("preview token expired")
+	}
+	return payload, nil
 }
 
 type identity struct {

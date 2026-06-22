@@ -253,6 +253,7 @@ const providerQuery = ref('')
 const developmentSyncBusy = ref(false)
 const developmentSyncStatus = ref<string | null>(null)
 const developmentSyncError = ref<string | null>(null)
+const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewFrameKey = ref(0)
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
@@ -534,6 +535,7 @@ const developmentBinding = computed(() => {
 })
 
 const developmentPreviewURL = computed(() => {
+  if (developmentPreviewOverrideURL.value) return developmentPreviewOverrideURL.value
   const binding = developmentBinding.value
   return binding?.previewURL || binding?.outputs?.previewURL || binding?.url || ''
 })
@@ -567,6 +569,7 @@ watch(
   () => {
     developmentSyncStatus.value = null
     developmentSyncError.value = null
+    developmentPreviewOverrideURL.value = null
     developmentPreviewFrameKey.value += 1
   },
 )
@@ -1148,8 +1151,10 @@ async function syncDevelopmentPreview() {
   developmentSyncStatus.value = null
   developmentSyncError.value = null
   try {
-    await api.syncDevelopment(props.ctx, projectName)
+    const result = await api.syncDevelopment(props.ctx, projectName)
+    const previewURL = projectDevelopmentSyncPreviewURL(result)
     selected.value = await api.getProject(props.ctx, projectName)
+    if (previewURL) developmentPreviewOverrideURL.value = previewURL
     developmentPreviewFrameKey.value += 1
     developmentSyncStatus.value = 'Synced'
   } catch (e) {
@@ -1157,6 +1162,14 @@ async function syncDevelopmentPreview() {
   } finally {
     developmentSyncBusy.value = false
   }
+}
+
+function projectDevelopmentSyncPreviewURL(result: unknown): string {
+  if (!result || typeof result !== 'object') return ''
+  const body = 'result' in result ? (result as { result?: unknown }).result : result
+  if (!body || typeof body !== 'object') return ''
+  const previewURL = (body as { previewURL?: unknown }).previewURL
+  return typeof previewURL === 'string' ? previewURL : ''
 }
 
 function workbenchTabButtonClass(tab: WorkbenchTab): string {

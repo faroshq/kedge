@@ -76,7 +76,9 @@ func runServe() {
 	}
 	tenantFactory := tenant.NewClientFactory(providerConfig)
 
-	handler, err := newHandler(server.New(runtimeConfig, tenantFactory))
+	handler, err := newHandler(server.NewWithOptions(runtimeConfig, tenantFactory, server.Options{
+		PreviewTokenSecret: previewTokenSecret(),
+	}))
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
@@ -105,6 +107,15 @@ func runServe() {
 	if err := httpSrv.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+}
+
+func previewTokenSecret() []byte {
+	for _, key := range []string{"SANDBOX_PREVIEW_TOKEN_SECRET", "KEDGE_HUB_TOKEN"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return []byte(value)
+		}
+	}
+	return nil
 }
 
 func newHandler(apiHandler http.Handler) (http.Handler, error) {

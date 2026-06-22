@@ -154,6 +154,14 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
+	# The provider embeds the Template CRD from install/crds/ (//go:embed in
+	# install/crds.go) and applies it into the kcp provider workspace at init.
+	# Keep that embed copy in lockstep with the generated schema — otherwise the
+	# operator installs a stale Template CRD and kcp silently prunes new fields
+	# (e.g. spec.sampleValues). The InfrastructureProvider CRD is NOT embedded
+	# (it's applied to the host cluster by the chart), so it stays in config/ only.
+	cp providers/infrastructure/config/crds/infrastructure.kedge.faros.sh_templates.yaml \
+	   providers/infrastructure/install/crds/infrastructure.kedge.faros.sh_templates.yaml
 	./hack/ensure-boilerplate.sh
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code

@@ -17,6 +17,8 @@ spec:
     name: demo
     frontendImage: ghcr.io/faroshq/kedge-infrastructure-example-frontend:latest
     backendImage: ghcr.io/faroshq/kedge-infrastructure-example-backend:latest
+    database:
+      version: "16"
     oidc:
       mode: none
   instanceCRD:
@@ -71,8 +73,12 @@ spec:
         maximum: 10
 
       # ── Database tier (Postgres; always provisioned in v1) ──
+      # default: {} so an omitted database object is instantiated and its nested
+      # defaults (version/size) apply — the RGD references ${schema.spec.database.version}
+      # unconditionally, so a missing database object fails resource rendering.
       database:
         type: object
+        default: {}
         properties:
           size:
             type: string
@@ -85,8 +91,11 @@ spec:
             default: "16"
 
       # ── Exposure ──
+      # default: {} so nested defaults apply and the controller can stamp fqdn
+      # onto an instance that omitted the expose object.
       expose:
         type: object
+        default: {}
         properties:
           hostnamePrefix:
             type: string
@@ -98,8 +107,11 @@ spec:
             description: "Computed by the platform — do NOT set. The public hostname the app is served on."
 
       # ── OIDC (the gate in front of the frontend) ──
+      # default: {} so oidc.mode defaults to "none" when the object is omitted —
+      # the Ingress backend references ${schema.spec.oidc.mode} unconditionally.
       oidc:
         type: object
+        default: {}
         properties:
           mode:
             type: string

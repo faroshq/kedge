@@ -12,6 +12,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -152,6 +153,7 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	changed := make([]string, 0, len(req.Files))
+	startupChanged := false
 	for _, f := range req.Files {
 		clean, err := cleanWorkspacePath(f.Path)
 		if err != nil {
@@ -167,7 +169,11 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("create parent for %q: %v", clean, err), http.StatusInternalServerError)
 			return
 		}
-		if err := os.WriteFile(target, []byte(f.Content), 0o644); err != nil {
+		content := []byte(f.Content)
+		if isStartupAffectingPath(clean) && fileContentChanged(target, content) {
+			startupChanged = true
+		}
+		if err := os.WriteFile(target, content, 0o644); err != nil {
 			http.Error(w, fmt.Sprintf("write %q: %v", clean, err), http.StatusInternalServerError)
 			return
 		}
@@ -189,10 +195,13 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("delete %q: %v", clean, err), http.StatusInternalServerError)
 			return
 		}
+		if isStartupAffectingPath(clean) {
+			startupChanged = true
+		}
 		deleted = append(deleted, clean)
 	}
 	restarted := false
-	if s.shouldRestartAfterSync(req.Restart) {
+	if s.shouldRestartAfterSync(req.Restart, startupChanged) {
 		if err := s.supervisor.restart(r.Context()); err != nil {
 			http.Error(w, "restart: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -202,15 +211,28 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, syncResponse{Phase: "Synced", Changed: changed, Deleted: deleted, Restarted: restarted})
 }
 
-func (s *runnerServer) shouldRestartAfterSync(policy string) bool {
+func (s *runnerServer) shouldRestartAfterSync(policy string, startupChanged bool) bool {
 	switch strings.ToLower(strings.TrimSpace(policy)) {
 	case "always":
 		return true
 	case "auto":
-		return s.supervisor.hasCommand() && !s.supervisor.isRunning()
+		return s.supervisor.hasCommand() && (startupChanged || !s.supervisor.isRunning())
 	default:
 		return false
 	}
+}
+
+func fileContentChanged(path string, next []byte) bool {
+	current, err := os.ReadFile(path)
+	return err != nil || !bytes.Equal(current, next)
+}
+
+func isStartupAffectingPath(clean string) bool {
+	switch clean {
+	case "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "server.js":
+		return true
+	}
+	return strings.HasPrefix(clean, "vite.config.")
 }
 
 func (s *runnerServer) handleRestart(w http.ResponseWriter, r *http.Request) {

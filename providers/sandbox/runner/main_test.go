@@ -115,6 +115,30 @@ func TestSyncAutoRestartsStoppedProcess(t *testing.T) {
 	}
 }
 
+func TestSyncAutoRestartsRunningProcessWhenPackageManifestChanges(t *testing.T) {
+	root := t.TempDir()
+	s := newRunnerServer(&runnerConfig{WorkDir: root, StartCommand: "sleep 30", ControlToken: "test-token"})
+	if err := s.supervisor.start(context.Background()); err != nil {
+		t.Fatalf("start returned error: %v", err)
+	}
+	defer func() { _ = s.supervisor.stop() }()
+
+	resp := postJSON(t, s, "/sync", syncRequest{
+		Files:   []syncFile{{Path: "package.json", Content: `{"scripts":{"start":"node server.js"}}`}},
+		Restart: "auto",
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("sync status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var body syncResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode sync response: %v", err)
+	}
+	if !body.Restarted {
+		t.Fatal("auto sync did not restart after package.json changed")
+	}
+}
+
 func TestSupervisorRestartIgnoresCanceledRequestContext(t *testing.T) {
 	root := t.TempDir()
 	s := newRunnerServer(&runnerConfig{WorkDir: root, StartCommand: "sleep 30"})

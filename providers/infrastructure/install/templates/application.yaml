@@ -562,12 +562,15 @@ spec:
                           port:
                             number: '${schema.spec.oidc.mode == "none" ? schema.spec.frontendPort : 4180}'
     # Projected onto the instance in the tenant's kcp workspace. url/host are
-    # derived from the controller-stamped fqdn; per-tier readiness lets the
+    # read from the Ingress (this kro fork forbids ${schema.*} in status — status
+    # may reference resources only — so we source the controller-stamped fqdn from
+    # the Ingress rule rather than schema.spec.expose.fqdn). The Ingress is always
+    # created (only its backend changes by mode). Per-tier readiness lets the
     # portal show progress. No secret values are surfaced.
     status:
-      url: ${"https://" + schema.spec.expose.fqdn}
-      host: ${schema.spec.expose.fqdn}
-      redirectURL: ${"https://" + schema.spec.expose.fqdn + "/oauth2/callback"}
+      url: ${"https://" + ingress.spec.rules[0].host}
+      host: ${ingress.spec.rules[0].host}
+      redirectURL: ${"https://" + ingress.spec.rules[0].host + "/oauth2/callback"}
       frontendReady: ${frontendDeployment.status.readyReplicas}
       backendReady: ${backendDeployment.status.readyReplicas}
       databaseReady: ${dbStatefulSet.status.readyReplicas}

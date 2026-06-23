@@ -52,10 +52,10 @@ type Server struct {
 	runtimeConfig            *rest.Config
 	runtimeClient            kubernetes.Interface
 	previewSigner            *previewSigner
+	previewScopeGrants       map[string]previewTokenPayload
 	autoApproveActions       bool
 	assistantEngine          projectAssistantEngine
 	assistantRunManager      *projectAssistantRunManager
-	developmentSyncLocks     map[string]*sync.Mutex
 	mu                       sync.Mutex
 }
 
@@ -99,6 +99,7 @@ func (s *Server) SetPreviewTokenSecret(secret []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.previewSigner = newPreviewSigner(secret)
+	s.previewScopeGrants = nil
 }
 
 func (s *Server) SetAutoApproveAssistantActions(enabled bool) {
@@ -129,21 +130,6 @@ func (s *Server) projectAssistantRunManager() *projectAssistantRunManager {
 		s.assistantRunManager = newProjectAssistantRunManager()
 	}
 	return s.assistantRunManager
-}
-
-func (s *Server) developmentSyncLock(id identity, projectName string) *sync.Mutex {
-	key := id.orgUUID + "/" + id.workspaceUUID + "/" + projectName
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.developmentSyncLocks == nil {
-		s.developmentSyncLocks = map[string]*sync.Mutex{}
-	}
-	lock := s.developmentSyncLocks[key]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		s.developmentSyncLocks[key] = lock
-	}
-	return lock
 }
 
 // Register mounts the project routes onto r. The hub backend proxy strips the

@@ -37,14 +37,27 @@ export interface ProjectAssistantUIAction {
 
 export interface ProjectAssistantUIComponent {
   id: string
-  type: string
-  toolDisclosure?: ProjectAssistantUIAction
+  component: {
+    Text?: {
+      value?: string
+      dataKey?: string
+      usageHint?: 'caption' | 'body' | 'title' | string
+    }
+    Column?: {
+      children: string[]
+    }
+    Card?: {
+      children: string[]
+    }
+    Row?: {
+      children: string[]
+    }
+  }
 }
 
 export interface ProjectAssistantUIDataContent {
   key: string
   valueString?: string
-  append?: boolean
 }
 
 export interface ProjectAssistantUIEvent {
@@ -86,16 +99,18 @@ export interface ProjectAssistantResumeResponse {
   assistantMessage?: ProjectMessage
 }
 
-export interface ProjectMessageStreamEvent {
+export type ProjectMessageStreamEvent =
+  | ProjectAssistantUIEvent
+  | ProjectMessageStreamControlEvent
+
+export interface ProjectMessageStreamControlEvent {
   type:
-    | 'ui'
     | 'run_failed'
     | 'run_finished'
     | 'project'
   assistantMessageID?: string
   error?: string
   project?: Project
-  ui?: ProjectAssistantUIEvent
 }
 
 export interface Project {

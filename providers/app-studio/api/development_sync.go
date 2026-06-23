@@ -12,15 +12,17 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -215,39 +217,44 @@ func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.
 	return files, nil
 }
 
+func (s *Server) projectWorkspaceSyncDigest(ctx context.Context, scope workspace.Scope) (string, error) {
+	if s == nil || s.workspaces == nil {
+		return "", nil
+	}
+	files, err := s.projectWorkspaceSyncFiles(ctx, scope)
+	if err != nil {
+		return "", err
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
+	hash := sha256.New()
+	for _, file := range files {
+		hash.Write([]byte(file.Path))
+		hash.Write([]byte{0})
+		hash.Write([]byte(file.Content))
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (s *Server) projectWorkspaceSyncDigestChanged(ctx context.Context, scope workspace.Scope, before string, beforeOK bool) bool {
+	if !beforeOK {
+		return false
+	}
+	after, err := s.projectWorkspaceSyncDigest(ctx, scope)
+	return err == nil && after != before
+}
+
+func (s *Server) projectAssistantPreviewRefreshNeeded(ctx context.Context, scope workspace.Scope, before string, beforeOK bool, _ []projectToolCallStreamEvent) bool {
+	return s.projectWorkspaceSyncDigestChanged(ctx, scope, before, beforeOK)
+}
+
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 		return true
 	default:
 		return false
-	}
-}
-
-func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) {
-	if s.clients == nil {
-		klog.V(2).Infof("development sandbox sync after %s skipped for project %s: tenant client factory is not configured", projectToolBaseName(name), p.Name)
-		return
-	}
-	c, err := s.clientFor(id)
-	if err != nil {
-		klog.V(2).Infof("development sandbox sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
-		return
-	}
-	s.syncDevelopmentAfterMutationWithClient(c, id, p, name)
-}
-
-func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) {
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
-		return
-	}
-	lock := s.developmentSyncLock(id, p.Name)
-	lock.Lock()
-	defer lock.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), projectSandboxSyncTimeout)
-	defer cancel()
-	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
-		klog.V(2).Infof("development sandbox sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
 	}
 }

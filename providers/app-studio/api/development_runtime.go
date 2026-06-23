@@ -86,6 +86,10 @@ type previewTokenPayload struct {
 	ExpiresAt          int64  `json:"expiresAt"`
 }
 
+func previewScopeGrantKey(projectName, scope string) string {
+	return projectName + "\x00" + scope
+}
+
 type previewSigner struct {
 	secret []byte
 	now    func() time.Time
@@ -519,6 +523,12 @@ func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	scopedBasePath := scopedProjectPreviewBasePath(projectName, r.URL.Path)
+	if scopedBasePath != "" {
+		if handlePreviewCORSPreflight(w, r) {
+			return
+		}
+	}
 	if s.runtimeConfig == nil {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "runtime kubeconfig not configured")
 		return
@@ -535,7 +545,6 @@ func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Reques
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = transport
-	scopedBasePath := scopedProjectPreviewBasePath(projectName, r.URL.Path)
 	upstreamBasePath := runtimeServicePath(targetRef, "")
 	proxy.Director = func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
@@ -547,6 +556,9 @@ func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Reques
 		stripPreviewForwardedCredentials(req.Header)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		if scopedBasePath != "" {
+			applyPreviewCORSHeaders(resp.Header, r)
+		}
 		if resp.StatusCode == http.StatusServiceUnavailable && previewStatusContentType(resp.Header.Get("Content-Type")) {
 			raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			if err != nil {
@@ -581,6 +593,48 @@ func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Reques
 		return nil
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func handlePreviewCORSPreflight(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodOptions || !previewCORSOriginAllowed(r) {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")) == "" {
+		return false
+	}
+	applyPreviewCORSHeaders(w.Header(), r)
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+func applyPreviewCORSHeaders(header http.Header, r *http.Request) {
+	if !previewCORSOriginAllowed(r) {
+		return
+	}
+	header.Set("Access-Control-Allow-Origin", "null")
+	header.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
+	header.Set("Access-Control-Max-Age", "600")
+	if requestedHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers")); requestedHeaders != "" {
+		header.Set("Access-Control-Allow-Headers", requestedHeaders)
+	}
+	addPreviewVary(header, "Origin")
+	addPreviewVary(header, "Access-Control-Request-Method")
+	addPreviewVary(header, "Access-Control-Request-Headers")
+}
+
+func previewCORSOriginAllowed(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("Origin")) == "null"
+}
+
+func addPreviewVary(header http.Header, value string) {
+	for _, existing := range header.Values("Vary") {
+		for _, part := range strings.Split(existing, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), value) {
+				return
+			}
+		}
+	}
+	header.Add("Vary", value)
 }
 
 func previewStatusContentType(contentType string) bool {
@@ -737,6 +791,7 @@ func (s *Server) previewTokenFromRequest(w http.ResponseWriter, r *http.Request,
 			return previewTokenPayload{}, "", false
 		}
 		scope := previewTokenScope(token)
+		s.rememberPreviewScope(projectName, scope, payload)
 		setPreviewTokenCookie(w, r, projectName, scope, token, time.Unix(payload.ExpiresAt, 0))
 		http.Redirect(w, r, scopedProjectPreviewRedirectURL(projectName, scope, r.URL.Query()), http.StatusFound)
 		return previewTokenPayload{}, "", false
@@ -748,6 +803,11 @@ func (s *Server) previewTokenFromRequest(w http.ResponseWriter, r *http.Request,
 	}
 	cookie, err := r.Cookie(previewCookieName(projectName, scope))
 	if err != nil {
+		if errors.Is(err, http.ErrNoCookie) {
+			if payload, ok := s.previewPayloadForScope(projectName, scope); ok {
+				return payload, suffix, true
+			}
+		}
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing")
 		return previewTokenPayload{}, "", false
 	}
@@ -760,7 +820,57 @@ func (s *Server) previewTokenFromRequest(w http.ResponseWriter, r *http.Request,
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", err.Error())
 		return previewTokenPayload{}, "", false
 	}
+	s.rememberPreviewScope(projectName, scope, payload)
 	return payload, suffix, true
+}
+
+func (s *Server) rememberPreviewScope(projectName, scope string, payload previewTokenPayload) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.previewScopeGrants == nil {
+		s.previewScopeGrants = map[string]previewTokenPayload{}
+	}
+	now := s.previewNowLocked()
+	s.pruneExpiredPreviewScopeGrantsLocked(now)
+	if now.Unix() > payload.ExpiresAt {
+		return
+	}
+	s.previewScopeGrants[previewScopeGrantKey(projectName, scope)] = payload
+}
+
+func (s *Server) previewPayloadForScope(projectName, scope string) (previewTokenPayload, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.previewNowLocked()
+	s.pruneExpiredPreviewScopeGrantsLocked(now)
+	payload, ok := s.previewScopeGrants[previewScopeGrantKey(projectName, scope)]
+	if !ok {
+		return previewTokenPayload{}, false
+	}
+	if payload.Project != projectName || now.Unix() > payload.ExpiresAt {
+		delete(s.previewScopeGrants, previewScopeGrantKey(projectName, scope))
+		return previewTokenPayload{}, false
+	}
+	return payload, true
+}
+
+func (s *Server) previewNowLocked() time.Time {
+	now := time.Now()
+	if s.previewSigner != nil && s.previewSigner.now != nil {
+		now = s.previewSigner.now()
+	}
+	return now
+}
+
+func (s *Server) pruneExpiredPreviewScopeGrantsLocked(now time.Time) {
+	if len(s.previewScopeGrants) == 0 {
+		return
+	}
+	for key, payload := range s.previewScopeGrants {
+		if now.Unix() > payload.ExpiresAt {
+			delete(s.previewScopeGrants, key)
+		}
+	}
 }
 
 func setPreviewTokenCookie(w http.ResponseWriter, r *http.Request, projectName, scope, token string, expires time.Time) {
@@ -848,7 +958,7 @@ func scopedProjectPreviewRedirectURL(projectName, scope string, query url.Values
 
 func previewTokenScope(token string) string {
 	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])[:16]
+	return hex.EncodeToString(sum[:])[:32]
 }
 
 func previewProjectRequestScope(projectName, requestPath string) string {
@@ -879,7 +989,7 @@ func previewProjectRuntimeSuffix(projectName, requestPath string) string {
 }
 
 func validPreviewScope(scope string) bool {
-	if len(scope) != 16 {
+	if len(scope) != 32 {
 		return false
 	}
 	for _, ch := range scope {

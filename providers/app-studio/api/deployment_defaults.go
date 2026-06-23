@@ -20,11 +20,6 @@ import (
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 )
 
-const (
-	defaultSandboxRunnerImage         = "ghcr.io/faroshq/kedge-sandbox-runner:dev"
-	defaultSandboxTokenGeneratorImage = "bitnami/kubectl:1.34"
-)
-
 func defaultProjectSpec(projectName, displayName, description string, repository *aiv1alpha1.ProjectRepositoryBinding) aiv1alpha1.ProjectSpec {
 	return aiv1alpha1.ProjectSpec{
 		DisplayName:  displayName,
@@ -50,28 +45,34 @@ func defaultProjectDevelopmentEnvironment(projectName string) aiv1alpha1.Project
 				Kind:       "SandboxRunner",
 				Resource:   "sandboxrunners",
 			},
-			Values: projectDeploymentJSONValues(map[string]any{
-				"projectRef":          projectName,
-				"runnerImage":         sandboxRunnerImage(),
-				"tokenGeneratorImage": sandboxTokenGeneratorImage(),
-			}),
+			Values: projectDeploymentJSONValues(sandboxRunnerValues(projectName)),
 		}},
 	}
 }
 
+func sandboxRunnerValues(projectName string) map[string]any {
+	values := map[string]any{
+		"projectRef": projectName,
+	}
+	if image := sandboxRunnerImage(); image != "" {
+		values["runnerImage"] = image
+	}
+	if image := sandboxTokenGeneratorImage(); image != "" {
+		values["tokenGeneratorImage"] = image
+	}
+	return values
+}
+
 func sandboxRunnerImage() string {
-	return envOrDefault("APP_STUDIO_SANDBOX_RUNNER_IMAGE", defaultSandboxRunnerImage)
+	return envValue("APP_STUDIO_SANDBOX_RUNNER_IMAGE")
 }
 
 func sandboxTokenGeneratorImage() string {
-	return envOrDefault("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE", defaultSandboxTokenGeneratorImage)
+	return envValue("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE")
 }
 
-func envOrDefault(key, def string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return def
+func envValue(key string) string {
+	return strings.TrimSpace(os.Getenv(key))
 }
 
 func projectDeploymentJSONValues(values map[string]any) runtime.RawExtension {

@@ -41,12 +41,13 @@ providerKubeconfig:
 runtimeKubeconfig:
   secretName: ""
 
-# Images passed into infrastructure-backed SandboxRunner resources. The defaults
-# support local development; production installs should override both with
-# immutable digest references.
+# Images passed into infrastructure-backed SandboxRunner resources. They are
+# intentionally empty by default so installs do not silently trust mutable
+# development tags. Set both to immutable digest references before enabling the
+# sandbox runtime kubeconfig.
 sandboxRunner:
-  runnerImage: ghcr.io/faroshq/kedge-sandbox-runner:dev
-  tokenGeneratorImage: bitnami/kubectl:1.34
+  runnerImage: ""
+  tokenGeneratorImage: ""
 
 # Optional shared secret for signed preview URLs. When unset, the pod generates
 # an in-memory secret on startup; configure this for multi-replica deployments.

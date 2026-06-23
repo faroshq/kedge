@@ -321,15 +321,12 @@ spec:
                 app.kubernetes.io/name: sandbox-runner
                 app.kubernetes.io/instance: ${schema.spec.name}
                 app.kubernetes.io/component: runner
-            policyTypes: ["Ingress", "Egress"]
-            ingress:
-              - from:
-                  - podSelector: {}
-                ports:
-                  - protocol: TCP
-                    port: ${schema.spec.port}
-                  - protocol: TCP
-                    port: 7070
+            # Do not set an ingress default-deny here. App Studio reaches this
+            # service through the Kubernetes API server's service proxy, and the
+            # proxy source is not portable enough to model with a pod selector.
+            # Preview/control authorization stays at the App Studio proxy,
+            # runtime kubeconfig RBAC, and runner control-token layers.
+            policyTypes: ["Egress"]
             egress:
               - ports:
                   - protocol: UDP

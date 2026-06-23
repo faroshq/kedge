@@ -170,12 +170,11 @@ func TestSandboxRunnerUsesManagedJobForControlToken(t *testing.T) {
 		t.Fatalf("runnerNetwork component selector = %q, want runner", got)
 	}
 	policyTypes := mustNestedSlice(t, runnerNetwork, "template", "spec", "policyTypes")
-	if !hasString(policyTypes, "Ingress") || !hasString(policyTypes, "Egress") {
-		t.Fatalf("runnerNetwork policyTypes = %#v, want Ingress and Egress", policyTypes)
+	if hasString(policyTypes, "Ingress") || !hasString(policyTypes, "Egress") {
+		t.Fatalf("runnerNetwork policyTypes = %#v, want egress-only policy", policyTypes)
 	}
-	ingress := mustNestedSlice(t, runnerNetwork, "template", "spec", "ingress")
-	if len(ingress) == 0 {
-		t.Fatal("runnerNetwork must isolate ingress with explicit allow rules")
+	if _, ok, err := unstructured.NestedSlice(runnerNetwork, "template", "spec", "ingress"); err != nil || ok {
+		t.Fatalf("runnerNetwork ingress = ok %t err %v, want absent so Kubernetes service proxy remains portable", ok, err)
 	}
 	egress := mustNestedSlice(t, runnerNetwork, "template", "spec", "egress")
 	if len(egress) == 0 {

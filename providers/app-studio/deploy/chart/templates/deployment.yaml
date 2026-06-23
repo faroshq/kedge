@@ -1,5 +1,13 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
 {{- $runtimeKubeconfigSecret := .Values.runtimeKubeconfig.secretName | default "" -}}
+{{- $sandboxRunnerImage := .Values.sandboxRunner.runnerImage | default "" -}}
+{{- $sandboxTokenGeneratorImage := .Values.sandboxRunner.tokenGeneratorImage | default "" -}}
+{{- if and $runtimeKubeconfigSecret (not $sandboxRunnerImage) -}}
+{{- fail "sandboxRunner.runnerImage is required when runtimeKubeconfig.secretName is set; use an immutable digest reference" -}}
+{{- end -}}
+{{- if and $runtimeKubeconfigSecret (not $sandboxTokenGeneratorImage) -}}
+{{- fail "sandboxRunner.tokenGeneratorImage is required when runtimeKubeconfig.secretName is set; use an immutable digest reference" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -89,10 +97,14 @@ spec:
             - name: APP_STUDIO_RUNTIME_KUBECONFIG
               value: /var/run/secrets/kedge/runtime/kubeconfig
             {{- end }}
+            {{- if $sandboxRunnerImage }}
             - name: APP_STUDIO_SANDBOX_RUNNER_IMAGE
-              value: {{ .Values.sandboxRunner.runnerImage | quote }}
+              value: {{ $sandboxRunnerImage | quote }}
+            {{- end }}
+            {{- if $sandboxTokenGeneratorImage }}
             - name: APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE
-              value: {{ .Values.sandboxRunner.tokenGeneratorImage | quote }}
+              value: {{ $sandboxTokenGeneratorImage | quote }}
+            {{- end }}
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}
             {{- if .Values.previewTokenSecretRef.name }}

@@ -31,9 +31,8 @@ sandbox.
 Known limitations:
 
 - no AppArmor or runtime-class hardening is configured
-- runner images default to local-dev tags in App Studio config; production
-  installs must override them with immutable digest references before creating
-  `SandboxRunner` resources
+- runner images are not defaulted by App Studio; configure immutable digest
+  references before creating `SandboxRunner` resources
 - file sync is text-file oriented and skips binary or oversized App Studio files
 
 Before promoting this beyond local/dev use, add explicit runtime isolation,

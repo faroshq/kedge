@@ -272,6 +272,7 @@ const developmentPreviewAuthorizationError = ref<string | null>(null)
 const developmentPreviewReadinessMessage = ref<string | null>(null)
 const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewAuthorizationKey = ref('')
+const developmentPreviewTokenExpiresAt = ref('')
 const developmentPreviewFrameKey = ref(0)
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
@@ -612,6 +613,7 @@ watch(
     developmentPreviewReadinessMessage.value = null
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewTokenExpiresAt.value = ''
     clearDevelopmentPreviewAuthorizationRetry()
     clearDevelopmentPreviewAuthorizationRenewal()
     developmentPreviewFrameKey.value += 1
@@ -1236,6 +1238,7 @@ async function syncDevelopmentPreview() {
       const key = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
       developmentPreviewOverrideURL.value = previewURL
       developmentPreviewAuthorizationKey.value = key
+      developmentPreviewTokenExpiresAt.value = authorization.previewTokenExpiresAt
       developmentPreviewReadinessMessage.value = null
       clearDevelopmentPreviewAuthorizationRetry()
       scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
@@ -1259,6 +1262,7 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
     developmentPreviewReadinessMessage.value = null
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewTokenExpiresAt.value = ''
     clearDevelopmentPreviewAuthorizationRetry()
     clearDevelopmentPreviewAuthorizationRenewal()
     return
@@ -1278,6 +1282,7 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
     if (!authorization.ready) {
       developmentPreviewOverrideURL.value = null
       developmentPreviewAuthorizationKey.value = key
+      developmentPreviewTokenExpiresAt.value = ''
       developmentPreviewReadinessMessage.value = authorization.message || 'Preview is getting ready. The sandbox runtime is not serving traffic yet.'
       scheduleDevelopmentPreviewAuthorizationRetry(projectName, key)
       clearDevelopmentPreviewAuthorizationRenewal()
@@ -1287,6 +1292,7 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
     if (!previewURL) throw new Error('sandbox preview authorization returned no preview URL')
     developmentPreviewOverrideURL.value = previewURL
     developmentPreviewAuthorizationKey.value = key
+    developmentPreviewTokenExpiresAt.value = authorization.previewTokenExpiresAt
     developmentPreviewReadinessMessage.value = null
     clearDevelopmentPreviewAuthorizationRetry()
     scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
@@ -1295,6 +1301,7 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewTokenExpiresAt.value = ''
     developmentPreviewReadinessMessage.value = null
     clearDevelopmentPreviewAuthorizationRetry()
     clearDevelopmentPreviewAuthorizationRenewal()
@@ -1370,29 +1377,17 @@ function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reas
   return typeof value === 'string' ? value : ''
 }
 
-function handleDevelopmentPreviewFrameLoad(event: Event) {
+function handleDevelopmentPreviewFrameLoad() {
   const projectName = selected.value?.name
   const key = developmentPreviewAuthorizationKey.value
   if (!projectName || !key || !developmentPreviewNeedsAuthorization.value) return
-  const frame = event.target as HTMLIFrameElement | null
-  if (!developmentPreviewFrameLoadedUnauthorized(frame)) return
+  if (!developmentPreviewTokenExpired()) return
   void authorizeDevelopmentPreview({ force: true })
 }
 
-function developmentPreviewFrameLoadedUnauthorized(frame: HTMLIFrameElement | null): boolean {
-  try {
-    const text = frame?.contentDocument?.body?.textContent?.trim() ?? ''
-    if (!text) return false
-    try {
-      const status = JSON.parse(text) as { kind?: unknown; code?: unknown; reason?: unknown }
-      return status.kind === 'Status' && status.code === 401 && status.reason === 'Unauthorized'
-    } catch {
-      const lower = text.toLowerCase()
-      return lower.includes('unauthorized') && lower.includes('preview token')
-    }
-  } catch {
-    return false
-  }
+function developmentPreviewTokenExpired(): boolean {
+  const expiresMs = Date.parse(developmentPreviewTokenExpiresAt.value)
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now()
 }
 
 function workbenchTabButtonClass(tab: WorkbenchTab): string {

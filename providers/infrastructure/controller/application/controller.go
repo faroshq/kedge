@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -48,6 +49,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	apiskcpv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -86,6 +89,7 @@ const (
 	// their workspace; BYO mode reads oidcClientSecretKey out of it.
 	cloudCredentialsSecret = "cloud-credentials"
 
+	modeNone     = "none"
 	modeBYO      = "byo"
 	modePlatform = "platform"
 )
@@ -137,7 +141,14 @@ func New(cfg Config) (*Controller, error) {
 
 	c := &Controller{cfg: cfg}
 
-	scheme := runtime.NewScheme() // Application + Secret read unstructured; no typed registration needed.
+	// Application + Secret are read unstructured, but the apiexport multicluster
+	// provider builds a TYPED cache over APIExportEndpointSlice to discover the
+	// virtual-workspace URL — so the kcp apis scheme must be registered or the
+	// manager fails with "no kind is registered for the type
+	// v1alpha1.APIExportEndpointSlice". Mirrors the kuery engagement controller.
+	scheme := runtime.NewScheme()
+	utilruntime.Must(apiskcpv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(apiskcpv1alpha2.AddToScheme(scheme))
 
 	provider, err := apiexport.New(cfg.ProviderConfig, cfg.APIExportName, apiexport.Options{Scheme: scheme})
 	if err != nil {
@@ -220,9 +231,20 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// 2. Bridge the OIDC client secret onto the runtime cluster.
 	mode := nestedString(app, "spec", "oidc", "mode")
 	if mode == "" {
-		mode = modePlatform
+		// Matches the template schema default. An instance authored without an
+		// oidc block gets the no-gate demo behavior rather than a hard error.
+		mode = modeNone
 	}
 	switch mode {
+	case modeNone:
+		// No auth gate: the Ingress routes straight to the frontend and the
+		// oauth2-proxy resources are excluded from the RGD (includeWhen), so
+		// there is no client secret to bridge. Surface the unauthenticated
+		// posture on the instance so it's not mistaken for a misconfiguration.
+		if err := c.setOIDCCondition(ctx, tenantClient, app, "True", "GateDisabled",
+			"oidc.mode=none — no auth gate (demo/dev only); anyone with the URL can reach the app"); err != nil {
+			return ctrl.Result{}, err
+		}
 	case modeBYO:
 		if err := c.bridgeBYOSecret(ctx, tenantClient, tenant, app.GetName()); err != nil {
 			log.Error(err, "bridging BYO OIDC client secret")

@@ -8,6 +8,83 @@ spec:
   category: Workloads
   version: 0.1.0
   backend: kro
+  # Example payload the portal pre-fills the provision form with, so the 3-tier
+  # demo is effectively one click. The frontend/backend images are the example
+  # apps under examples/application/apps/, built + pushed to :latest by
+  # .github/workflows/infrastructure-examples.yaml; oidc.mode=none drops the auth
+  # gate so "Provision → see it working" needs zero external setup (demo/dev).
+  sampleValues:
+    name: demo
+    frontendImage: ghcr.io/faroshq/kedge-infrastructure-example-frontend:latest
+    backendImage: ghcr.io/faroshq/kedge-infrastructure-example-backend:latest
+    database:
+      version: "16"
+    oidc:
+      mode: none
+  # Operational guidance for AI agents discovering this template over MCP. Not
+  # shown in the portal UI — it tells an LLM how to use the template and where
+  # its outputs (URL, DB secret) land.
+  agent:
+    usage: |
+      Deploys a 3-tier web app on ONE public URL: UI at `/`, API at `/api/*`, and a
+      managed PostgreSQL database. Choose this to ship a containerized web app with
+      a relational DB behind a single endpoint when you can supply both images.
+
+      YOU SUPPLY exactly two container images — frontendImage and backendImage —
+      and nothing else app-side. The platform provisions Postgres, injects the DB
+      connection, path-routes one URL to both tiers, and (in byo mode) authenticates
+      in front; you do NOT create the database, Secrets, Services, or Ingress. This
+      contract is fully self-contained — build BOTH images from it BEFORE you
+      provision; the only runtime couplings are the env var and ports below.
+
+      BOTH IMAGES:
+        • Plain HTTP server, any language/base image. Bind to 0.0.0.0 on the port
+          below (NOT 127.0.0.1), or the platform cannot route to it.
+        • Stateless — no local/persistent disk; ALL state lives in Postgres. Pods
+          may be restarted or scaled (the *Replicas inputs).
+
+      BACKEND (backendImage) — the platform routes `/api/*` to it:
+        • Env DATABASE_URL is injected — a PostgreSQL URI of the form
+          `postgres://appuser:<password>@<host>:5432/appdb`. Connect from this env
+          ONLY (never read a Kubernetes Secret). The URI has NO sslmode and the
+          in-cluster Postgres has TLS disabled, so connect with sslmode=disable
+          (append `?sslmode=disable` / set it if your driver defaults to requiring
+          TLS, e.g. Node `pg`, JDBC).
+        • Engine: PostgreSQL, major version = the database.version input ("15"|"16",
+          default "16"). Database `appdb`, user `appuser`. It starts EMPTY — create
+          your schema / run migrations on startup, idempotently.
+        • Postgres may not be ready the moment you start (it boots alongside you) —
+          RETRY the initial connection instead of exiting.
+        • Listen on backendPort (input, default 8080). Serve your routes under the
+          `/api/` prefix; the path is PRESERVED (you receive e.g. `/api/items`, not
+          `/items`). A readiness endpoint that pings the DB is recommended.
+        • The HTTP API shape (routes, JSON) is YOUR design — you also build the
+          frontend that calls it; the only platform constraint is the `/api` prefix.
+
+      FRONTEND (frontendImage) — the platform routes `/` to it:
+        • No env is injected. Listen on frontendPort (input, default 8080); serve
+          the UI on `/`.
+        • Call the backend from the BROWSER at `/api/*` on the SAME origin (e.g.
+          `fetch("/api/items")`). There is NO separate backend host/URL — do not
+          hardcode one or expect a backend env var. No database access.
+
+      EXPOSURE & AUTH (oidc.mode input):
+        • none — no auth gate; the URL is public. Demo/dev only.
+        • byo  — oauth2-proxy gates BOTH `/` and `/api` with the caller's OIDC IdP
+          (set oidc.issuerURL + oidc.clientID; client secret via prerequisites).
+        • platform — kedge SSO; NOT yet supported.
+
+      INPUTS you set when provisioning: frontendImage, backendImage (required);
+      name, frontendPort, backendPort, frontendReplicas, backendReplicas,
+      database.version, oidc.*. The platform stamps spec.expose.fqdn and
+      spec.credentialsSecretName — do not set those.
+    prerequisites:
+      - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, key 'oidc_client_secret' = the OAuth2 client secret for your oidc.clientID."
+    outputs:
+      - "status.url — the public HTTPS URL the app is served on (status.host = bare hostname)."
+      - "status.redirectURL — the OIDC redirect/callback URL to register with your IdP (byo mode)."
+      - "Per-tier readiness: status.frontendReady / backendReady / databaseReady / oauthReady (ready replica counts)."
+      - "The backend's DATABASE_URL env is sourced from Secret '<name>-db-credentials' (key 'uri') in the instance namespace — informational; the image just reads the DATABASE_URL env, it never reads the Secret."
   instanceCRD:
     group: infrastructure.kedge.faros.sh
     version: v1alpha1
@@ -60,8 +137,12 @@ spec:
         maximum: 10
 
       # ── Database tier (Postgres; always provisioned in v1) ──
+      # default: {} so an omitted database object is instantiated and its nested
+      # defaults (version/size) apply — the RGD references ${schema.spec.database.version}
+      # unconditionally, so a missing database object fails resource rendering.
       database:
         type: object
+        default: {}
         properties:
           size:
             type: string
@@ -74,8 +155,11 @@ spec:
             default: "16"
 
       # ── Exposure ──
+      # default: {} so nested defaults apply and the controller can stamp fqdn
+      # onto an instance that omitted the expose object.
       expose:
         type: object
+        default: {}
         properties:
           hostnamePrefix:
             type: string
@@ -87,14 +171,17 @@ spec:
             description: "Computed by the platform — do NOT set. The public hostname the app is served on."
 
       # ── OIDC (the gate in front of the frontend) ──
+      # default: {} so oidc.mode defaults to "none" when the object is omitted —
+      # the Ingress backend references ${schema.spec.oidc.mode} unconditionally.
       oidc:
         type: object
+        default: {}
         properties:
           mode:
             type: string
-            enum: ["platform", "byo"]
-            default: "byo"
-            description: "byo (default, supported) = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
+            enum: ["none", "byo", "platform"]
+            default: "none"
+            description: "none (default) = NO auth gate; the Ingress routes straight to the frontend so anyone with the URL can reach it (demo/dev only). byo = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
           issuerURL:
             type: string
             description: "BYO mode: your IdP's OIDC issuer URL (required)."
@@ -342,10 +429,9 @@ spec:
                 containers:
                   - name: frontend
                     image: ${schema.spec.frontendImage}
-                    env:
-                      # In-cluster URL of the backend tier.
-                      - name: BACKEND_URL
-                        value: http://${schema.spec.name}-backend:${schema.spec.backendPort}
+                    # UI only — it calls the backend from the browser at
+                    # /api/* on the same origin (the exposure layer routes /api
+                    # to the backend), so no BACKEND_URL / server-side proxy.
                     ports:
                       - containerPort: ${schema.spec.frontendPort}
       - id: frontendService
@@ -368,6 +454,8 @@ spec:
       # pwgen Job fills it once; rotating it would invalidate live sessions,
       # so the Job no-ops if it's already set.
       - id: oauthCookieSecret
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
           kind: Secret
@@ -375,6 +463,8 @@ spec:
             name: ${schema.spec.name}-oauth-cookie
             namespace: default
       - id: oauthPwgenAccount
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
           kind: ServiceAccount
@@ -382,6 +472,8 @@ spec:
             name: ${schema.spec.name}-oauth-pwgen
             namespace: default
       - id: oauthPwgenRole
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: rbac.authorization.k8s.io/v1
           kind: Role
@@ -393,6 +485,8 @@ spec:
               resources: ["secrets"]
               verbs: ["get", "patch"]
       - id: oauthPwgenBinding
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: rbac.authorization.k8s.io/v1
           kind: RoleBinding
@@ -408,6 +502,8 @@ spec:
               name: ${oauthPwgenAccount.metadata.name}
               namespace: default
       - id: oauthPwgen
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: batch/v1
           kind: Job
@@ -439,6 +535,8 @@ spec:
                           echo "cookie secret already present for $SECRET"
                         fi
       - id: oauthDeployment
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: apps/v1
           kind: Deployment
@@ -463,7 +561,13 @@ spec:
                       - --oidc-issuer-url=${schema.spec.oidc.issuerURL}
                       - --client-id=${schema.spec.oidc.clientID}
                       - --redirect-url=https://${schema.spec.expose.fqdn}/oauth2/callback
-                      - --upstream=http://${schema.spec.name}-frontend:${schema.spec.frontendPort}
+                      # Path-routed upstreams, both behind this gate: /api/* →
+                      # backend, everything else → frontend. oauth2-proxy picks
+                      # the longest matching path prefix. This is the byo-mode
+                      # equivalent of the Ingress /api path used in mode=none, and
+                      # keeps the backend authenticated (never exposed directly).
+                      - --upstream=http://${schema.spec.name}-backend:${string(schema.spec.backendPort)}/api/
+                      - --upstream=http://${schema.spec.name}-frontend:${string(schema.spec.frontendPort)}
                       - --http-address=0.0.0.0:4180
                       - --scope=${schema.spec.oidc.scopes}
                       # v1: allow any successfully-authenticated user. In
@@ -490,6 +594,8 @@ spec:
                     ports:
                       - containerPort: 4180
       - id: oauthService
+        includeWhen:
+          - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
           kind: Service
@@ -508,8 +614,10 @@ spec:
       # Plain Ingress; the controller is chosen by ${kedge.ingressClass}
       # (substituted before the RGD is authored). No tls block — TLS
       # terminates at the Cloudflare edge; the cloudflare ingress controller
-      # creates the DNS record + tunnel route from this host. Routes the
-      # public host to oauth2-proxy, which proxies to the frontend.
+      # creates the DNS record + tunnel route from this host. The backend is
+      # mode-dependent: oidc.mode=none routes the public host straight to the
+      # frontend Service (no gate — demo/dev); otherwise it routes to
+      # oauth2-proxy, which authenticates and then proxies to the frontend.
       - id: ingress
         template:
           apiVersion: networking.k8s.io/v1
@@ -527,16 +635,50 @@ spec:
                       pathType: Prefix
                       backend:
                         service:
-                          name: ${schema.spec.name}-oauth
+                          # Single-quoted: the CEL ternary contains ": " which
+                          # YAML would otherwise read as a mapping. kro resolves
+                          # the ${...} expression regardless of YAML scalar type.
+                          name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-frontend" : schema.spec.name + "-oauth"}'
                           port:
-                            number: 4180
+                            number: '${schema.spec.oidc.mode == "none" ? schema.spec.frontendPort : 4180}'
+
+      # In mode=none there is no oauth2-proxy to path-route, so a second Ingress
+      # adds /api → backend alongside the "/" → frontend rule above (same host;
+      # the ingress controller merges them and longest-prefix wins). Gated to
+      # none — in byo this path would bypass the gate, so there oauth2-proxy does
+      # the /api routing instead (see its upstreams).
+      - id: ingressAPI
+        includeWhen:
+          - '${schema.spec.oidc.mode == "none"}'
+        template:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: ${schema.spec.name}-api
+            namespace: default
+          spec:
+            ingressClassName: ${kedge.ingressClass}
+            rules:
+              - host: ${schema.spec.expose.fqdn}
+                http:
+                  paths:
+                    - path: /api
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: ${schema.spec.name}-backend
+                          port:
+                            number: ${schema.spec.backendPort}
     # Projected onto the instance in the tenant's kcp workspace. url/host are
-    # derived from the controller-stamped fqdn; per-tier readiness lets the
+    # read from the Ingress (this kro fork forbids ${schema.*} in status — status
+    # may reference resources only — so we source the controller-stamped fqdn from
+    # the Ingress rule rather than schema.spec.expose.fqdn). The Ingress is always
+    # created (only its backend changes by mode). Per-tier readiness lets the
     # portal show progress. No secret values are surfaced.
     status:
-      url: ${"https://" + schema.spec.expose.fqdn}
-      host: ${schema.spec.expose.fqdn}
-      redirectURL: ${"https://" + schema.spec.expose.fqdn + "/oauth2/callback"}
+      url: ${"https://" + ingress.spec.rules[0].host}
+      host: ${ingress.spec.rules[0].host}
+      redirectURL: ${"https://" + ingress.spec.rules[0].host + "/oauth2/callback"}
       frontendReady: ${frontendDeployment.status.readyReplicas}
       backendReady: ${backendDeployment.status.readyReplicas}
       databaseReady: ${dbStatefulSet.status.readyReplicas}

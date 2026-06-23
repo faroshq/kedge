@@ -32,7 +32,7 @@ import (
 // JSON-schema-shaped InputsSchema the DynamicForm consumes.
 type Template struct {
 	// Name is the RGD's metadata.name; it doubles as the template
-	// identifier used in API URLs (POST /api/instances {templateName}).
+	// identifier callers reference when provisioning an instance.
 	Name string `json:"name"`
 	// DisplayName, Description, Category, Cloud are pulled from the
 	// RGD's labels/annotations (see kedge.faros.sh/* convention in
@@ -43,7 +43,7 @@ type Template struct {
 	Category    string `json:"category,omitempty"`
 	Cloud       string `json:"cloud,omitempty"`
 	// Version is read from the kedge.faros.sh/template-version label.
-	// Required by POST /api/instances so we never silently provision
+	// Required when provisioning so we never silently provision
 	// against a different RGD generation than the user previewed.
 	Version string `json:"version,omitempty"`
 	// IconURL is an optional asset URL stored in the
@@ -74,6 +74,22 @@ type Template struct {
 	// author via the kedge.faros.sh/sample-values annotation. The
 	// portal uses it to seed the form so users see a working example.
 	SampleValues map[string]any `json:"sampleValues,omitempty"`
+	// Agent is operational guidance for AI agents that discover this
+	// template via MCP (what it does, prerequisites, where outputs land).
+	// Read from the Template's spec.agent; nil when not provided.
+	Agent *TemplateAgent `json:"agent,omitempty"`
+}
+
+// TemplateAgent is machine-facing guidance surfaced to LLM agents over MCP.
+// Mirrors apis/v1alpha1.TemplateAgent (this is the read-side DTO).
+type TemplateAgent struct {
+	// Usage is markdown guidance: what the template provisions, when to use it,
+	// how it's exposed, and how to operate the result.
+	Usage string `json:"usage,omitempty"`
+	// Prerequisites the caller must satisfy before provisioning.
+	Prerequisites []string `json:"prerequisites,omitempty"`
+	// Outputs describe where the instance's results land (URL, DB Secret, …).
+	Outputs []string `json:"outputs,omitempty"`
 }
 
 // Instance is a portal-shaped view of a kro RGD instance CR in the
@@ -134,7 +150,7 @@ const (
 	// you want consumers' bookmarks to keep working.
 	LabelTemplateName = "kedge.faros.sh/template-name"
 	// LabelTemplateVersion pins a semver to the RGD revision. Required
-	// in POST /api/instances so a chart bump doesn't silently change
+	// when provisioning so a chart bump doesn't silently change
 	// what gets provisioned.
 	LabelTemplateVersion = "kedge.faros.sh/template-version"
 	// LabelCategory lets the catalog UI render filter chips.

@@ -29,10 +29,6 @@ func defaultProjectSpec(projectName, displayName, description string, repository
 }
 
 func defaultProjectDevelopmentEnvironment(projectName string) aiv1alpha1.ProjectEnvironmentSpec {
-	instanceName := projectName
-	if instanceName == "" {
-		instanceName = "app"
-	}
 	return aiv1alpha1.ProjectEnvironmentSpec{
 		Name:       "development",
 		Mode:       aiv1alpha1.ProjectEnvironmentModeLive,
@@ -40,13 +36,12 @@ func defaultProjectDevelopmentEnvironment(projectName string) aiv1alpha1.Project
 		Promotion:  aiv1alpha1.ProjectPromotionManual,
 		Bindings: []aiv1alpha1.ProjectProviderBindingSpec{{
 			Name:     "dev",
-			Provider: "sandbox",
+			Provider: "app-studio",
 			Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 			ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-				Name:       instanceName + "-dev",
-				APIVersion: "sandbox.kedge.faros.sh/v1alpha1",
-				Kind:       "DevEnvironment",
-				Resource:   "devenvironments",
+				APIVersion: "infrastructure.kedge.faros.sh/v1alpha1",
+				Kind:       "SandboxRunner",
+				Resource:   "sandboxrunners",
 			},
 			Values: projectDeploymentJSONValues(map[string]any{
 				"projectRef": projectName,

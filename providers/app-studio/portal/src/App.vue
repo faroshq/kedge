@@ -76,6 +76,7 @@ type ProjectAssistantActionView = ProjectAssistantUIAction
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
   actions?: ProjectAssistantActionView[]
+  progress?: string[]
   interrupt?: ProjectAssistantUIInterruptRequest
 }
 type WorkbenchTab = 'preview' | 'review' | 'providers'
@@ -92,6 +93,7 @@ interface PendingFollowUpView {
 interface ProjectDevelopmentPreviewAuthorization {
   ready: boolean
   previewURL: string
+  previewTokenExpiresAt: string
   message: string
   reason: string
 }
@@ -111,6 +113,9 @@ const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account befo
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS = 5 * 60 * 1000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MIN_MS = 1000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS = 10 * 60 * 1000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const PROJECT_ASSISTANT_ACTION_STATUSES = new Set<ProjectAssistantActionStatus>([
   'requested',
@@ -218,6 +223,7 @@ const projects = ref<Project[]>([])
 const providers = ref<ProviderItem[]>([])
 const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
+const conversationMessages = computed(() => projectMessagesForConversation(messages.value))
 const pendingApproval = computed<PendingApprovalView | null>(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const message = messages.value[i]
@@ -298,6 +304,7 @@ let landingPlaceholderTypingTimer: number | undefined
 let landingPlaceholderIndex = 0
 let developmentPreviewAuthorizationSerial = 0
 let developmentPreviewAuthorizationRetryTimer: number | undefined
+let developmentPreviewAuthorizationRenewalTimer: number | undefined
 let activeMessageStreamController: AbortController | null = null
 
 const routeSegment = computed(() => {
@@ -541,8 +548,8 @@ const developmentEnvironment = computed(() => {
 const developmentBinding = computed(() => {
   const bindings = developmentEnvironment.value?.bindings ?? []
   return (
-    bindings.find((binding) => binding.name === 'dev' && binding.provider === 'sandbox') ??
-    bindings.find((binding) => binding.provider === 'sandbox') ??
+    bindings.find((binding) => binding.name === 'dev' && binding.provider === 'app-studio') ??
+    bindings.find((binding) => binding.provider === 'app-studio') ??
     bindings[0] ??
     null
   )
@@ -554,7 +561,7 @@ const developmentPreviewRawURL = computed(() => {
 })
 
 const developmentPreviewNeedsAuthorization = computed(() => {
-  return developmentBinding.value?.provider === 'sandbox' && developmentPreviewRawURL.value !== ''
+  return developmentBinding.value?.provider === 'app-studio' && developmentPreviewRawURL.value !== ''
 })
 
 const developmentPreviewURL = computed(() => {
@@ -606,6 +613,7 @@ watch(
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
     clearDevelopmentPreviewAuthorizationRetry()
+    clearDevelopmentPreviewAuthorizationRenewal()
     developmentPreviewFrameKey.value += 1
   },
 )
@@ -664,6 +672,7 @@ useEscapeKey(() => {
 onBeforeUnmount(() => {
   clearInitializationRetry()
   clearDevelopmentPreviewAuthorizationRetry()
+  clearDevelopmentPreviewAuthorizationRenewal()
   clearLandingPlaceholderRotation()
   cancelMessageStream()
   detachMountedTool()
@@ -739,6 +748,12 @@ function clearDevelopmentPreviewAuthorizationRetry() {
   if (developmentPreviewAuthorizationRetryTimer === undefined) return
   window.clearTimeout(developmentPreviewAuthorizationRetryTimer)
   developmentPreviewAuthorizationRetryTimer = undefined
+}
+
+function clearDevelopmentPreviewAuthorizationRenewal() {
+  if (developmentPreviewAuthorizationRenewalTimer === undefined) return
+  window.clearTimeout(developmentPreviewAuthorizationRenewalTimer)
+  developmentPreviewAuthorizationRenewalTimer = undefined
 }
 
 async function loadProviders() {
@@ -1082,11 +1097,7 @@ async function createProjectAndStartConversation(content: string) {
     }, controller.signal)
 
     if (projectName) {
-      if (assistantMessageID && messages.value.every((message) => message.id !== assistantMessageID)) {
-        messages.value = (await api.listAllMessages(props.ctx, projectName)).map(toProjectMessageView)
-      }
-      selected.value = await api.getProject(props.ctx, projectName)
-      projects.value = await api.listProjects(props.ctx)
+      await refreshProjectConversationAfterAssistantRun(projectName)
     }
   } catch (e) {
     if (isAbortError(e)) {
@@ -1201,6 +1212,15 @@ async function refreshSelectedProjectConversation(projectName: string) {
   projects.value = projectList
 }
 
+async function refreshProjectConversationAfterAssistantRun(projectName: string) {
+  try {
+    await refreshSelectedProjectConversation(projectName)
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e)
+    error.value = detail ? `Assistant finished, but the conversation did not refresh: ${detail}` : 'Assistant finished, but the conversation did not refresh.'
+  }
+}
+
 async function syncDevelopmentPreview() {
   const projectName = selected.value?.name
   if (!projectName || developmentSyncBusy.value) return
@@ -1209,13 +1229,16 @@ async function syncDevelopmentPreview() {
   developmentSyncError.value = null
   try {
     const result = await api.syncDevelopment(props.ctx, projectName)
-    const previewURL = projectDevelopmentPreviewURL(result)
+    const authorization = projectDevelopmentPreviewAuthorization(result)
+    const previewURL = authorization.previewURL
     selected.value = await api.getProject(props.ctx, projectName)
     if (previewURL) {
+      const key = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
       developmentPreviewOverrideURL.value = previewURL
-      developmentPreviewAuthorizationKey.value = developmentPreviewKey(projectName, developmentPreviewRawURL.value)
+      developmentPreviewAuthorizationKey.value = key
       developmentPreviewReadinessMessage.value = null
       clearDevelopmentPreviewAuthorizationRetry()
+      scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
     }
     developmentPreviewFrameKey.value += 1
     developmentSyncStatus.value = 'Synced'
@@ -1226,7 +1249,7 @@ async function syncDevelopmentPreview() {
   }
 }
 
-async function authorizeDevelopmentPreview() {
+async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
   const projectName = selected.value?.name
   const rawURL = developmentPreviewRawURL.value
   if (!projectName || !developmentPreviewNeedsAuthorization.value) {
@@ -1237,12 +1260,14 @@ async function authorizeDevelopmentPreview() {
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
     clearDevelopmentPreviewAuthorizationRetry()
+    clearDevelopmentPreviewAuthorizationRenewal()
     return
   }
   const key = developmentPreviewKey(projectName, rawURL)
-  if (developmentPreviewOverrideURL.value && developmentPreviewAuthorizationKey.value === key) return
+  if (!options.force && developmentPreviewOverrideURL.value && developmentPreviewAuthorizationKey.value === key) return
 
   clearDevelopmentPreviewAuthorizationRetry()
+  clearDevelopmentPreviewAuthorizationRenewal()
   const serial = ++developmentPreviewAuthorizationSerial
   developmentPreviewAuthorizing.value = true
   developmentPreviewAuthorizationError.value = null
@@ -1255,6 +1280,7 @@ async function authorizeDevelopmentPreview() {
       developmentPreviewAuthorizationKey.value = key
       developmentPreviewReadinessMessage.value = authorization.message || 'Preview is getting ready. The sandbox runtime is not serving traffic yet.'
       scheduleDevelopmentPreviewAuthorizationRetry(projectName, key)
+      clearDevelopmentPreviewAuthorizationRenewal()
       return
     }
     const previewURL = authorization.previewURL
@@ -1263,6 +1289,7 @@ async function authorizeDevelopmentPreview() {
     developmentPreviewAuthorizationKey.value = key
     developmentPreviewReadinessMessage.value = null
     clearDevelopmentPreviewAuthorizationRetry()
+    scheduleDevelopmentPreviewAuthorizationRenewal(projectName, key, authorization.previewTokenExpiresAt)
     developmentPreviewFrameKey.value += 1
   } catch (e) {
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
@@ -1270,6 +1297,7 @@ async function authorizeDevelopmentPreview() {
     developmentPreviewAuthorizationKey.value = ''
     developmentPreviewReadinessMessage.value = null
     clearDevelopmentPreviewAuthorizationRetry()
+    clearDevelopmentPreviewAuthorizationRenewal()
     developmentPreviewAuthorizationError.value = e instanceof Error ? e.message : String(e)
   } finally {
     if (serial === developmentPreviewAuthorizationSerial) developmentPreviewAuthorizing.value = false
@@ -1283,6 +1311,24 @@ function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: 
     if (selected.value?.name !== projectName || developmentPreviewAuthorizationKey.value !== key) return
     void authorizeDevelopmentPreview()
   }, DEVELOPMENT_PREVIEW_AUTH_RETRY_MS)
+}
+
+function scheduleDevelopmentPreviewAuthorizationRenewal(projectName: string, key: string, expiresAt: string) {
+  clearDevelopmentPreviewAuthorizationRenewal()
+  const expiresMs = Date.parse(expiresAt)
+  if (!Number.isFinite(expiresMs)) return
+  const delay = Math.min(
+    DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS,
+    Math.max(
+      DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MIN_MS,
+      expiresMs - Date.now() - DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS,
+    ),
+  )
+  developmentPreviewAuthorizationRenewalTimer = window.setTimeout(() => {
+    developmentPreviewAuthorizationRenewalTimer = undefined
+    if (selected.value?.name !== projectName || developmentPreviewAuthorizationKey.value !== key) return
+    void authorizeDevelopmentPreview({ force: true })
+  }, delay)
 }
 
 function developmentPreviewKey(projectName: string, rawURL: string): string {
@@ -1300,7 +1346,7 @@ function projectDevelopmentPreviewURL(result: unknown): string {
 }
 
 function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelopmentPreviewAuthorization {
-  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', message: '', reason: '' }
+  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', previewTokenExpiresAt: '', message: '', reason: '' }
   const previewURL = projectDevelopmentPreviewURL(result)
   const ready = typeof (result as { ready?: unknown }).ready === 'boolean'
     ? Boolean((result as { ready?: unknown }).ready)
@@ -1308,15 +1354,45 @@ function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelop
   return {
     ready,
     previewURL,
+    previewTokenExpiresAt: projectDevelopmentPreviewString(result, 'previewTokenExpiresAt'),
     message: projectDevelopmentPreviewString(result, 'message'),
     reason: projectDevelopmentPreviewString(result, 'reason'),
   }
 }
 
-function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reason'): string {
+function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reason' | 'previewTokenExpiresAt'): string {
   if (!result || typeof result !== 'object') return ''
-  const value = (result as Record<string, unknown>)[key]
+  const direct = (result as Record<string, unknown>)[key]
+  if (typeof direct === 'string') return direct
+  const body = 'result' in result ? (result as { result?: unknown }).result : null
+  if (!body || typeof body !== 'object') return ''
+  const value = (body as Record<string, unknown>)[key]
   return typeof value === 'string' ? value : ''
+}
+
+function handleDevelopmentPreviewFrameLoad(event: Event) {
+  const projectName = selected.value?.name
+  const key = developmentPreviewAuthorizationKey.value
+  if (!projectName || !key || !developmentPreviewNeedsAuthorization.value) return
+  const frame = event.target as HTMLIFrameElement | null
+  if (!developmentPreviewFrameLoadedUnauthorized(frame)) return
+  void authorizeDevelopmentPreview({ force: true })
+}
+
+function developmentPreviewFrameLoadedUnauthorized(frame: HTMLIFrameElement | null): boolean {
+  try {
+    const text = frame?.contentDocument?.body?.textContent?.trim() ?? ''
+    if (!text) return false
+    try {
+      const status = JSON.parse(text) as { kind?: unknown; code?: unknown; reason?: unknown }
+      return status.kind === 'Status' && status.code === 401 && status.reason === 'Unauthorized'
+    } catch {
+      const lower = text.toLowerCase()
+      return lower.includes('unauthorized') && lower.includes('preview token')
+    }
+  } catch {
+    return false
+  }
 }
 
 function workbenchTabButtonClass(tab: WorkbenchTab): string {
@@ -1398,12 +1474,7 @@ async function sendMessage() {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)
-    if (assistantMessageID && messages.value.every((message) => message.id !== assistantMessageID)) {
-      const loaded = (await api.listAllMessages(props.ctx, projectName)).map(toProjectMessageView)
-      messages.value = loaded
-    }
-    selected.value = await api.getProject(props.ctx, projectName)
-    projects.value = await api.listProjects(props.ctx)
+    await refreshProjectConversationAfterAssistantRun(projectName)
   } catch (e) {
     if (isAbortError(e)) {
       markAssistantMessageInterrupted(projectName, assistantMessageID)
@@ -1458,6 +1529,11 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
         conversationStatus.value = builderEventStatus(content.valueString)
         continue
       }
+      if (content.key === 'assistant.progress' && projectName && assistantMessageID) {
+        touchedAssistantMessageID = assistantMessageID
+        appendAssistantProgress(projectName, assistantMessageID, content.valueString)
+        continue
+      }
       if (content.key !== 'assistant.content' || !projectName || !assistantMessageID) continue
       conversationStatus.value = ''
       touchedAssistantMessageID = assistantMessageID
@@ -1493,6 +1569,21 @@ function applyAssistantUIEvent(projectName: string, assistantMessageID: string |
   }
 
   return touchedAssistantMessageID
+}
+
+function appendAssistantProgress(projectName: string, assistantMessageID: string, value?: string) {
+  const text = (value || '').trim()
+  if (!text) return
+  const idx = ensureAssistantMessage(projectName, assistantMessageID)
+  const message = messages.value[idx]
+  const progress = [...(message.progress ?? [])]
+  if (progress.includes(text)) return
+  progress.push(text)
+  messages.value[idx] = {
+    ...message,
+    progress: progress.slice(-8),
+  }
+  messages.value = [...messages.value]
 }
 
 function builderEventStatus(eventType?: string): string {
@@ -1681,14 +1772,19 @@ async function handleResumeFailure(
   e: unknown,
   options: { panelMessage: string; setPanelError: (message: string) => void; restorePending?: () => void },
 ) {
+  let refreshed = false
   try {
     await refreshSelectedProjectConversation(projectName)
+    refreshed = true
   } catch {
     options.restorePending?.()
     // Keep the original resume failure visible below.
   }
   if (hasPendingInterruptKey(key)) {
     options.setPanelError(options.panelMessage)
+    return
+  }
+  if (refreshed) {
     return
   }
   error.value = e instanceof Error ? e.message : String(e)
@@ -1731,6 +1827,76 @@ function upsertProjectMessage(message: ProjectMessage) {
     return
   }
   messages.value = [...messages.value]
+}
+
+function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMessageView[] {
+  const out: ProjectMessageView[] = []
+  let pendingActivity: ProjectMessageView | null = null
+  for (const message of source) {
+    if (isAssistantActivityPlaceholder(message)) {
+      pendingActivity = pendingActivity ? mergeAssistantActivityIntoMessage(pendingActivity, message) : message
+      continue
+    }
+    if (message.role === 'assistant' && pendingActivity && message.content.trim()) {
+      out.push(mergeAssistantActivityIntoMessage(message, pendingActivity))
+      pendingActivity = null
+      continue
+    }
+    if (pendingActivity) {
+      out.push(pendingActivity)
+      pendingActivity = null
+    }
+    out.push(message)
+  }
+  if (pendingActivity) {
+    out.push(pendingActivity)
+  }
+  return out
+}
+
+function isAssistantActivityPlaceholder(message: ProjectMessageView): boolean {
+  return message.role === 'assistant'
+    && !message.content.trim()
+    && !message.interrupt
+    && !message.viewStatus
+    && ((message.actions?.length ?? 0) > 0 || (message.progress?.length ?? 0) > 0)
+}
+
+function mergeAssistantActivityIntoMessage(base: ProjectMessageView, activity: ProjectMessageView): ProjectMessageView {
+  const actions = mergeAssistantActionLists(activity.actions ?? [], base.actions ?? [])
+  const progress = mergeAssistantProgressLists(activity.progress ?? [], base.progress ?? [])
+  return {
+    ...base,
+    ...(actions.length > 0 ? { actions } : {}),
+    ...(progress.length > 0 ? { progress } : {}),
+  }
+}
+
+function mergeAssistantActionLists(...sources: ProjectAssistantActionView[][]): ProjectAssistantActionView[] {
+  const actions: ProjectAssistantActionView[] = []
+  for (const source of sources) {
+    for (const action of source) {
+      const existingIdx = actions.findIndex((item) => item.id === action.id)
+      if (existingIdx === -1) {
+        actions.push(action)
+      } else {
+        actions[existingIdx] = mergeAssistantAction(actions[existingIdx], action)
+      }
+    }
+  }
+  return actions
+}
+
+function mergeAssistantProgressLists(...sources: string[][]): string[] {
+  const progress: string[] = []
+  for (const source of sources) {
+    for (const value of source) {
+      const text = value.trim()
+      if (!text || progress.includes(text)) continue
+      progress.push(text)
+    }
+  }
+  return progress.slice(-8)
 }
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
@@ -2813,7 +2979,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
           </div>
           <div v-else class="mx-auto flex w-full max-w-[820px] flex-col gap-5">
             <div
-              v-for="message in messages"
+              v-for="message in conversationMessages"
               :key="message.id"
               class="flex w-full"
               :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
@@ -2929,6 +3095,20 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                       </div>
                     </div>
                   </details>
+                </div>
+                <div
+                  v-if="message.progress?.length"
+                  class="mb-3 grid gap-1.5"
+                  aria-live="polite"
+                >
+                  <div
+                    v-for="(note, noteIndex) in message.progress"
+                    :key="`${message.id}-progress-${noteIndex}`"
+                    class="flex min-w-0 items-start gap-2 text-[13px] leading-6 text-text-secondary"
+                  >
+                    <span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/80"></span>
+                    <span class="min-w-0">{{ note }}</span>
+                  </div>
                 </div>
                 <div
                   v-if="message.content.trim()"
@@ -3075,7 +3255,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </div>
               <div class="min-w-0">
                 <div class="truncate text-[13px] font-semibold text-text-primary">Development</div>
-                <div class="truncate text-[12px] text-text-muted">{{ developmentBinding?.provider || 'sandbox' }}</div>
+                <div class="truncate text-[12px] text-text-muted">{{ developmentBinding?.provider || 'app-studio' }}</div>
               </div>
               <StatusBadge :status="developmentPreviewPhase" />
             </div>
@@ -3103,6 +3283,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               :src="developmentPreviewURL"
               title="Development preview"
               class="h-full min-h-[360px] w-full border-0 bg-white"
+              @load="handleDevelopmentPreviewFrameLoad"
             />
           </div>
           <div v-else class="flex min-h-[360px] flex-1 items-center justify-center rounded-md border border-border-subtle bg-surface/80 p-6 text-center">

@@ -1,5 +1,12 @@
 # Provider Sandbox Implementation Plan
 
+> [!WARNING]
+> **Obsolete.** This plan described the first standalone `provider-sandbox`
+> direction. The branch now folds the backend/data-plane API into App Studio:
+> App Studio owns project sync/restart/log/status/preview routes, while the
+> infrastructure provider owns the KRO-composed `SandboxRunner` resource. See
+> `docs/app-studio-sandbox-runtime.md` for the current architecture.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `provider-sandbox`, a dedicated development-runtime provider that gives App Studio a fast live preview path separate from artifact-based test/production deploys.

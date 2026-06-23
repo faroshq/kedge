@@ -270,6 +270,7 @@ func (s *Server) generateProjectAssistantStream(
 	if err != nil {
 		return "", err
 	}
+	p = projectWithLiveBindingStatus(ctx, c, p, id)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		HTTPRequest:              r,

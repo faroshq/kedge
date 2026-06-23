@@ -21,6 +21,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestSyncWritesAndDeletesOnlyWorkspaceRelativePaths(t *testing.T) {
@@ -158,6 +159,39 @@ func TestSupervisorRestartIgnoresCanceledRequestContext(t *testing.T) {
 	}
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("restarted process is not alive: %v", err)
+	}
+}
+
+func TestSupervisorDoesNotExposeControlTokenToChildProcess(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SANDBOX_CONTROL_TOKEN", "leaky-token")
+	s := newRunnerServer(&runnerConfig{
+		WorkDir:      root,
+		StartCommand: "env > child.env",
+		ControlToken: "leaky-token",
+	})
+	if err := s.supervisor.start(context.Background()); err != nil {
+		t.Fatalf("start returned error: %v", err)
+	}
+	defer func() { _ = s.supervisor.stop() }()
+
+	envPath := filepath.Join(root, "child.env")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(envPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child env file was not written")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read child env: %v", err)
+	}
+	if strings.Contains(string(raw), "SANDBOX_CONTROL_TOKEN=") {
+		t.Fatalf("child env leaked control token: %s", raw)
 	}
 }
 

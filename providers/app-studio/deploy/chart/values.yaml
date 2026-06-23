@@ -34,6 +34,19 @@ catalogEntry:
 providerKubeconfig:
   secretName: kedge-provider-kubeconfig
 
+# Optional Secret holding a kubeconfig for the Kubernetes cluster that runs
+# SandboxRunner workloads. App Studio uses it only for project-scoped runtime
+# data-plane operations (sync, logs, restart, and preview proxying). Leave empty
+# to start App Studio with sandbox runtime APIs disabled.
+runtimeKubeconfig:
+  secretName: ""
+
+# Optional shared secret for signed preview URLs. When unset, the pod generates
+# an in-memory secret on startup; configure this for multi-replica deployments.
+previewTokenSecretRef:
+  name: ""
+  key: token
+
 # App Studio chat-message persistence. Prefer databaseURLSecretRef in
 # production; inMemoryMessageStore is an explicit non-durable fallback only.
 store:

@@ -170,7 +170,7 @@ func isProjectAPIInitializingError(err error) bool {
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
+	c, id, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -184,13 +184,13 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	})
 	out := make([]ProjectView, 0, len(list.Items))
 	for i := range list.Items {
-		out = append(out, projectView(r.Context(), c, &list.Items[i]))
+		out = append(out, projectView(r.Context(), c, &list.Items[i], id))
 	}
 	writeJSON(w, http.StatusOK, ListResponse[ProjectView]{Items: out})
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
+	c, id, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -198,15 +198,15 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	created, err := s.createProjectFromRequest(r.Context(), c, req, nil)
+	created, err := s.createProjectFromRequest(r.Context(), c, id, req, nil)
 	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, projectView(r.Context(), c, created))
+	writeJSON(w, http.StatusCreated, projectView(r.Context(), c, created, id))
 }
 
-func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Client, req CreateProjectRequest, onStatus projectCreationStatusFunc) (*aiv1alpha1.Project, error) {
+func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Client, id identity, req CreateProjectRequest, onStatus projectCreationStatusFunc) (*aiv1alpha1.Project, error) {
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Prompt = strings.TrimSpace(req.Prompt)
@@ -259,21 +259,21 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 		return nil, err
 	}
 	if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
-		cleanupCreatedProjectSetup(ctx, c, created)
+		s.cleanupCreatedProjectSetup(ctx, c, id, created)
 		return nil, err
 	}
 	if err := s.createProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
-		cleanupCreatedProjectSetup(ctx, c, created)
+		s.cleanupCreatedProjectSetup(ctx, c, id, created)
 		return nil, err
 	}
-	created, err = s.reconcileProjectLiveBindings(ctx, c, created)
+	created, err = s.reconcileProjectLiveBindings(ctx, c, created, id)
 	if err != nil {
-		cleanupCreatedProjectSetup(ctx, c, created)
+		s.cleanupCreatedProjectSetup(ctx, c, id, created)
 		return nil, err
 	}
 	updated, err := touchProjectStatus(ctx, c, created)
 	if err != nil {
-		cleanupCreatedProjectSetup(ctx, c, created)
+		s.cleanupCreatedProjectSetup(ctx, c, id, created)
 		return nil, err
 	}
 	return updated, nil
@@ -286,10 +286,11 @@ func emitProjectCreationStatus(onStatus projectCreationStatusFunc, status string
 	return onStatus(status)
 }
 
-func cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) {
+func (s *Server) cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project) {
 	if c == nil || p == nil {
 		return
 	}
+	_ = s.deleteProjectProviderResources(ctx, c, p, id)
 	if p.Spec.Repository != nil {
 		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
 			_ = c.Dynamic().Resource(codeRepositoriesGVR).Delete(ctx, ref, metav1.DeleteOptions{})
@@ -301,15 +302,15 @@ func cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Client, p *aiv1
 }
 
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
-	c, _, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, projectView(r.Context(), c, p))
+	writeJSON(w, http.StatusOK, projectView(r.Context(), c, p, id))
 }
 
 func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
-	c, _, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -345,7 +346,7 @@ func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projectView(r.Context(), c, updated))
+	writeJSON(w, http.StatusOK, projectView(r.Context(), c, updated, id))
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -354,6 +355,15 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := mux.Vars(r)["project"]
+	p, err := c.Projects().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	if err := s.deleteProjectProviderResources(r.Context(), c, p, id); err != nil {
+		writeProjectError(w, err)
+		return
+	}
 	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
 		writeProjectError(w, err)
 		return
@@ -427,17 +437,17 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	if err := writeStatus("Starting"); err != nil {
 		return
 	}
-	created, err := s.createProjectFromRequest(r.Context(), c, req, writeStatus)
+	created, err := s.createProjectFromRequest(r.Context(), c, id, req, writeStatus)
 	if err != nil {
 		writeStreamError(err)
 		return
 	}
 	if err := appendProjectUserMessage(r.Context(), msgStore, projectMessageScope(id.orgUUID, id.workspaceUUID, created.Name), req.Prompt); err != nil {
-		cleanupCreatedProjectSetup(r.Context(), c, created)
+		s.cleanupCreatedProjectSetup(r.Context(), c, id, created)
 		writeStreamError(err)
 		return
 	}
-	view := projectView(r.Context(), c, created)
+	view := projectView(r.Context(), c, created, id)
 	if err := writeProjectMessageStreamEvent(w, flusher, projectMessageStreamEvent{
 		Type:    "project",
 		Project: &view,
@@ -1242,8 +1252,8 @@ func projectStatusTouchPatch(now metav1.Time) ([]byte, error) {
 	return json.Marshal(patch)
 }
 
-func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) ProjectView {
-	p = projectWithLiveBindingStatus(ctx, c, p)
+func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) ProjectView {
+	p = projectWithLiveBindingStatus(ctx, c, p, id)
 	view := ProjectView{
 		Name:         p.Name,
 		DisplayName:  p.Spec.DisplayName,

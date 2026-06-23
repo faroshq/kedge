@@ -11,26 +11,27 @@ You may obtain a copy of the License at
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const (
-	projectDevelopmentEnvironmentName = "development"
-	projectDevelopmentBindingName     = "dev"
-	projectDevelopmentProviderSandbox = "sandbox"
-	projectSandboxSyncTimeout         = 20 * time.Second
+	projectDevelopmentEnvironmentName   = "development"
+	projectDevelopmentBindingName       = "dev"
+	projectDevelopmentProviderAppStudio = "app-studio"
+	projectSandboxSyncTimeout           = 20 * time.Second
 )
 
 type projectDevelopmentSyncTargetInfo struct {
@@ -56,25 +57,23 @@ type projectDevelopmentSyncResponse struct {
 }
 
 type projectDevelopmentPreviewAuthorizeResponse struct {
-	Target     projectDevelopmentSyncTargetInfo `json:"target"`
-	Ready      bool                             `json:"ready"`
-	PreviewURL string                           `json:"previewURL,omitempty"`
-	Message    string                           `json:"message,omitempty"`
-	Reason     string                           `json:"reason,omitempty"`
+	Target                projectDevelopmentSyncTargetInfo `json:"target"`
+	Ready                 bool                             `json:"ready"`
+	PreviewURL            string                           `json:"previewURL,omitempty"`
+	PreviewTokenExpiresAt string                           `json:"previewTokenExpiresAt,omitempty"`
+	Message               string                           `json:"message,omitempty"`
+	Reason                string                           `json:"reason,omitempty"`
 }
 
 type projectSandboxPreviewURLResponse struct {
-	Ready      bool   `json:"ready"`
-	PreviewURL string `json:"previewURL,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Ready                 bool   `json:"ready"`
+	PreviewURL            string `json:"previewURL,omitempty"`
+	PreviewTokenExpiresAt string `json:"previewTokenExpiresAt,omitempty"`
+	Message               string `json:"message,omitempty"`
+	Reason                string `json:"reason,omitempty"`
 }
 
-type projectSandboxStatusResponse struct {
-	Reason string `json:"reason"`
-}
-
-func projectDevelopmentSyncTarget(p *aiv1alpha1.Project) (projectDevelopmentSyncTargetInfo, bool) {
+func projectDevelopmentSyncTarget(p *aiv1alpha1.Project, id identity) (projectDevelopmentSyncTargetInfo, bool) {
 	if p == nil {
 		return projectDevelopmentSyncTargetInfo{}, false
 	}
@@ -86,7 +85,7 @@ func projectDevelopmentSyncTarget(p *aiv1alpha1.Project) (projectDevelopmentSync
 			continue
 		}
 		for _, binding := range env.Bindings {
-			if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderSandbox {
+			if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderAppStudio {
 				continue
 			}
 			target := projectDevelopmentSyncTargetInfo{
@@ -98,11 +97,7 @@ func projectDevelopmentSyncTarget(p *aiv1alpha1.Project) (projectDevelopmentSync
 				target.BindingName = projectDevelopmentBindingName
 			}
 			values, _ := projectProviderBindingValues(binding)
-			if name := projectProviderBindingResourceName(p, binding, values); name != "" {
-				target.ResourceName = name
-			} else {
-				target.ResourceName = p.Name + "-dev"
-			}
+			target.ResourceName = projectProviderBindingResourceName(p, binding, values, id)
 			if target.ResourceName == "" {
 				return projectDevelopmentSyncTargetInfo{}, false
 			}
@@ -113,16 +108,16 @@ func projectDevelopmentSyncTarget(p *aiv1alpha1.Project) (projectDevelopmentSync
 }
 
 func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) {
-	_, id, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	target, ok := projectDevelopmentSyncTarget(p)
+	target, ok := projectDevelopmentSyncTarget(p, id)
 	if !ok {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox development environment binding")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
 		return
 	}
-	result, err := s.syncProjectDevelopmentTarget(r.Context(), id, p, target)
+	result, err := s.syncProjectDevelopmentTarget(r.Context(), c, id, p, target)
 	if err != nil {
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
@@ -131,36 +126,33 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *http.Request) {
-	_, id, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	target, ok := projectDevelopmentSyncTarget(p)
+	target, ok := projectDevelopmentSyncTarget(p, id)
 	if !ok {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox development environment binding")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "project has no sandbox runner binding")
 		return
 	}
-	preview, err := s.authorizeProjectDevelopmentPreviewTarget(r.Context(), id, target)
+	preview, err := s.authorizeProjectDevelopmentPreviewTarget(r.Context(), c, id, p, target)
 	if err != nil {
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, projectDevelopmentPreviewAuthorizeResponse{
-		Target:     target,
-		Ready:      preview.Ready,
-		PreviewURL: preview.PreviewURL,
-		Message:    preview.Message,
-		Reason:     preview.Reason,
+		Target:                target,
+		Ready:                 preview.Ready,
+		PreviewURL:            preview.PreviewURL,
+		PreviewTokenExpiresAt: preview.PreviewTokenExpiresAt,
+		Message:               preview.Message,
+		Reason:                preview.Reason,
 	})
 }
 
-func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
+func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
 	if s.workspaces == nil {
 		return nil, fmt.Errorf("project workspace store is not configured")
-	}
-	endpoint, err := s.sandboxSyncEndpoint(target)
-	if err != nil {
-		return nil, err
 	}
 	files, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p.Name))
 	if err != nil {
@@ -170,120 +162,38 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, id identity, 
 	if err != nil {
 		return nil, fmt.Errorf("encode sandbox sync payload: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	runtimeTarget, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
 	if err != nil {
-		return nil, fmt.Errorf("new sandbox sync request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	if id.token != "" {
-		req.Header.Set("Authorization", "Bearer "+id.token)
-	}
-	if id.tenantPath != "" {
-		req.Header.Set("X-Kedge-Tenant", id.tenantPath)
-	}
-	if id.orgUUID != "" {
-		req.Header.Set("X-Kedge-Org", id.orgUUID)
-	}
-	if id.workspaceUUID != "" {
-		req.Header.Set("X-Kedge-Workspace", id.workspaceUUID)
-	}
-
-	client := &http.Client{Timeout: projectSandboxSyncTimeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
-	resp, err := client.Do(req)
-	if err != nil && projectMCPShouldRetryInsecure(endpoint, err, s.mcpInsecureSkipTLSVerify) {
-		client = &http.Client{Timeout: projectSandboxSyncTimeout, Transport: projectMCPTransport(true)}
-		resp, err = client.Do(req)
-	}
+	body, status, err := s.postRuntimeService(ctx, runtimeTarget, "sync", payload)
 	if err != nil {
-		return nil, fmt.Errorf("POST %s: %w", endpoint, err)
+		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read sandbox sync body: %w", err)
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("sandbox runtime sync returned %d: %s", status, strings.TrimSpace(string(body)))
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("sandbox sync returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return json.RawMessage(body), nil
+	_ = patchLastSync(ctx, c, target.ResourceName, metav1.Now())
+	return json.RawMessage(s.syncResponseWithPreviewURL(body, id, p, target.ResourceName, runtimeTarget)), nil
 }
 
-func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, id identity, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
-	endpoint, err := s.sandboxPreviewURLEndpoint(target)
+func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
+	runtimeTarget, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return projectSandboxPreviewURLResponse{
+				Ready:   false,
+				Reason:  "sandbox_runner_not_found",
+				Message: "Preview is getting ready. The sandbox runner has not been created yet.",
+			}, nil
+		}
 		return projectSandboxPreviewURLResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return projectSandboxPreviewURLResponse{}, fmt.Errorf("new sandbox preview URL request: %w", err)
+	preview := s.previewReadiness(ctx, runtimeTarget)
+	if preview.Ready {
+		preview.PreviewURL, preview.PreviewTokenExpiresAt = s.signedProjectPreviewURLAndExpiry(p.Name, id.tenantPath, target.ResourceName, runtimeTarget)
 	}
-	req.Header.Set("Accept", "application/json")
-	if id.token != "" {
-		req.Header.Set("Authorization", "Bearer "+id.token)
-	}
-	if id.tenantPath != "" {
-		req.Header.Set("X-Kedge-Tenant", id.tenantPath)
-	}
-	if id.orgUUID != "" {
-		req.Header.Set("X-Kedge-Org", id.orgUUID)
-	}
-	if id.workspaceUUID != "" {
-		req.Header.Set("X-Kedge-Workspace", id.workspaceUUID)
-	}
-
-	client := &http.Client{Timeout: projectSandboxSyncTimeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
-	resp, err := client.Do(req)
-	if err != nil && projectMCPShouldRetryInsecure(endpoint, err, s.mcpInsecureSkipTLSVerify) {
-		client = &http.Client{Timeout: projectSandboxSyncTimeout, Transport: projectMCPTransport(true)}
-		resp, err = client.Do(req)
-	}
-	if err != nil {
-		return projectSandboxPreviewURLResponse{}, fmt.Errorf("GET %s: %w", endpoint, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return projectSandboxPreviewURLResponse{}, fmt.Errorf("read sandbox preview URL body: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusServiceUnavailable {
-			return projectSandboxPreviewNotReadyResponse(body, resp.StatusCode), nil
-		}
-		return projectSandboxPreviewURLResponse{}, fmt.Errorf("sandbox preview URL returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var decoded projectSandboxPreviewURLResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return projectSandboxPreviewURLResponse{}, fmt.Errorf("decode sandbox preview URL response: %w", err)
-	}
-	decoded.PreviewURL = strings.TrimSpace(decoded.PreviewURL)
-	decoded.Message = strings.TrimSpace(decoded.Message)
-	decoded.Reason = strings.TrimSpace(decoded.Reason)
-	if decoded.PreviewURL != "" {
-		decoded.Ready = true
-	}
-	if decoded.Ready && decoded.PreviewURL == "" {
-		return projectSandboxPreviewURLResponse{}, fmt.Errorf("sandbox preview URL response was empty")
-	}
-	if !decoded.Ready && decoded.Message == "" {
-		decoded.Message = "Preview is getting ready. The sandbox runtime is not serving traffic yet."
-	}
-	return decoded, nil
-}
-
-func projectSandboxPreviewNotReadyResponse(body []byte, statusCode int) projectSandboxPreviewURLResponse {
-	resp := projectSandboxPreviewURLResponse{
-		Ready:   false,
-		Reason:  http.StatusText(statusCode),
-		Message: "Preview is getting ready. The sandbox runtime is not serving traffic yet.",
-	}
-	var status projectSandboxStatusResponse
-	if err := json.Unmarshal(body, &status); err == nil {
-		if strings.TrimSpace(status.Reason) != "" {
-			resp.Reason = strings.TrimSpace(status.Reason)
-		}
-	}
-	return resp
+	return preview, nil
 }
 
 func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, error) {
@@ -305,28 +215,6 @@ func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.
 	return files, nil
 }
 
-func (s *Server) sandboxSyncEndpoint(target projectDevelopmentSyncTargetInfo) (string, error) {
-	base := strings.TrimRight(strings.TrimSpace(s.hubBase), "/")
-	if base == "" {
-		return "", fmt.Errorf("hub base URL is not configured")
-	}
-	if target.ResourceName == "" {
-		return "", fmt.Errorf("sandbox development environment name is empty")
-	}
-	return base + "/services/providers/sandbox/api/dev-environments/" + target.ResourceName + "/sync", nil
-}
-
-func (s *Server) sandboxPreviewURLEndpoint(target projectDevelopmentSyncTargetInfo) (string, error) {
-	base := strings.TrimRight(strings.TrimSpace(s.hubBase), "/")
-	if base == "" {
-		return "", fmt.Errorf("hub base URL is not configured")
-	}
-	if target.ResourceName == "" {
-		return "", fmt.Errorf("sandbox development environment name is empty")
-	}
-	return base + "/services/providers/sandbox/api/dev-environments/" + target.ResourceName + "/preview-url", nil
-}
-
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
@@ -337,13 +225,29 @@ func shouldSyncDevelopmentAfterTool(name string) bool {
 }
 
 func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) {
-	target, ok := projectDevelopmentSyncTarget(p)
+	if s.clients == nil {
+		klog.V(2).Infof("development sandbox sync after %s skipped for project %s: tenant client factory is not configured", projectToolBaseName(name), p.Name)
+		return
+	}
+	c, err := s.clientFor(id)
+	if err != nil {
+		klog.V(2).Infof("development sandbox sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
+		return
+	}
+	s.syncDevelopmentAfterMutationWithClient(c, id, p, name)
+}
+
+func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) {
+	target, ok := projectDevelopmentSyncTarget(p, id)
 	if !ok {
 		return
 	}
+	lock := s.developmentSyncLock(id, p.Name)
+	lock.Lock()
+	defer lock.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), projectSandboxSyncTimeout)
 	defer cancel()
-	if _, err := s.syncProjectDevelopmentTarget(ctx, id, p, target); err != nil {
+	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
 		klog.V(2).Infof("development sandbox sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
 	}
 }

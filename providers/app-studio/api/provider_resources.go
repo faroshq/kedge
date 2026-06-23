@@ -12,6 +12,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -26,7 +28,7 @@ import (
 	asclient "github.com/faroshq/provider-app-studio/client"
 )
 
-func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
+func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) (*aiv1alpha1.Project, error) {
 	if c == nil || p == nil {
 		return p, nil
 	}
@@ -38,15 +40,15 @@ func (s *Server) reconcileProjectLiveBindings(ctx context.Context, c *asclient.C
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
-			if _, err := ensureProjectProviderResource(ctx, c, p, binding); err != nil {
+			if _, err := ensureProjectProviderResource(ctx, c, p, binding, id); err != nil {
 				return nil, err
 			}
 		}
 	}
-	return syncProjectLiveBindingStatus(ctx, c, p)
+	return syncProjectLiveBindingStatus(ctx, c, p, id)
 }
 
-func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec) (*unstructured.Unstructured, error) {
+func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) (*unstructured.Unstructured, error) {
 	gvr, err := projectProviderResourceGVR(binding.ResourceRef)
 	if err != nil {
 		return nil, err
@@ -55,15 +57,13 @@ func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *a
 	if err != nil {
 		return nil, err
 	}
-	name := projectProviderBindingResourceName(p, binding, values)
+	name := projectProviderBindingResourceName(p, binding, values, id)
 	if name == "" {
 		return nil, fmt.Errorf("provider binding %q has no resource name", binding.Name)
 	}
+	normalizeProjectProviderBindingValues(p, binding, values, name)
 	spec := map[string]any{}
 	for key, value := range values {
-		if key == "name" {
-			continue
-		}
 		spec[key] = value
 	}
 	want := &unstructured.Unstructured{
@@ -78,6 +78,9 @@ func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *a
 			},
 			"spec": spec,
 		},
+	}
+	if owner := projectProviderResourceOwnerRef(p); owner != nil {
+		want.SetOwnerReferences([]metav1.OwnerReference{*owner})
 	}
 	res := c.Dynamic().Resource(gvr)
 	existing, err := res.Get(ctx, name, metav1.GetOptions{})
@@ -96,11 +99,108 @@ func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *a
 	}
 	labels["app-studio.kedge.faros.sh/project"] = p.Name
 	existing.SetLabels(labels)
+	if owner := projectProviderResourceOwnerRef(p); owner != nil {
+		existing.SetOwnerReferences([]metav1.OwnerReference{*owner})
+	}
 	return res.Update(ctx, existing, metav1.UpdateOptions{})
 }
 
-func syncProjectLiveBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
-	statuses := projectLiveEnvironmentStatuses(ctx, c, p)
+func (s *Server) deleteProjectProviderResources(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) error {
+	if c == nil || p == nil {
+		return nil
+	}
+	for _, env := range p.Spec.Environments {
+		if env.Mode != aiv1alpha1.ProjectEnvironmentModeLive {
+			continue
+		}
+		for _, binding := range env.Bindings {
+			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
+				continue
+			}
+			gvr, err := projectProviderResourceGVR(binding.ResourceRef)
+			if err != nil {
+				return err
+			}
+			values, err := projectProviderBindingValues(binding)
+			if err != nil {
+				return err
+			}
+			name := projectProviderBindingResourceName(p, binding, values, id)
+			if name == "" {
+				return fmt.Errorf("provider binding %q has no resource name", binding.Name)
+			}
+			runtimeNamespace := ""
+			if isSandboxRunnerBinding(binding) && s != nil && s.runtimeClient != nil {
+				obj, err := c.Dynamic().Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+				if err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+				if err == nil {
+					runtimeNamespace, err = sandboxRunnerRuntimeNamespaceForCleanup(obj)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			err = c.Dynamic().Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
+			if err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			if runtimeNamespace != "" {
+				if err := s.deleteSandboxRuntimeNamespace(ctx, runtimeNamespace); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func sandboxRunnerRuntimeNamespaceForCleanup(obj *unstructured.Unstructured) (string, error) {
+	name, err := sandboxRunnerInstanceName(obj)
+	if err != nil {
+		return "", err
+	}
+	if statusNamespace, ok, err := sandboxRunnerStatusRuntimeNamespace(obj, name); err != nil || ok {
+		return statusNamespace, err
+	}
+	if prefixed := expectedKROPrefixedRuntimeNamespace(obj, name); prefixed != "" {
+		return prefixed, nil
+	}
+	return name, nil
+}
+
+func (s *Server) deleteSandboxRuntimeNamespace(ctx context.Context, namespace string) error {
+	if s == nil || s.runtimeClient == nil {
+		return nil
+	}
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		return nil
+	}
+	err := s.runtimeClient.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func projectProviderResourceOwnerRef(p *aiv1alpha1.Project) *metav1.OwnerReference {
+	if p == nil || p.UID == "" || strings.TrimSpace(p.Name) == "" {
+		return nil
+	}
+	controller := true
+	return &metav1.OwnerReference{
+		APIVersion: aiv1alpha1.SchemeGroupVersion.String(),
+		Kind:       "Project",
+		Name:       p.Name,
+		UID:        p.UID,
+		Controller: &controller,
+	}
+}
+
+func syncProjectLiveBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) (*aiv1alpha1.Project, error) {
+	statuses := projectLiveEnvironmentStatuses(ctx, c, p, id)
 	if len(statuses) == 0 {
 		return p, nil
 	}
@@ -116,11 +216,11 @@ func syncProjectLiveBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 	return c.Projects().Patch(ctx, p.Name, types.MergePatchType, raw, metav1.PatchOptions{}, "status")
 }
 
-func projectWithLiveBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) *aiv1alpha1.Project {
+func projectWithLiveBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) *aiv1alpha1.Project {
 	if c == nil || p == nil {
 		return p
 	}
-	statuses := projectLiveEnvironmentStatuses(ctx, c, p)
+	statuses := projectLiveEnvironmentStatuses(ctx, c, p, id)
 	if len(statuses) == 0 {
 		return p
 	}
@@ -129,7 +229,7 @@ func projectWithLiveBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 	return next
 }
 
-func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) []aiv1alpha1.ProjectEnvironmentStatus {
+func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) []aiv1alpha1.ProjectEnvironmentStatus {
 	if c == nil || p == nil {
 		return nil
 	}
@@ -146,7 +246,7 @@ func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
-			envStatus.Bindings = append(envStatus.Bindings, projectProviderBindingStatus(ctx, c, p, binding))
+			envStatus.Bindings = append(envStatus.Bindings, projectProviderBindingStatus(ctx, c, p, binding, id))
 		}
 		if len(envStatus.Bindings) == 0 {
 			continue
@@ -161,7 +261,7 @@ func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *
 	return statuses
 }
 
-func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec) aiv1alpha1.ProjectProviderBindingStatus {
+func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) aiv1alpha1.ProjectProviderBindingStatus {
 	status := aiv1alpha1.ProjectProviderBindingStatus{
 		Name:     binding.Name,
 		Provider: binding.Provider,
@@ -176,7 +276,7 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 		status.Phase = "Invalid"
 		return status
 	}
-	name := projectProviderBindingResourceName(p, binding, values)
+	name := projectProviderBindingResourceName(p, binding, values, id)
 	if name == "" {
 		status.Phase = "Invalid"
 		return status
@@ -189,7 +289,9 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 	if phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase"); phase != "" {
 		status.Phase = phase
 	}
-	if previewURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewURL"); previewURL != "" {
+	if isSandboxRunnerBinding(binding) && p != nil {
+		status.PreviewURL = externalProjectPreviewPath(p.Name)
+	} else if previewURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewURL"); previewURL != "" {
 		status.PreviewURL = previewURL
 	}
 	if url, _, _ := unstructured.NestedString(obj.Object, "status", "url"); url != "" {
@@ -247,7 +349,10 @@ func projectProviderBindingValues(binding aiv1alpha1.ProjectProviderBindingSpec)
 	return values, nil
 }
 
-func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, values map[string]any) string {
+func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, values map[string]any, id identity) string {
+	if isSandboxRunnerBinding(binding) && p != nil && strings.TrimSpace(id.tenantPath) != "" && strings.TrimSpace(p.Name) != "" {
+		return sandboxRunnerResourceName(id.tenantPath, p.Name)
+	}
 	if binding.ResourceRef != nil && strings.TrimSpace(binding.ResourceRef.Name) != "" {
 		return strings.TrimSpace(binding.ResourceRef.Name)
 	}
@@ -263,6 +368,35 @@ func projectProviderBindingResourceName(p *aiv1alpha1.Project, binding aiv1alpha
 		return ""
 	}
 	return projectName + "-" + bindingName
+}
+
+func normalizeProjectProviderBindingValues(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, values map[string]any, resourceName string) {
+	if !isSandboxRunnerBinding(binding) {
+		return
+	}
+	values["name"] = resourceName
+	if p != nil {
+		values["projectRef"] = p.Name
+	}
+}
+
+func isSandboxRunnerBinding(binding aiv1alpha1.ProjectProviderBindingSpec) bool {
+	if strings.TrimSpace(binding.Provider) != projectDevelopmentProviderAppStudio || binding.ResourceRef == nil {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(strings.TrimSpace(binding.ResourceRef.APIVersion))
+	if err != nil {
+		return false
+	}
+	return gv.Group == "infrastructure.kedge.faros.sh" &&
+		gv.Version == "v1alpha1" &&
+		strings.TrimSpace(binding.ResourceRef.Kind) == "SandboxRunner" &&
+		strings.TrimSpace(binding.ResourceRef.Resource) == "sandboxrunners"
+}
+
+func sandboxRunnerResourceName(tenantPath, projectName string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(tenantPath) + "\x00" + strings.TrimSpace(projectName)))
+	return "kedge-sandbox-" + hex.EncodeToString(sum[:8])
 }
 
 func nestedStringMap(obj map[string]any, fields ...string) (map[string]string, bool) {

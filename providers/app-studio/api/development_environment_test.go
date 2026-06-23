@@ -16,20 +16,30 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/gorilla/mux"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sschema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
+	kubernetesfake "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
-func TestDefaultProjectDevelopmentEnvironmentUsesSandboxLiveBinding(t *testing.T) {
+func TestDefaultProjectDevelopmentEnvironmentUsesInfrastructureBackedSandboxRunner(t *testing.T) {
 	env := defaultProjectDevelopmentEnvironment("todo")
 	if got, want := env.Name, "development"; got != want {
 		t.Fatalf("Name = %q, want %q", got, want)
@@ -41,14 +51,20 @@ func TestDefaultProjectDevelopmentEnvironmentUsesSandboxLiveBinding(t *testing.T
 		t.Fatalf("bindings = %d, want 1", got)
 	}
 	binding := env.Bindings[0]
-	if got, want := binding.Provider, "sandbox"; got != want {
+	if got, want := binding.Provider, "app-studio"; got != want {
 		t.Fatalf("Provider = %q, want %q", got, want)
 	}
-	if got, want := binding.ResourceRef.APIVersion, "sandbox.kedge.faros.sh/v1alpha1"; got != want {
+	if got, want := binding.ResourceRef.APIVersion, "infrastructure.kedge.faros.sh/v1alpha1"; got != want {
 		t.Fatalf("APIVersion = %q, want %q", got, want)
 	}
-	if got, want := binding.ResourceRef.Name, "todo-dev"; got != want {
-		t.Fatalf("ResourceRef.Name = %q, want %q", got, want)
+	if got, want := binding.ResourceRef.Kind, "SandboxRunner"; got != want {
+		t.Fatalf("Kind = %q, want %q", got, want)
+	}
+	if got, want := binding.ResourceRef.Resource, "sandboxrunners"; got != want {
+		t.Fatalf("Resource = %q, want %q", got, want)
+	}
+	if got := binding.ResourceRef.Name; got != "" {
+		t.Fatalf("ResourceRef.Name = %q, want empty derived name", got)
 	}
 	var values map[string]any
 	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
@@ -57,8 +73,24 @@ func TestDefaultProjectDevelopmentEnvironmentUsesSandboxLiveBinding(t *testing.T
 	if _, ok := values["runtime"]; ok {
 		t.Fatalf("binding values should not expose sandbox runtime defaults: %#v", values)
 	}
+	if _, ok := values["name"]; ok {
+		t.Fatalf("binding values should not expose a concrete sandbox runner name: %#v", values)
+	}
 	if got, want := values["projectRef"], "todo"; got != want {
 		t.Fatalf("binding values projectRef = %q, want %q", got, want)
+	}
+}
+
+func TestRewritePreviewJavaScriptRootURLsRewritesRootAbsoluteStringConstants(t *testing.T) {
+	basePath := "/services/providers/app-studio/api/projects/simply-done/preview/__kedge_preview/abc123/"
+	raw := []byte(`const API_URL = '/api/todos';
+fetch(API_URL);`)
+
+	got := string(rewritePreviewResponseBody("application/javascript", basePath, raw))
+	want := `const API_URL = '/services/providers/app-studio/api/projects/simply-done/preview/__kedge_preview/abc123/api/todos';
+fetch(API_URL);`
+	if got != want {
+		t.Fatalf("rewritten JavaScript = %q, want %q", got, want)
 	}
 }
 
@@ -79,7 +111,7 @@ func TestProjectAssistantRuntimePreviewURLPrefersDevelopment(t *testing.T) {
 					Mode: aiv1alpha1.ProjectEnvironmentModeLive,
 					Bindings: []aiv1alpha1.ProjectProviderBindingStatus{{
 						Name:       "dev",
-						Provider:   "sandbox",
+						Provider:   "app-studio",
 						PreviewURL: "/dev",
 					}},
 				},
@@ -108,11 +140,12 @@ func TestProjectDevelopmentSyncTargetReadsSandboxBindingName(t *testing.T) {
 			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
 		},
 	}
-	target, ok := projectDevelopmentSyncTarget(p)
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	target, ok := projectDevelopmentSyncTarget(p, id)
 	if !ok {
 		t.Fatal("projectDevelopmentSyncTarget returned !ok")
 	}
-	if got, want := target.Provider, "sandbox"; got != want {
+	if got, want := target.Provider, "app-studio"; got != want {
 		t.Fatalf("Provider = %q, want %q", got, want)
 	}
 	if got, want := target.EnvironmentName, "development"; got != want {
@@ -121,25 +154,21 @@ func TestProjectDevelopmentSyncTargetReadsSandboxBindingName(t *testing.T) {
 	if got, want := target.BindingName, "dev"; got != want {
 		t.Fatalf("BindingName = %q, want %q", got, want)
 	}
-	if got, want := target.ResourceName, "todo-dev"; got != want {
+	if got, want := target.ResourceName, sandboxRunnerResourceName(id.tenantPath, "todo"); got != want {
 		t.Fatalf("ResourceName = %q, want %q", got, want)
 	}
 }
 
-func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToSandbox(t *testing.T) {
-	var gotAuth string
-	var gotTenant string
-	var gotOrg string
-	var gotWorkspace string
+func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToRuntime(t *testing.T) {
+	var gotControlToken string
 	var gotFiles []map[string]string
-	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/services/providers/sandbox/api/dev-environments/todo-dev/sync"; got != want {
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/api/v1/namespaces/"+runnerName+"/services/"+runnerName+":control/proxy/sync"; got != want {
 			t.Fatalf("path = %q, want %q", got, want)
 		}
-		gotAuth = r.Header.Get("Authorization")
-		gotTenant = r.Header.Get("X-Kedge-Tenant")
-		gotOrg = r.Header.Get("X-Kedge-Org")
-		gotWorkspace = r.Header.Get("X-Kedge-Workspace")
+		gotControlToken = r.Header.Get("X-Sandbox-Control-Token")
 		var body struct {
 			Files   []map[string]string `json:"files"`
 			Restart string              `json:"restart"`
@@ -153,10 +182,9 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToSandbox(t *testing.T) 
 		gotFiles = body.Files
 		fmt.Fprint(w, `{"phase":"Synced","changed":["src/App.tsx"]}`)
 	}))
-	defer sandbox.Close()
+	defer runtimeAPI.Close()
 
 	workspaces := workspace.NewFileStore(t.TempDir())
-	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
@@ -168,89 +196,161 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToSandbox(t *testing.T) 
 		t.Fatalf("ApplyFiles returned error: %v", err)
 	}
 
-	server := NewWithWorkspace(nil, nil, workspaces, sandbox.URL, false)
-	target, ok := projectDevelopmentSyncTarget(project)
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
+	server := NewWithWorkspace(nil, nil, workspaces, "http://hub.example", false)
+	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testRuntimeControlSecret(runnerName, "runtime-token"))
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	target, ok := projectDevelopmentSyncTarget(project, id)
 	if !ok {
 		t.Fatal("projectDevelopmentSyncTarget returned !ok")
 	}
-	if _, err := server.syncProjectDevelopmentTarget(context.Background(), id, project, target); err != nil {
+	result, err := server.syncProjectDevelopmentTarget(context.Background(), client, id, project, target)
+	if err != nil {
 		t.Fatalf("syncProjectDevelopmentTarget returned error: %v", err)
 	}
-	if got, want := gotAuth, "Bearer caller-token"; got != want {
-		t.Fatalf("Authorization = %q, want %q", got, want)
-	}
-	if got, want := gotTenant, id.tenantPath; got != want {
-		t.Fatalf("X-Kedge-Tenant = %q, want %q", got, want)
-	}
-	if got, want := gotOrg, id.orgUUID; got != want {
-		t.Fatalf("X-Kedge-Org = %q, want %q", got, want)
-	}
-	if got, want := gotWorkspace, id.workspaceUUID; got != want {
-		t.Fatalf("X-Kedge-Workspace = %q, want %q", got, want)
+	if got, want := gotControlToken, "runtime-token"; got != want {
+		t.Fatalf("X-Sandbox-Control-Token = %q, want %q", got, want)
 	}
 	if len(gotFiles) != 1 || gotFiles[0]["path"] != "src/App.tsx" || gotFiles[0]["content"] != "hello\n" {
 		t.Fatalf("files = %#v, want src/App.tsx content", gotFiles)
 	}
+	var decoded struct {
+		PreviewURL            string `json:"previewURL"`
+		PreviewTokenExpiresAt string `json:"previewTokenExpiresAt"`
+	}
+	if err := json.Unmarshal(result, &decoded); err != nil {
+		t.Fatalf("decode sync result: %v", err)
+	}
+	if !strings.HasPrefix(decoded.PreviewURL, "/services/providers/app-studio/api/projects/todo/preview/?kedgePreviewToken=") {
+		t.Fatalf("previewURL = %q, want app-studio project preview URL", decoded.PreviewURL)
+	}
+	if decoded.PreviewTokenExpiresAt == "" {
+		t.Fatal("previewTokenExpiresAt is empty, want signed token expiry")
+	}
 }
 
-func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedSandboxURL(t *testing.T) {
-	var gotAuth string
-	var gotTenant string
-	var gotOrg string
-	var gotWorkspace string
-	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Method, http.MethodGet; got != want {
-			t.Fatalf("method = %q, want %q", got, want)
+func TestSyncDevelopmentAfterMutationSerializesPerProject(t *testing.T) {
+	var calls atomic.Int32
+	firstReceived := make(chan struct{})
+	secondReceived := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseBlockedFirst := func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
 		}
-		if got, want := r.URL.Path, "/services/providers/sandbox/api/dev-environments/todo-dev/preview-url"; got != want {
-			t.Fatalf("path = %q, want %q", got, want)
+	}
+	defer releaseBlockedFirst()
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstReceived)
+			<-releaseFirst
+		case 2:
+			close(secondReceived)
+		default:
+			t.Fatalf("unexpected extra sync request")
 		}
-		gotAuth = r.Header.Get("Authorization")
-		gotTenant = r.Header.Get("X-Kedge-Tenant")
-		gotOrg = r.Header.Get("X-Kedge-Org")
-		gotWorkspace = r.Header.Get("X-Kedge-Workspace")
-		fmt.Fprint(w, `{"ready":true,"previewURL":"/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"}`)
+		fmt.Fprint(w, `{"phase":"Synced"}`)
 	}))
-	defer sandbox.Close()
+	defer runtimeAPI.Close()
 
+	workspaces := workspace.NewFileStore(t.TempDir())
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
-	server := NewWithWorkspace(nil, nil, nil, sandbox.URL, false)
-	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), id, projectDevelopmentSyncTargetInfo{ResourceName: "todo-dev"})
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+		},
+	}
+	scope := projectWorkspaceScope(id, project.Name)
+	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "src/App.tsx", Content: "first\n"}}); err != nil {
+		t.Fatalf("ApplyFiles first returned error: %v", err)
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
+	server := NewWithWorkspace(nil, nil, workspaces, "http://hub.example", false)
+	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testRuntimeControlSecret(runnerName, "runtime-token"))
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+
+	go server.syncDevelopmentAfterMutationWithClient(client, id, project, projectToolWriteFile)
+	select {
+	case <-firstReceived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first sync was not received")
+	}
+	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "src/App.tsx", Content: "second\n"}}); err != nil {
+		t.Fatalf("ApplyFiles second returned error: %v", err)
+	}
+	go server.syncDevelopmentAfterMutationWithClient(client, id, project, projectToolWriteFile)
+
+	select {
+	case <-secondReceived:
+		releaseBlockedFirst()
+		t.Fatal("second sync started while first sync was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseBlockedFirst()
+	select {
+	case <-secondReceived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second sync was not received after first completed")
+	}
+}
+
+func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedAppStudioURL(t *testing.T) {
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "todo"}}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testReadyPreviewEndpoints(runnerName))
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
 	if err != nil {
 		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
 	}
 	if !got.Ready {
 		t.Fatalf("ready = false, want true: %#v", got)
 	}
-	if want := "/services/providers/sandbox/api/dev-environments/todo-dev/preview/?kedgePreviewToken=signed"; got.PreviewURL != want {
-		t.Fatalf("previewURL = %q, want %q", got.PreviewURL, want)
+	if !strings.HasPrefix(got.PreviewURL, "/services/providers/app-studio/api/projects/todo/preview/?kedgePreviewToken=") {
+		t.Fatalf("previewURL = %q, want app-studio project preview URL", got.PreviewURL)
 	}
-	if got, want := gotAuth, "Bearer caller-token"; got != want {
-		t.Fatalf("Authorization = %q, want %q", got, want)
+	if got.PreviewTokenExpiresAt == "" {
+		t.Fatal("PreviewTokenExpiresAt is empty, want signed token expiry")
 	}
-	if got, want := gotTenant, id.tenantPath; got != want {
-		t.Fatalf("X-Kedge-Tenant = %q, want %q", got, want)
+	parsed, err := url.Parse(got.PreviewURL)
+	if err != nil {
+		t.Fatalf("parse preview URL: %v", err)
 	}
-	if got, want := gotOrg, id.orgUUID; got != want {
-		t.Fatalf("X-Kedge-Org = %q, want %q", got, want)
+	payload, err := server.previewSigner.verify(parsed.Query().Get(previewTokenQuery), project.Name)
+	if err != nil {
+		t.Fatalf("verify preview token: %v", err)
 	}
-	if got, want := gotWorkspace, id.workspaceUUID; got != want {
-		t.Fatalf("X-Kedge-Workspace = %q, want %q", got, want)
+	if got, want := payload.SandboxRunner, runnerName; got != want {
+		t.Fatalf("token SandboxRunner = %q, want %q", got, want)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, got.PreviewTokenExpiresAt)
+	if err != nil {
+		t.Fatalf("parse PreviewTokenExpiresAt: %v", err)
+	}
+	if got, want := expiresAt.Unix(), payload.ExpiresAt; got != want {
+		t.Fatalf("PreviewTokenExpiresAt unix = %d, want %d", got, want)
 	}
 }
 
 func TestAuthorizeProjectDevelopmentPreviewTargetReturnsNotReady(t *testing.T) {
-	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/services/providers/sandbox/api/dev-environments/todo-dev/preview-url"; got != want {
-			t.Fatalf("path = %q, want %q", got, want)
-		}
-		fmt.Fprint(w, `{"ready":false,"reason":"no_ready_endpoints","message":"Preview is starting."}`)
-	}))
-	defer sandbox.Close()
-
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", token: "caller-token"}
-	server := NewWithWorkspace(nil, nil, nil, sandbox.URL, false)
-	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), id, projectDevelopmentSyncTargetInfo{ResourceName: "todo-dev"})
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "todo"}}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset()
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
 	if err != nil {
 		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
 	}
@@ -260,36 +360,148 @@ func TestAuthorizeProjectDevelopmentPreviewTargetReturnsNotReady(t *testing.T) {
 	if got.PreviewURL != "" {
 		t.Fatalf("previewURL = %q, want empty while not ready", got.PreviewURL)
 	}
-	if got.Message != "Preview is starting." {
-		t.Fatalf("message = %q, want sandbox not-ready message", got.Message)
+	if got.Reason != "service_not_found" {
+		t.Fatalf("reason = %q, want service_not_found", got.Reason)
 	}
 }
 
-func TestAuthorizeProjectDevelopmentPreviewTargetTreatsSandboxUnavailableAsNotReady(t *testing.T) {
-	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestPreviewProjectDevelopmentRendersStartingPageForRuntimeServiceUnavailable(t *testing.T) {
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/api/v1/namespaces/runtime-ns/services/runtime-svc:preview/proxy/"; got != want {
+			t.Fatalf("runtime proxy path = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"no endpoints available for service \"todo-dev-preview\"","reason":"ServiceUnavailable","code":503}`)
+		fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"error trying to reach service: dial tcp 10.244.0.55:3000: connect: connection refused","reason":"ServiceUnavailable","code":503}`)
 	}))
-	defer sandbox.Close()
+	defer runtimeAPI.Close()
 
-	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", token: "caller-token"}
-	server := NewWithWorkspace(nil, nil, nil, sandbox.URL, false)
-	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), id, projectDevelopmentSyncTargetInfo{ResourceName: "todo-dev"})
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	token, _, err := server.previewSigner.sign(previewTokenPayload{
+		TenantPath:         "root:kedge:tenants:org-a:ws-1",
+		Project:            "todo",
+		RuntimeNamespace:   "runtime-ns",
+		PreviewServiceName: "runtime-svc",
+		PreviewPortName:    "preview",
+		SandboxRunner:      "runtime-svc",
+	})
 	if err != nil {
-		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+		t.Fatalf("sign preview token: %v", err)
 	}
-	if got.Ready {
-		t.Fatalf("ready = true, want false: %#v", got)
+	scope := previewTokenScope(token)
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/todo/preview/"+previewScopePrefix+"/"+scope+"/", nil)
+	req.AddCookie(&http.Cookie{Name: previewCookieName("todo", scope), Value: token})
+	resp := httptest.NewRecorder()
+	router := mux.NewRouter()
+	server.Register(router)
+
+	router.ServeHTTP(resp, req)
+
+	if got, want := resp.Code, http.StatusServiceUnavailable; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
 	}
-	if got.Reason != "ServiceUnavailable" {
-		t.Fatalf("reason = %q, want ServiceUnavailable", got.Reason)
+	body := resp.Body.String()
+	if !strings.Contains(resp.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", resp.Header().Get("Content-Type"))
 	}
-	if got.Message != "Preview is getting ready. The sandbox runtime is not serving traffic yet." {
-		t.Fatalf("message = %q, want user-facing not-ready message", got.Message)
+	if !strings.Contains(body, "Preview is starting") {
+		t.Fatalf("body = %q, want friendly preview starting page", body)
+	}
+	if strings.Contains(body, "dial tcp") || strings.Contains(body, `"kind":"Status"`) {
+		t.Fatalf("body leaked raw Kubernetes proxy error: %s", body)
 	}
 }
 
-func TestReconcileProjectLiveBindingsCreatesSandboxDevEnvironment(t *testing.T) {
+func TestPreviewTokenRedirectSetsSecureCookie(t *testing.T) {
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	token, _, err := server.previewSigner.sign(previewTokenPayload{
+		TenantPath:         "root:kedge:tenants:org-a:ws-1",
+		Project:            "todo",
+		RuntimeNamespace:   "runtime-ns",
+		PreviewServiceName: "runtime-svc",
+		PreviewPortName:    "preview",
+		SandboxRunner:      "runtime-svc",
+	})
+	if err != nil {
+		t.Fatalf("sign preview token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://kedge.example.test/api/projects/todo/preview/?"+previewTokenQuery+"="+url.QueryEscape(token), nil)
+	resp := httptest.NewRecorder()
+	router := mux.NewRouter()
+	server.Register(router)
+
+	router.ServeHTTP(resp, req)
+
+	if got, want := resp.Code, http.StatusFound; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	cookies := resp.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(cookies))
+	}
+	if !cookies[0].Secure {
+		t.Fatalf("preview token cookie Secure = false, want true")
+	}
+	if !cookies[0].HttpOnly {
+		t.Fatalf("preview token cookie HttpOnly = false, want true")
+	}
+}
+
+func TestReadPreviewRewriteBodyRejectsOversizedResponses(t *testing.T) {
+	body := strings.NewReader(strings.Repeat("x", previewRewriteBodyLimit+1))
+	if _, err := readPreviewRewriteBody(body); err == nil {
+		t.Fatal("readPreviewRewriteBody returned nil error for oversized body")
+	}
+}
+
+func TestRuntimeTargetRejectsStatusRefsOutsideExpectedSandboxRunner(t *testing.T) {
+	runnerName := "kedge-sandbox-1234567890abcdef"
+	obj := testSandboxRunner(runnerName, "todo")
+	if err := unstructured.SetNestedStringMap(obj.Object, map[string]string{
+		"namespace": "kube-system",
+		"name":      "stolen",
+	}, "status", "controlSecretRef"); err != nil {
+		t.Fatalf("set controlSecretRef: %v", err)
+	}
+	if _, err := runtimeTargetFromInstance(obj); err == nil {
+		t.Fatal("runtimeTargetFromInstance returned nil error for forged status refs")
+	}
+}
+
+func TestRuntimeTargetAcceptsKROPrefixedRuntimeNamespace(t *testing.T) {
+	runnerName := "kedge-sandbox-1234567890abcdef"
+	clusterID := "1z5cyn8ghmwpxk8v"
+	runtimeNamespace := clusterID + "-" + runnerName
+	obj := testSandboxRunner(runnerName, "todo")
+	obj.SetAnnotations(map[string]string{"kcp.io/cluster": clusterID})
+	if err := unstructured.SetNestedField(obj.Object, runtimeNamespace, "status", "runtimeNamespace"); err != nil {
+		t.Fatalf("set runtimeNamespace: %v", err)
+	}
+	for _, field := range []string{"previewServiceRef", "controlServiceRef", "controlSecretRef"} {
+		if err := unstructured.SetNestedField(obj.Object, runtimeNamespace, "status", field, "namespace"); err != nil {
+			t.Fatalf("set %s namespace: %v", field, err)
+		}
+	}
+
+	target, err := runtimeTargetFromInstance(obj)
+	if err != nil {
+		t.Fatalf("runtimeTargetFromInstance returned error: %v", err)
+	}
+	if got, want := target.Preview.Namespace, runtimeNamespace; got != want {
+		t.Fatalf("Preview.Namespace = %q, want %q", got, want)
+	}
+	if got, want := target.Control.Namespace, runtimeNamespace; got != want {
+		t.Fatalf("Control.Namespace = %q, want %q", got, want)
+	}
+	if got, want := target.ControlSecret.Namespace, runtimeNamespace; got != want {
+		t.Fatalf("ControlSecret.Namespace = %q, want %q", got, want)
+	}
+}
+
+func TestReconcileProjectLiveBindingsCreatesInfrastructureSandboxRunner(t *testing.T) {
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "ai.kedge.faros.sh/v1alpha1",
@@ -304,13 +516,12 @@ func TestReconcileProjectLiveBindingsCreatesSandboxDevEnvironment(t *testing.T) 
 					"mode": "live",
 					"bindings": []any{map[string]any{
 						"name":     "dev",
-						"provider": "sandbox",
+						"provider": "app-studio",
 						"kind":     "providerResource",
 						"resourceRef": map[string]any{
-							"name":       "todo-dev",
-							"apiVersion": "sandbox.kedge.faros.sh/v1alpha1",
-							"kind":       "DevEnvironment",
-							"resource":   "devenvironments",
+							"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+							"kind":       "SandboxRunner",
+							"resource":   "sandboxrunners",
 						},
 						"values": map[string]any{
 							"projectRef": "todo",
@@ -325,18 +536,108 @@ func TestReconcileProjectLiveBindingsCreatesSandboxDevEnvironment(t *testing.T) 
 		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
 	}
 	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
-	if _, err := server.reconcileProjectLiveBindings(context.Background(), client, project); err != nil {
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	if _, err := server.reconcileProjectLiveBindings(context.Background(), client, project, id); err != nil {
 		t.Fatalf("reconcileProjectLiveBindings returned error: %v", err)
 	}
-	obj, err := client.Dynamic().Resource(sandboxDevEnvironmentGVR()).Get(context.Background(), "todo-dev", metav1.GetOptions{})
+	obj, err := client.Dynamic().Resource(infrastructureSandboxRunnerGVR()).Get(context.Background(), runnerName, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("get DevEnvironment returned error: %v", err)
+		t.Fatalf("get SandboxRunner returned error: %v", err)
+	}
+	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "name"); got != runnerName {
+		t.Fatalf("spec.name = %q, want %q", got, runnerName)
 	}
 	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "projectRef"); got != "todo" {
 		t.Fatalf("spec.projectRef = %q, want todo", got)
 	}
-	if _, ok, _ := unstructured.NestedString(obj.Object, "spec", "runtime", "image"); ok {
-		t.Fatalf("runtime.image should be defaulted by provider-sandbox, not App Studio")
+	if _, ok, _ := unstructured.NestedString(obj.Object, "spec", "runnerImage"); ok {
+		t.Fatalf("runnerImage should be defaulted by the infrastructure Template, not App Studio")
+	}
+}
+
+func TestDeleteProjectProviderResourcesRemovesInfrastructureSandboxRunner(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+	}
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	devEnv := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"kind":       "SandboxRunner",
+		"metadata": map[string]any{
+			"name": runnerName,
+		},
+	}}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), devEnv))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	if err := server.deleteProjectProviderResources(context.Background(), client, project, id); err != nil {
+		t.Fatalf("deleteProjectProviderResources returned error: %v", err)
+	}
+	if _, err := client.Dynamic().Resource(infrastructureSandboxRunnerGVR()).Get(context.Background(), runnerName, metav1.GetOptions{}); err == nil {
+		t.Fatal("infrastructure SandboxRunner still exists after project provider cleanup")
+	}
+}
+
+func TestDeleteProjectProviderResourcesRemovesSandboxRuntimeNamespace(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+	}
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	runtimeNamespace := "cluster-a-" + runnerName
+	runner := testSandboxRunner(runnerName, "todo")
+	runner.SetAnnotations(map[string]string{kcpClusterAnnotation: "cluster-a"})
+	if err := unstructured.SetNestedField(runner.Object, runtimeNamespace, "status", "runtimeNamespace"); err != nil {
+		t.Fatalf("set runtime namespace: %v", err)
+	}
+	for _, field := range []string{"previewServiceRef", "controlServiceRef", "controlSecretRef"} {
+		if err := unstructured.SetNestedField(runner.Object, runtimeNamespace, "status", field, "namespace"); err != nil {
+			t.Fatalf("set %s namespace: %v", field, err)
+		}
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), runner))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(&corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: runtimeNamespace},
+	})
+
+	if err := server.deleteProjectProviderResources(context.Background(), client, project, id); err != nil {
+		t.Fatalf("deleteProjectProviderResources returned error: %v", err)
+	}
+	if _, err := client.Dynamic().Resource(infrastructureSandboxRunnerGVR()).Get(context.Background(), runnerName, metav1.GetOptions{}); err == nil {
+		t.Fatal("infrastructure SandboxRunner still exists after project provider cleanup")
+	}
+	if _, err := server.runtimeClient.CoreV1().Namespaces().Get(context.Background(), runtimeNamespace, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("runtime namespace get error = %v, want not found", err)
+	}
+}
+
+func TestDeleteProjectProviderResourcesRejectsForgedSandboxRuntimeNamespace(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+	}
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	runner := testSandboxRunner(runnerName, "todo")
+	runner.SetAnnotations(map[string]string{kcpClusterAnnotation: "cluster-a"})
+	if err := unstructured.SetNestedField(runner.Object, "kube-system", "status", "runtimeNamespace"); err != nil {
+		t.Fatalf("set forged runtime namespace: %v", err)
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), runner))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(&corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "kube-system"},
+	})
+
+	if err := server.deleteProjectProviderResources(context.Background(), client, project, id); err == nil {
+		t.Fatal("deleteProjectProviderResources returned nil for forged runtime namespace")
+	}
+	if _, err := server.runtimeClient.CoreV1().Namespaces().Get(context.Background(), "kube-system", metav1.GetOptions{}); err != nil {
+		t.Fatalf("forged namespace was deleted or unreadable: %v", err)
 	}
 }
 
@@ -345,24 +646,25 @@ func TestProjectViewOverlaysSandboxPreviewStatus(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
 	}
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
 	devEnv := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "sandbox.kedge.faros.sh/v1alpha1",
-		"kind":       "DevEnvironment",
+		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"kind":       "SandboxRunner",
 		"metadata": map[string]any{
-			"name": "todo-dev",
+			"name": runnerName,
 		},
 		"status": map[string]any{
-			"phase":      "Running",
-			"previewURL": "/services/providers/sandbox/api/dev-environments/todo-dev/preview/",
+			"phase": "Running",
 		},
 	}}
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), devEnv))
-	view := projectView(context.Background(), client, project)
+	view := projectView(context.Background(), client, project, id)
 	if len(view.Environments) != 1 || len(view.Environments[0].Bindings) != 1 {
 		t.Fatalf("view environments = %#v, want one development binding", view.Environments)
 	}
 	binding := view.Environments[0].Bindings[0]
-	if got, want := binding.PreviewURL, "/services/providers/sandbox/api/dev-environments/todo-dev/preview/"; got != want {
+	if got, want := binding.PreviewURL, "/services/providers/app-studio/api/projects/todo/preview/"; got != want {
 		t.Fatalf("PreviewURL = %q, want %q", got, want)
 	}
 	if got, want := view.Environments[0].Phase, "Running"; got != want {
@@ -370,10 +672,119 @@ func TestProjectViewOverlaysSandboxPreviewStatus(t *testing.T) {
 	}
 }
 
-func sandboxDevEnvironmentGVR() k8sschema.GroupVersionResource {
+func TestGenerateProjectAssistantStreamUsesLiveBindingStatusOverlay(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+	}
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	devEnv := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"kind":       "SandboxRunner",
+		"metadata": map[string]any{
+			"name": runnerName,
+		},
+		"status": map[string]any{
+			"phase": "Running",
+		},
+	}}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		devEnv,
+		projectLLMSettingsSecret(projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example", Model: "test-model", APIKey: "test-key"}),
+	))
+	engine := &previewOverlayProbeEngine{}
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "http://hub.example", false)
+	server.assistantEngine = engine
+
+	_, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if got, want := engine.previewURL, "/services/providers/app-studio/api/projects/todo/preview/"; got != want {
+		t.Fatalf("engine project preview URL = %q, want %q", got, want)
+	}
+}
+
+func testSandboxRunner(name, project string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"kind":       "SandboxRunner",
+		"metadata": map[string]any{
+			"name": name,
+		},
+		"spec": map[string]any{
+			"name":       name,
+			"projectRef": project,
+		},
+		"status": map[string]any{
+			"phase":            "Running",
+			"runtimeNamespace": name,
+			"previewServiceRef": map[string]any{
+				"namespace": name,
+				"name":      name,
+				"portName":  "preview",
+			},
+			"controlServiceRef": map[string]any{
+				"namespace": name,
+				"name":      name,
+				"portName":  "control",
+			},
+			"controlSecretRef": map[string]any{
+				"namespace": name,
+				"name":      name + "-control",
+			},
+		},
+	}}
+}
+
+func testRuntimeControlSecret(name, token string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: name,
+			Name:      name + "-control",
+		},
+		Data: map[string][]byte{"token": []byte(token)},
+	}
+}
+
+func testReadyPreviewEndpoints(name string) *corev1.Endpoints {
+	return &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: name,
+			Name:      name,
+		},
+		Subsets: []corev1.EndpointSubset{{
+			Addresses: []corev1.EndpointAddress{{IP: "10.0.0.10"}},
+			Ports:     []corev1.EndpointPort{{Name: "preview", Port: 3000}},
+		}},
+	}
+}
+
+type previewOverlayProbeEngine struct {
+	previewURL string
+}
+
+func (e *previewOverlayProbeEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
+	e.previewURL = projectAssistantRuntimePreviewURL(req.Project)
+	return projectAssistantRunResult{Content: "ok"}, nil
+}
+
+func (e *previewOverlayProbeEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
+	return projectAssistantRunResult{}, fmt.Errorf("unexpected resume")
+}
+
+func infrastructureSandboxRunnerGVR() k8sschema.GroupVersionResource {
 	return k8sschema.GroupVersionResource{
-		Group:    "sandbox.kedge.faros.sh",
+		Group:    "infrastructure.kedge.faros.sh",
 		Version:  "v1alpha1",
-		Resource: "devenvironments",
+		Resource: "sandboxrunners",
 	}
 }

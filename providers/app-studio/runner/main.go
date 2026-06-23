@@ -99,11 +99,13 @@ func configFromEnv() *runnerConfig {
 	if workdir == "" {
 		workdir = "/workspace"
 	}
+	controlToken := strings.TrimSpace(os.Getenv("SANDBOX_CONTROL_TOKEN"))
+	_ = os.Unsetenv("SANDBOX_CONTROL_TOKEN")
 	return &runnerConfig{
 		WorkDir:              workdir,
 		StartCommand:         strings.TrimSpace(os.Getenv("SANDBOX_START_COMMAND")),
 		Port:                 strings.TrimSpace(os.Getenv("SANDBOX_PORT")),
-		ControlToken:         strings.TrimSpace(os.Getenv("SANDBOX_CONTROL_TOKEN")),
+		ControlToken:         controlToken,
 		AllowInsecureControl: strings.EqualFold(strings.TrimSpace(os.Getenv("SANDBOX_ALLOW_INSECURE_CONTROL")), "true"),
 	}
 }
@@ -383,6 +385,7 @@ func (s *supervisor) startLocked(ctx context.Context) error {
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", s.config.StartCommand)
 	cmd.Dir = s.config.WorkDir
+	cmd.Env = sanitizedChildEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -408,6 +411,17 @@ func (s *supervisor) startLocked(ctx context.Context) error {
 		close(done)
 	}()
 	return nil
+}
+
+func sanitizedChildEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "SANDBOX_CONTROL_TOKEN=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func (s *supervisor) stopLocked() error {

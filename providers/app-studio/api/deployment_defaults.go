@@ -12,10 +12,17 @@ package api
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+)
+
+const (
+	defaultSandboxRunnerImage         = "ghcr.io/faroshq/kedge-sandbox-runner:dev"
+	defaultSandboxTokenGeneratorImage = "bitnami/kubectl:1.34"
 )
 
 func defaultProjectSpec(projectName, displayName, description string, repository *aiv1alpha1.ProjectRepositoryBinding) aiv1alpha1.ProjectSpec {
@@ -44,10 +51,27 @@ func defaultProjectDevelopmentEnvironment(projectName string) aiv1alpha1.Project
 				Resource:   "sandboxrunners",
 			},
 			Values: projectDeploymentJSONValues(map[string]any{
-				"projectRef": projectName,
+				"projectRef":          projectName,
+				"runnerImage":         sandboxRunnerImage(),
+				"tokenGeneratorImage": sandboxTokenGeneratorImage(),
 			}),
 		}},
 	}
+}
+
+func sandboxRunnerImage() string {
+	return envOrDefault("APP_STUDIO_SANDBOX_RUNNER_IMAGE", defaultSandboxRunnerImage)
+}
+
+func sandboxTokenGeneratorImage() string {
+	return envOrDefault("APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE", defaultSandboxTokenGeneratorImage)
+}
+
+func envOrDefault(key, def string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return def
 }
 
 func projectDeploymentJSONValues(values map[string]any) runtime.RawExtension {

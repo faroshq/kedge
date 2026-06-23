@@ -29,6 +29,12 @@ spec:
       startCommand:
         type: string
         default: "PORT_VALUE=\"$SANDBOX_PORT\"; if [ -z \"$PORT_VALUE\" ]; then PORT_VALUE=3000; fi; if [ -f package.json ]; then npm install --no-audit --no-fund && (npm run dev -- --host 0.0.0.0 --port \"$PORT_VALUE\" || npm start); else npx --yes vite --host 0.0.0.0 --port \"$PORT_VALUE\"; fi"
+      runnerImage:
+        type: string
+        description: "Sandbox runner image. Production deployments should supply an immutable digest reference."
+      tokenGeneratorImage:
+        type: string
+        description: "kubectl-capable image used by the one-shot control-token Job. Production deployments should supply an immutable digest reference."
       port:
         type: integer
         default: 3000
@@ -40,6 +46,8 @@ spec:
     required:
       - name
       - projectRef
+      - runnerImage
+      - tokenGeneratorImage
   backendConfig:
     resources:
       - id: runtimeNamespace
@@ -165,7 +173,7 @@ spec:
                 restartPolicy: OnFailure
                 containers:
                   - name: token
-                    image: bitnami/kubectl
+                    image: ${schema.spec.tokenGeneratorImage}
                     command:
                       - /bin/sh
                       - -c
@@ -220,7 +228,7 @@ spec:
                     type: RuntimeDefault
                 containers:
                   - name: runner
-                    image: ghcr.io/faroshq/kedge-sandbox-runner:dev
+                    image: ${schema.spec.runnerImage}
                     env:
                       - name: SANDBOX_WORKDIR
                         value: ${schema.spec.workingDir}
@@ -313,7 +321,15 @@ spec:
                 app.kubernetes.io/name: sandbox-runner
                 app.kubernetes.io/instance: ${schema.spec.name}
                 app.kubernetes.io/component: runner
-            policyTypes: ["Egress"]
+            policyTypes: ["Ingress", "Egress"]
+            ingress:
+              - from:
+                  - podSelector: {}
+                ports:
+                  - protocol: TCP
+                    port: ${schema.spec.port}
+                  - protocol: TCP
+                    port: 7070
             egress:
               - ports:
                   - protocol: UDP

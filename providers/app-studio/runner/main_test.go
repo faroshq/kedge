@@ -63,6 +63,47 @@ func TestSyncRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestSyncRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "escape.txt")
+	if err := os.Symlink(outsideFile, filepath.Join(root, "link.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	s := newRunnerServer(&runnerConfig{WorkDir: root, ControlToken: "test-token"})
+	resp := postJSON(t, s, "/sync", syncRequest{
+		Files: []syncFile{{Path: "link.txt", Content: "nope"}},
+	})
+	if resp.Code == http.StatusOK {
+		t.Fatalf("sync through symlink status = %d, want non-2xx", resp.Code)
+	}
+	if _, err := os.Stat(outsideFile); !os.IsNotExist(err) {
+		t.Fatalf("outside file stat err = %v, want not exist", err)
+	}
+}
+
+func TestSyncRejectsSymlinkParentDeleteEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(outsideFile, []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked-dir")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	s := newRunnerServer(&runnerConfig{WorkDir: root, ControlToken: "test-token"})
+	resp := postJSON(t, s, "/sync", syncRequest{
+		DeletePaths: []string{"linked-dir/victim.txt"},
+	})
+	if resp.Code == http.StatusOK {
+		t.Fatalf("delete through symlink status = %d, want non-2xx", resp.Code)
+	}
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Fatalf("outside file was deleted or unreadable: %v", err)
+	}
+}
+
 func TestLogsReturnsRingBuffer(t *testing.T) {
 	s := newRunnerServer(&runnerConfig{WorkDir: t.TempDir(), ControlToken: "test-token"})
 	s.logs.append("one")

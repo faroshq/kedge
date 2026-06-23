@@ -551,8 +551,11 @@ func TestReconcileProjectLiveBindingsCreatesInfrastructureSandboxRunner(t *testi
 	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "projectRef"); got != "todo" {
 		t.Fatalf("spec.projectRef = %q, want todo", got)
 	}
-	if _, ok, _ := unstructured.NestedString(obj.Object, "spec", "runnerImage"); ok {
-		t.Fatalf("runnerImage should be defaulted by the infrastructure Template, not App Studio")
+	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "runnerImage"); got != sandboxRunnerImage() {
+		t.Fatalf("runnerImage = %q, want %q", got, sandboxRunnerImage())
+	}
+	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "tokenGeneratorImage"); got != sandboxTokenGeneratorImage() {
+		t.Fatalf("tokenGeneratorImage = %q, want %q", got, sandboxTokenGeneratorImage())
 	}
 }
 

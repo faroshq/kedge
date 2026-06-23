@@ -89,6 +89,10 @@ spec:
             - name: APP_STUDIO_RUNTIME_KUBECONFIG
               value: /var/run/secrets/kedge/runtime/kubeconfig
             {{- end }}
+            - name: APP_STUDIO_SANDBOX_RUNNER_IMAGE
+              value: {{ .Values.sandboxRunner.runnerImage | quote }}
+            - name: APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE
+              value: {{ .Values.sandboxRunner.tokenGeneratorImage | quote }}
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}
             {{- if .Values.previewTokenSecretRef.name }}

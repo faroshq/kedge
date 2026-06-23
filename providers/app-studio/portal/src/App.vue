@@ -3282,6 +3282,8 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               :key="developmentPreviewFrameKey"
               :src="developmentPreviewURL"
               title="Development preview"
+              sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts"
+              referrerpolicy="no-referrer"
               class="h-full min-h-[360px] w-full border-0 bg-white"
               @load="handleDevelopmentPreviewFrameLoad"
             />

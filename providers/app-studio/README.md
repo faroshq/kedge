@@ -53,6 +53,8 @@ Environment variables consumed by the binary:
 | `KEDGE_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
 | `KEDGE_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
 | `APP_STUDIO_RUNTIME_KUBECONFIG` | Kubernetes kubeconfig for the runtime cluster that runs `SandboxRunner` pods |
+| `APP_STUDIO_SANDBOX_RUNNER_IMAGE` | Runner image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
+| `APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE` | kubectl-capable token-generator image passed to new `SandboxRunner` resources; use an immutable digest outside local development |
 | `APP_STUDIO_PREVIEW_TOKEN_SECRET` | Optional shared signing secret for preview URLs; configure for multi-replica deployments |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |

@@ -169,6 +169,18 @@ func TestSandboxRunnerUsesManagedJobForControlToken(t *testing.T) {
 	if got, _, _ := unstructured.NestedString(selector, "app.kubernetes.io/component"); got != "runner" {
 		t.Fatalf("runnerNetwork component selector = %q, want runner", got)
 	}
+	policyTypes := mustNestedSlice(t, runnerNetwork, "template", "spec", "policyTypes")
+	if !hasString(policyTypes, "Ingress") || !hasString(policyTypes, "Egress") {
+		t.Fatalf("runnerNetwork policyTypes = %#v, want Ingress and Egress", policyTypes)
+	}
+	ingress := mustNestedSlice(t, runnerNetwork, "template", "spec", "ingress")
+	if len(ingress) == 0 {
+		t.Fatal("runnerNetwork must isolate ingress with explicit allow rules")
+	}
+	egress := mustNestedSlice(t, runnerNetwork, "template", "spec", "egress")
+	if len(egress) == 0 {
+		t.Fatal("runnerNetwork must keep explicit egress rules")
+	}
 }
 
 func decodeTemplate(t *testing.T, raw []byte) *infrav1alpha1.Template {
@@ -249,6 +261,15 @@ func hasNamedMap(items []any, name string) bool {
 			continue
 		}
 		if got, _, _ := unstructured.NestedString(m, "name"); got == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasString(items []any, value string) bool {
+	for _, item := range items {
+		if got, ok := item.(string); ok && got == value {
 			return true
 		}
 	}

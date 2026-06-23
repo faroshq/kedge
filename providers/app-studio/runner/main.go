@@ -24,7 +24,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -154,6 +153,13 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	root, err := openWorkspaceRoot(s.config.WorkDir)
+	if err != nil {
+		http.Error(w, "open workspace: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = root.Close() }()
+
 	changed := make([]string, 0, len(req.Files))
 	startupChanged := false
 	for _, f := range req.Files {
@@ -162,20 +168,11 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		target, err := workspaceTarget(s.config.WorkDir, clean)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			http.Error(w, fmt.Sprintf("create parent for %q: %v", clean, err), http.StatusInternalServerError)
-			return
-		}
 		content := []byte(f.Content)
-		if isStartupAffectingPath(clean) && fileContentChanged(target, content) {
+		if isStartupAffectingPath(clean) && workspaceFileContentChanged(root, clean, content) {
 			startupChanged = true
 		}
-		if err := os.WriteFile(target, content, 0o644); err != nil {
+		if err := writeWorkspaceFile(root, clean, content); err != nil {
 			http.Error(w, fmt.Sprintf("write %q: %v", clean, err), http.StatusInternalServerError)
 			return
 		}
@@ -188,12 +185,7 @@ func (s *runnerServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		target, err := workspaceTarget(s.config.WorkDir, clean)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := os.RemoveAll(target); err != nil {
+		if err := root.RemoveAll(clean); err != nil {
 			http.Error(w, fmt.Sprintf("delete %q: %v", clean, err), http.StatusInternalServerError)
 			return
 		}
@@ -224,8 +216,25 @@ func (s *runnerServer) shouldRestartAfterSync(policy string, startupChanged bool
 	}
 }
 
-func fileContentChanged(path string, next []byte) bool {
-	current, err := os.ReadFile(path)
+func openWorkspaceRoot(workdir string) (*os.Root, error) {
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenRoot(workdir)
+}
+
+func writeWorkspaceFile(root *os.Root, clean string, content []byte) error {
+	parent := path.Dir(clean)
+	if parent != "." {
+		if err := root.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Errorf("create parent: %w", err)
+		}
+	}
+	return root.WriteFile(clean, content, 0o644)
+}
+
+func workspaceFileContentChanged(root *os.Root, clean string, next []byte) bool {
+	current, err := root.ReadFile(clean)
 	return err != nil || !bytes.Equal(current, next)
 }
 
@@ -300,22 +309,6 @@ func cleanWorkspacePath(raw string) (string, error) {
 		return "", fmt.Errorf("path %q escapes workspace", raw)
 	}
 	return clean, nil
-}
-
-func workspaceTarget(root, clean string) (string, error) {
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	target := filepath.Join(rootAbs, filepath.FromSlash(clean))
-	rel, err := filepath.Rel(rootAbs, target)
-	if err != nil {
-		return "", err
-	}
-	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return "", fmt.Errorf("path %q escapes workspace", clean)
-	}
-	return target, nil
 }
 
 type supervisor struct {

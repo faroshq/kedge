@@ -30,14 +30,33 @@ sandbox.
 
 Known limitations:
 
-- network policy is intentionally narrow but not a complete sandbox boundary
-- no seccomp/AppArmor/runtime-class hardening is configured
-- no CPU, memory, storage, or process quotas are applied by default
-- runner images are mutable dev images until a publishing workflow pins them
+- no AppArmor or runtime-class hardening is configured
+- runner images default to local-dev tags in App Studio config; production
+  installs must override them with immutable digest references before creating
+  `SandboxRunner` resources
 - file sync is text-file oriented and skips binary or oversized App Studio files
 
 Before promoting this beyond local/dev use, add explicit runtime isolation,
 quota defaults, image provenance controls, and network policy hardening.
+
+## Runtime kubeconfig RBAC
+
+`APP_STUDIO_RUNTIME_KUBECONFIG` must be scoped to only the runtime data-plane
+operations App Studio performs after validating deterministic `SandboxRunner`
+refs. The credential should not be cluster-admin. A minimal role needs:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "endpoints"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services/proxy"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["delete"]
+```
 
 ## Capability Boundary
 

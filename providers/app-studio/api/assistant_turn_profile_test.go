@@ -321,6 +321,7 @@ func TestProjectAssistantPromptFramesAppStudioAsBusinessUserEasyButton(t *testin
 		"translate technical choices into business outcomes",
 		"do not ask the user to choose databases, networking, infrastructure templates, or deployment architecture",
 		"do not recommend a full application or runtime template just to satisfy a smaller need like persistent data",
+		"consult the template's agent.usage guidance",
 		"separate development sandbox guidance from production launch guidance",
 	} {
 		if !strings.Contains(lowerPrompt, strings.ToLower(want)) {

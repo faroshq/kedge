@@ -30,7 +30,6 @@ import (
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
-	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 type projectAssistantCheckpointState struct {
@@ -135,8 +134,8 @@ func appendProjectAssistantResumePendingUI(out *projectAssistantResumeResponse, 
 	}
 }
 
-func (s *Server) appendProjectAssistantResumeDevelopmentPreviewRefreshUI(ctx context.Context, out *projectAssistantResumeResponse, scope workspace.Scope, before string, beforeOK bool, toolCalls []projectToolCallStreamEvent) {
-	if out == nil || !s.projectAssistantPreviewRefreshNeeded(ctx, scope, before, beforeOK, toolCalls) {
+func appendProjectAssistantResumeDevelopmentPreviewRefreshUI(out *projectAssistantResumeResponse, needed bool) {
+	if out == nil || !needed {
 		return
 	}
 	out.UIEvents = append(out.UIEvents, projectAssistantUIDevelopmentPreviewRefreshEvent())
@@ -577,12 +576,11 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	}
 	currentRequestID := run.RequestID
 	currentToolCallID := strings.TrimSpace(state.Eino.ToolCallID)
-	workspaceDigestBefore, workspaceDigestErr := s.projectWorkspaceSyncDigest(ctx, engineReq.WorkspaceScope)
-	workspaceDigestOK := workspaceDigestErr == nil
 	result, err := s.projectAssistantEngine().ResumeProjectAssistant(ctx, engineReq, resumeReq, state)
 	currentToolCall := projectAssistantResumeToolCall(streamedToolCalls, currentToolCallID)
 	out.ToolCall = currentToolCall
 	out.Result = projectAssistantResumeToolResult(result.Content, currentToolCall)
+	previewRefreshNeeded := s.projectAssistantPreviewRefreshNeeded(ctx, engineReq.WorkspaceScope, "", false, streamedToolCalls)
 	if err != nil {
 		var permissionErr *projectAssistantPermissionRequiredError
 		if !errors.As(err, &permissionErr) {
@@ -617,7 +615,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				assistantMessageID := strings.TrimSpace(resumeReq.AssistantMessageID)
 				appendProjectAssistantResumeResolvedUI(&out, assistantMessageID, currentRequestID, currentToolCall)
 				appendProjectAssistantResumePendingUI(&out, assistantMessageID)
-				s.appendProjectAssistantResumeDevelopmentPreviewRefreshUI(ctx, &out, engineReq.WorkspaceScope, workspaceDigestBefore, workspaceDigestOK, streamedToolCalls)
+				appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
 				messageUpdate := out
 				messageUpdate.RunID = run.ID
 				messageUpdate.RequestID = currentRequestID
@@ -665,7 +663,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		assistantMessageID := strings.TrimSpace(resumeReq.AssistantMessageID)
 		appendProjectAssistantResumeResolvedUI(&out, assistantMessageID, currentRequestID, currentToolCall)
 		appendProjectAssistantResumePendingUI(&out, assistantMessageID)
-		s.appendProjectAssistantResumeDevelopmentPreviewRefreshUI(ctx, &out, engineReq.WorkspaceScope, workspaceDigestBefore, workspaceDigestOK, streamedToolCalls)
+		appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
 		messageUpdate := out
 		messageUpdate.RunID = run.ID
 		messageUpdate.RequestID = currentRequestID
@@ -705,7 +703,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	}
 	out.Status = run.Status
 	appendProjectAssistantResumeResolvedUI(&out, strings.TrimSpace(resumeReq.AssistantMessageID), currentRequestID, currentToolCall)
-	s.appendProjectAssistantResumeDevelopmentPreviewRefreshUI(ctx, &out, engineReq.WorkspaceScope, workspaceDigestBefore, workspaceDigestOK, streamedToolCalls)
+	appendProjectAssistantResumeDevelopmentPreviewRefreshUI(&out, previewRefreshNeeded)
 	if err := s.updateProjectAssistantPermissionMessage(persistCtx, messageScope, strings.TrimSpace(resumeReq.AssistantMessageID), out); err != nil {
 		return projectAssistantResumeResponse{}, err
 	}

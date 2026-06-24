@@ -86,10 +86,6 @@ type previewTokenPayload struct {
 	ExpiresAt          int64  `json:"expiresAt"`
 }
 
-func previewScopeGrantKey(projectName, scope string) string {
-	return projectName + "\x00" + scope
-}
-
 type previewSigner struct {
 	secret []byte
 	now    func() time.Time
@@ -519,15 +515,15 @@ func hasReadyEndpoint(endpoints *corev1.Endpoints) bool {
 
 func (s *Server) previewProjectDevelopment(w http.ResponseWriter, r *http.Request) {
 	projectName := mux.Vars(r)["project"]
-	targetRef, suffix, ok := s.previewProjectTarget(w, r, projectName)
-	if !ok {
-		return
-	}
 	scopedBasePath := scopedProjectPreviewBasePath(projectName, r.URL.Path)
 	if scopedBasePath != "" {
 		if handlePreviewCORSPreflight(w, r) {
 			return
 		}
+	}
+	targetRef, suffix, ok := s.previewProjectTarget(w, r, projectName)
+	if !ok {
+		return
 	}
 	if s.runtimeConfig == nil {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "runtime kubeconfig not configured")
@@ -612,6 +608,7 @@ func applyPreviewCORSHeaders(header http.Header, r *http.Request) {
 		return
 	}
 	header.Set("Access-Control-Allow-Origin", "null")
+	header.Set("Access-Control-Allow-Credentials", "true")
 	header.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
 	header.Set("Access-Control-Max-Age", "600")
 	if requestedHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers")); requestedHeaders != "" {
@@ -791,7 +788,6 @@ func (s *Server) previewTokenFromRequest(w http.ResponseWriter, r *http.Request,
 			return previewTokenPayload{}, "", false
 		}
 		scope := previewTokenScope(token)
-		s.rememberPreviewScope(projectName, scope, payload)
 		setPreviewTokenCookie(w, r, projectName, scope, token, time.Unix(payload.ExpiresAt, 0))
 		http.Redirect(w, r, scopedProjectPreviewRedirectURL(projectName, scope, r.URL.Query()), http.StatusFound)
 		return previewTokenPayload{}, "", false
@@ -803,11 +799,6 @@ func (s *Server) previewTokenFromRequest(w http.ResponseWriter, r *http.Request,
 	}
 	cookie, err := r.Cookie(previewCookieName(projectName, scope))
 	if err != nil {
-		if errors.Is(err, http.ErrNoCookie) {
-			if payload, ok := s.previewPayloadForScope(projectName, scope); ok {
-				return payload, suffix, true
-			}
-		}
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing")
 		return previewTokenPayload{}, "", false
 	}
@@ -820,57 +811,7 @@ func (s *Server) previewTokenFromRequest(w http.ResponseWriter, r *http.Request,
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", err.Error())
 		return previewTokenPayload{}, "", false
 	}
-	s.rememberPreviewScope(projectName, scope, payload)
 	return payload, suffix, true
-}
-
-func (s *Server) rememberPreviewScope(projectName, scope string, payload previewTokenPayload) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.previewScopeGrants == nil {
-		s.previewScopeGrants = map[string]previewTokenPayload{}
-	}
-	now := s.previewNowLocked()
-	s.pruneExpiredPreviewScopeGrantsLocked(now)
-	if now.Unix() > payload.ExpiresAt {
-		return
-	}
-	s.previewScopeGrants[previewScopeGrantKey(projectName, scope)] = payload
-}
-
-func (s *Server) previewPayloadForScope(projectName, scope string) (previewTokenPayload, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.previewNowLocked()
-	s.pruneExpiredPreviewScopeGrantsLocked(now)
-	payload, ok := s.previewScopeGrants[previewScopeGrantKey(projectName, scope)]
-	if !ok {
-		return previewTokenPayload{}, false
-	}
-	if payload.Project != projectName || now.Unix() > payload.ExpiresAt {
-		delete(s.previewScopeGrants, previewScopeGrantKey(projectName, scope))
-		return previewTokenPayload{}, false
-	}
-	return payload, true
-}
-
-func (s *Server) previewNowLocked() time.Time {
-	now := time.Now()
-	if s.previewSigner != nil && s.previewSigner.now != nil {
-		now = s.previewSigner.now()
-	}
-	return now
-}
-
-func (s *Server) pruneExpiredPreviewScopeGrantsLocked(now time.Time) {
-	if len(s.previewScopeGrants) == 0 {
-		return
-	}
-	for key, payload := range s.previewScopeGrants {
-		if now.Unix() > payload.ExpiresAt {
-			delete(s.previewScopeGrants, key)
-		}
-	}
 }
 
 func setPreviewTokenCookie(w http.ResponseWriter, r *http.Request, projectName, scope, token string, expires time.Time) {
@@ -881,39 +822,9 @@ func setPreviewTokenCookie(w http.ResponseWriter, r *http.Request, projectName, 
 		Expires:  expires,
 		MaxAge:   int(time.Until(expires).Seconds()),
 		HttpOnly: true,
-		Secure:   previewCookieSecure(r),
-		SameSite: http.SameSiteLaxMode,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
 	})
-}
-
-func previewCookieSecure(r *http.Request) bool {
-	if r == nil || r.TLS != nil {
-		return true
-	}
-	if proto := forwardedPreviewProto(r); proto != "" {
-		return proto == "https"
-	}
-	return true
-}
-
-func forwardedPreviewProto(r *http.Request) string {
-	for _, header := range []string{"X-Forwarded-Proto", "X-Forwarded-Scheme"} {
-		value := strings.TrimSpace(r.Header.Get(header))
-		if value == "" {
-			continue
-		}
-		proto, _, _ := strings.Cut(value, ",")
-		return strings.ToLower(strings.TrimSpace(proto))
-	}
-	forwarded := r.Header.Get("Forwarded")
-	for _, part := range strings.Split(forwarded, ";") {
-		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok || !strings.EqualFold(strings.TrimSpace(key), "proto") {
-			continue
-		}
-		return strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
-	}
-	return ""
 }
 
 func readPreviewRewriteBody(r io.Reader) ([]byte, error) {
@@ -1034,6 +945,7 @@ func rewritePreviewResponseBody(contentType, basePath string, raw []byte, upstre
 		text = rewritePreviewHTMLUpstreamURLs(text, basePath, upstreamBasePaths)
 		text = rewritePreviewHTMLRootURLs(text, basePath)
 		text = injectPreviewBaseTag(text, basePath)
+		text = injectPreviewCredentialScript(text, basePath)
 	case "text/css":
 		text = rewritePreviewCSSUpstreamURLs(text, basePath, upstreamBasePaths)
 		text = rewritePreviewCSSRootURLs(text, basePath)
@@ -1056,6 +968,60 @@ func injectPreviewBaseTag(text, basePath string) string {
 	}
 	insert := idx + len(head)
 	return text[:insert] + "\n  " + tag + text[insert:]
+}
+
+func injectPreviewCredentialScript(text, basePath string) string {
+	if strings.Contains(text, "data-kedge-preview-credentials") {
+		return text
+	}
+	script := `<script data-kedge-preview-credentials>
+(() => {
+  const basePath = ` + strconv.Quote(basePath) + `;
+  const baseURL = new URL(basePath, document.baseURI);
+  const isPreviewURL = (input) => {
+    try {
+      const raw = typeof Request !== 'undefined' && input instanceof Request ? input.url : input;
+      const target = new URL(String(raw), document.baseURI);
+      return target.pathname.startsWith(baseURL.pathname);
+    } catch {
+      return false;
+    }
+  };
+  const nativeFetch = window.fetch && window.fetch.bind(window);
+  if (nativeFetch) {
+    window.fetch = (input, init) => {
+      if (!isPreviewURL(input)) return nativeFetch(input, init);
+      const nextInit = init ? { ...init } : {};
+      if (nextInit.credentials === undefined) {
+        nextInit.credentials = 'include';
+      }
+      return nativeFetch(input, nextInit);
+    };
+  }
+  const NativeXHR = window.XMLHttpRequest;
+  if (NativeXHR && NativeXHR.prototype) {
+    const nativeOpen = NativeXHR.prototype.open;
+    const nativeSend = NativeXHR.prototype.send;
+    NativeXHR.prototype.open = function(method, url, ...rest) {
+      this.__kedgePreviewURL = url;
+      return nativeOpen.call(this, method, url, ...rest);
+    };
+    NativeXHR.prototype.send = function(...args) {
+      if (isPreviewURL(this.__kedgePreviewURL)) {
+        this.withCredentials = true;
+      }
+      return nativeSend.apply(this, args);
+    };
+  }
+})();
+</script>`
+	const head = "<head>"
+	idx := strings.Index(strings.ToLower(text), head)
+	if idx < 0 {
+		return script + text
+	}
+	insert := idx + len(head)
+	return text[:insert] + "\n  " + script + text[insert:]
 }
 
 func rewritePreviewHTMLRootURLs(text, basePath string) string {

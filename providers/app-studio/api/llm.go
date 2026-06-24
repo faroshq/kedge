@@ -487,6 +487,9 @@ func (s *Server) callProjectLocalTool(ctx context.Context, id identity, project 
 		HTTPRequest:          r,
 		Arguments:            args,
 	})
+	if err == nil {
+		s.scheduleDevelopmentSyncAfterMutation(id, project, name)
+	}
 	return result, err
 }
 

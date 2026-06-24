@@ -58,6 +58,7 @@ export interface ProjectAssistantUIComponent {
 export interface ProjectAssistantUIDataContent {
   key: string
   valueString?: string
+  append?: boolean
 }
 
 export interface ProjectAssistantUIEvent {

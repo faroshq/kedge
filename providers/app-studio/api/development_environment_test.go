@@ -94,6 +94,24 @@ fetch(API_URL);`
 	}
 }
 
+func TestRewritePreviewHTMLInjectsCredentialedPreviewFetchShim(t *testing.T) {
+	basePath := "/services/providers/app-studio/api/projects/simply-done/preview/__kedge_preview/abc123/"
+	raw := []byte(`<html><head><script src="/assets/app.js"></script></head><body></body></html>`)
+
+	got := string(rewritePreviewResponseBody("text/html", basePath, raw))
+	for _, want := range []string{
+		`<script data-kedge-preview-credentials>`,
+		`credentials = 'include'`,
+		`NativeXHR.prototype.open`,
+		`this.withCredentials = true`,
+		`<script src="` + basePath + `assets/app.js"></script>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten HTML missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestProjectAssistantRuntimePreviewURLPrefersDevelopment(t *testing.T) {
 	p := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
@@ -156,6 +174,28 @@ func TestProjectDevelopmentSyncTargetReadsSandboxBindingName(t *testing.T) {
 	}
 	if got, want := target.ResourceName, sandboxRunnerResourceName(id.tenantPath, "todo"); got != want {
 		t.Fatalf("ResourceName = %q, want %q", got, want)
+	}
+}
+
+func TestProjectAssistantPreviewRefreshNeededUsesSuccessfulMutatingToolCalls(t *testing.T) {
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	if !server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
+		Name:   projectToolWriteFile,
+		Status: "succeeded",
+	}}) {
+		t.Fatal("preview refresh = false, want true after successful workspace mutation")
+	}
+	if server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
+		Name:   projectToolWriteFile,
+		Status: "failed",
+	}}) {
+		t.Fatal("preview refresh = true, want false after failed workspace mutation")
+	}
+	if server.projectAssistantPreviewRefreshNeeded(context.Background(), workspace.Scope{}, "", false, []projectToolCallStreamEvent{{
+		Name:   projectToolReadProjectFile,
+		Status: "succeeded",
+	}}) {
+		t.Fatal("preview refresh = true, want false after read-only tool")
 	}
 }
 
@@ -377,15 +417,14 @@ func TestPreviewTokenRedirectSetsSecureCookie(t *testing.T) {
 	if !cookies[0].HttpOnly {
 		t.Fatalf("preview token cookie HttpOnly = false, want true")
 	}
+	if got, want := cookies[0].SameSite, http.SameSiteNoneMode; got != want {
+		t.Fatalf("preview token cookie SameSite = %v, want %v", got, want)
+	}
 }
 
-func TestPreviewProjectDevelopmentAllowsScopedRequestWithoutCookieAfterTokenRedirect(t *testing.T) {
+func TestPreviewProjectDevelopmentRejectsScopedRequestWithoutCookieAfterTokenRedirect(t *testing.T) {
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/api/v1/namespaces/runtime-ns/services/runtime-svc:preview/proxy/api/todos"; got != want {
-			t.Fatalf("runtime proxy path = %q, want %q", got, want)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `[{"id":"1","title":"Buy milk"}]`)
+		t.Fatalf("runtime proxy should not be reached without preview cookie; path = %q", r.URL.Path)
 	}))
 	defer runtimeAPI.Close()
 
@@ -420,11 +459,8 @@ func TestPreviewProjectDevelopmentAllowsScopedRequestWithoutCookieAfterTokenRedi
 
 	router.ServeHTTP(resp, req)
 
-	if got, want := resp.Code, http.StatusOK; got != want {
+	if got, want := resp.Code, http.StatusUnauthorized; got != want {
 		t.Fatalf("status = %d, want %d; body = %s", got, want, resp.Body.String())
-	}
-	if body := resp.Body.String(); !strings.Contains(body, `"id":"1"`) {
-		t.Fatalf("body = %q, want proxied runtime response", body)
 	}
 }
 
@@ -469,6 +505,7 @@ func TestPreviewProjectDevelopmentSupportsSandboxedCORSScopeRequests(t *testing.
 	scope := previewTokenScope(token)
 	scopedPath := "/api/projects/todo/preview/" + previewScopePrefix + "/" + scope + "/api/todos"
 	getReq := httptest.NewRequest(http.MethodGet, scopedPath, nil)
+	getReq.AddCookie(authResp.Result().Cookies()[0])
 	getReq.Header.Set("Origin", "null")
 	getResp := httptest.NewRecorder()
 	router.ServeHTTP(getResp, getReq)
@@ -477,6 +514,9 @@ func TestPreviewProjectDevelopmentSupportsSandboxedCORSScopeRequests(t *testing.
 	}
 	if got, want := getResp.Header().Get("Access-Control-Allow-Origin"), "null"; got != want {
 		t.Fatalf("GET Access-Control-Allow-Origin = %q, want %q", got, want)
+	}
+	if got, want := getResp.Header().Get("Access-Control-Allow-Credentials"), "true"; got != want {
+		t.Fatalf("GET Access-Control-Allow-Credentials = %q, want %q", got, want)
 	}
 	if got, want := len(getResp.Result().Header.Values("Access-Control-Allow-Origin")), 1; got != want {
 		t.Fatalf("GET Access-Control-Allow-Origin header count = %d, want %d", got, want)
@@ -500,33 +540,11 @@ func TestPreviewProjectDevelopmentSupportsSandboxedCORSScopeRequests(t *testing.
 	if got := preflightResp.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPost) {
 		t.Fatalf("OPTIONS Access-Control-Allow-Methods = %q, want POST", got)
 	}
+	if got, want := preflightResp.Header().Get("Access-Control-Allow-Credentials"), "true"; got != want {
+		t.Fatalf("OPTIONS Access-Control-Allow-Credentials = %q, want %q", got, want)
+	}
 	if got, want := runtimeCalls.Load(), int32(1); got != want {
 		t.Fatalf("runtime calls = %d, want %d", got, want)
-	}
-}
-
-func TestRememberPreviewScopePurgesExpiredGrants(t *testing.T) {
-	now := time.Unix(2000, 0)
-	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
-	server.previewSigner.now = func() time.Time { return now }
-
-	server.rememberPreviewScope("todo", "expired", previewTokenPayload{
-		Project:   "todo",
-		ExpiresAt: now.Add(-time.Second).Unix(),
-	})
-	server.rememberPreviewScope("todo", "valid", previewTokenPayload{
-		Project:   "todo",
-		ExpiresAt: now.Add(time.Hour).Unix(),
-	})
-
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if _, ok := server.previewScopeGrants[previewScopeGrantKey("todo", "expired")]; ok {
-		t.Fatalf("expired preview grant was retained")
-	}
-	if _, ok := server.previewScopeGrants[previewScopeGrantKey("todo", "valid")]; !ok {
-		t.Fatalf("valid preview grant was not retained")
 	}
 }
 

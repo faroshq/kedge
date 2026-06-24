@@ -95,6 +95,7 @@ type projectAssistantUIDataModelUpdate struct {
 type projectAssistantUIDataContent struct {
 	Key         string `json:"key"`
 	ValueString string `json:"valueString,omitempty"`
+	Append      bool   `json:"append,omitempty"`
 }
 
 type projectAssistantUIInterruptRequest struct {
@@ -123,12 +124,21 @@ func projectAssistantUIBeginRenderingEvent(surfaceID string) projectAssistantUIE
 }
 
 func projectAssistantUIDataUpdateEvent(surfaceID, key, value string) projectAssistantUIEvent {
+	return projectAssistantUIDataContentEvent(surfaceID, key, value, false)
+}
+
+func projectAssistantUIDataAppendEvent(surfaceID, key, value string) projectAssistantUIEvent {
+	return projectAssistantUIDataContentEvent(surfaceID, key, value, true)
+}
+
+func projectAssistantUIDataContentEvent(surfaceID, key, value string, appendValue bool) projectAssistantUIEvent {
 	return projectAssistantUIEvent{
 		DataModelUpdate: &projectAssistantUIDataModelUpdate{
 			SurfaceID: surfaceID,
 			Contents: []projectAssistantUIDataContent{{
 				Key:         key,
 				ValueString: value,
+				Append:      appendValue,
 			}},
 		},
 	}

@@ -575,8 +575,6 @@ func (s *Server) streamProjectAssistant(
 	var pendingFollowUpToolCallID string
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p.Name)
 	workspaceScope := projectWorkspaceScope(id, p.Name)
-	workspaceDigestBefore, workspaceDigestErr := s.projectWorkspaceSyncDigest(r.Context(), workspaceScope)
-	workspaceDigestOK := workspaceDigestErr == nil
 	streamWriter := projectAssistantStreamWriter{
 		assistantID: assistantID,
 		write: func(event projectMessageStreamEvent) error {
@@ -675,14 +673,12 @@ func (s *Server) streamProjectAssistant(
 		})
 	}
 	emitDevelopmentPreviewRefreshIfNeeded := func() error {
-		if streamErr != nil || !s.projectAssistantPreviewRefreshNeeded(r.Context(), workspaceScope, workspaceDigestBefore, workspaceDigestOK, streamedToolCalls) {
+		if streamErr != nil || !s.projectAssistantPreviewRefreshNeeded(r.Context(), workspaceScope, "", false, streamedToolCalls) {
 			return nil
 		}
 		if err := streamWriter.write(projectMessageStreamEventFromUI(projectAssistantUIDevelopmentPreviewRefreshEvent())); err != nil {
 			return err
 		}
-		workspaceDigestBefore, workspaceDigestErr = s.projectWorkspaceSyncDigest(r.Context(), workspaceScope)
-		workspaceDigestOK = workspaceDigestErr == nil
 		return nil
 	}
 

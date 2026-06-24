@@ -49,8 +49,37 @@ func TestProjectAssistantStreamWriterMapsDeltaToUIDataModelUpdate(t *testing.T) 
 		t.Fatalf("third event = %#v, want dataModelUpdate UI event", got[2])
 	}
 	contents := got[2].DataModelUpdate.Contents
-	if len(contents) != 1 || contents[0].Key != "assistant-1/msg-0-text" || contents[0].ValueString != "hello" {
-		t.Fatalf("data model contents = %#v, want assistant content binding", contents)
+	if len(contents) != 1 || contents[0].Key != "assistant-1/msg-0-text" || contents[0].ValueString != "hello" || !contents[0].Append {
+		t.Fatalf("data model contents = %#v, want appended assistant content binding", contents)
+	}
+}
+
+func TestProjectAssistantStreamWriterStreamsAssistantDeltasWithoutReplayingContent(t *testing.T) {
+	got, err := collectProjectAssistantStreamEvents(
+		projectAssistantEvent{
+			Type:  projectAssistantEventMessageDelta,
+			Delta: "hello",
+		},
+		projectAssistantEvent{
+			Type:  projectAssistantEventMessageDelta,
+			Delta: " world",
+		},
+	)
+	if err != nil {
+		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("events = %#v, want beginRendering, shell, and two dataModelUpdates", got)
+	}
+	for i, want := range []string{"hello", " world"} {
+		event := got[i+2]
+		if event.DataModelUpdate == nil || len(event.DataModelUpdate.Contents) != 1 {
+			t.Fatalf("event[%d] = %#v, want one dataModelUpdate content", i+2, event)
+		}
+		content := event.DataModelUpdate.Contents[0]
+		if content.ValueString != want || !content.Append {
+			t.Fatalf("event[%d] content = %#v, want append delta %q", i+2, content, want)
+		}
 	}
 }
 
@@ -376,6 +405,7 @@ func TestStreamProjectAssistantEmitsCanonicalLifecycleSequence(t *testing.T) {
 		"dataModelUpdate",
 		"surfaceUpdate",
 		"surfaceUpdate",
+		"dataModelUpdate",
 		"run_finished",
 	}
 	if len(got) != len(wantTypes) {
@@ -392,12 +422,15 @@ func TestStreamProjectAssistantEmitsCanonicalLifecycleSequence(t *testing.T) {
 	assertA2UICard(t, got[1], "tool call", "Editing files")
 	assertA2UICard(t, got[5], "tool call", "Editing files")
 	assertA2UICard(t, got[6], "tool result", "Edited files")
-	if got[7].Type != string(projectAssistantEventRunFinished) || got[7].AssistantMessageID != "assistant-sequence" {
-		t.Fatalf("terminal event = %#v, want run_finished for assistant-sequence", got[7])
+	if !projectMessageStreamEventsHaveContent([]projectMessageStreamEvent{got[7]}, projectAssistantUIDevelopmentPreviewRefreshKey) {
+		t.Fatalf("preview refresh event = %#v, want preview refresh signal", got[7])
+	}
+	if got[8].Type != string(projectAssistantEventRunFinished) || got[8].AssistantMessageID != "assistant-sequence" {
+		t.Fatalf("terminal event = %#v, want run_finished for assistant-sequence", got[8])
 	}
 }
 
-func TestStreamProjectAssistantEmitsPreviewRefreshWhenWorkspaceDigestChanges(t *testing.T) {
+func TestStreamProjectAssistantEmitsPreviewRefreshAfterMutatingToolCall(t *testing.T) {
 	settings := projectLLMSettings{
 		Provider: defaultProjectLLMProvider,
 		BaseURL:  defaultProjectLLMBaseURL,
@@ -519,6 +552,12 @@ func (projectAssistantWorkspaceMutationEngine) StreamProjectAssistant(ctx contex
 	if _, err := req.Workspace.WriteFile(ctx, req.WorkspaceScope, workspace.WriteOptions{Path: "src/App.tsx", Content: "export function App() { return <main>Updated</main> }\n"}); err != nil {
 		return projectAssistantRunResult{}, err
 	}
+	req.StreamCallbacks.OnToolCall(projectToolCallStreamEvent{
+		ID:      "tool-1",
+		Name:    projectToolWriteFile,
+		Status:  "succeeded",
+		Summary: "Updated file",
+	})
 	req.StreamCallbacks.OnChunk("Updated the app.")
 	return projectAssistantRunResult{Content: "Updated the app."}, nil
 }

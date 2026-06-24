@@ -131,7 +131,7 @@ const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS = 5 * 60 * 1000
 const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MIN_MS = 1000
-const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS = 10 * 60 * 1000
+const DEVELOPMENT_PREVIEW_AUTH_RENEWAL_MAX_MS = 60 * 60 * 1000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const assistantMarkdown = new MarkdownIt({
   html: false,
@@ -315,7 +315,6 @@ let developmentPreviewAuthorizationSerial = 0
 let developmentPreviewAuthorizationRetryTimer: number | undefined
 let developmentPreviewAuthorizationRenewalTimer: number | undefined
 let activeMessageStreamController: AbortController | null = null
-const assistantMessageContentDrafts = new Map<string, string>()
 
 const routeSegment = computed(() => {
   const raw = (props.ctx?.subPath ?? '').split('/').filter(Boolean)[0] ?? ''
@@ -1096,16 +1095,16 @@ async function createProjectAndStartConversation(content: string) {
     },
   ]
 
-	try {
-		await nextTick()
-		await api.createProjectStream(props.ctx, { description: description || undefined, prompt: content }, (event: ProjectMessageStreamEvent) => {
-			if (isProjectAssistantUIStreamEvent(event)) {
-				if (projectAssistantUIEventRequestsPreviewRefresh(event)) {
-					shouldRefreshPreviewAfterRun = true
-				}
-				const nextAssistantMessageID = applyAssistantUIEvent(projectName, event)
-				if (!assistantMessageID && nextAssistantMessageID) {
-					assistantMessageID = nextAssistantMessageID
+  try {
+    await nextTick()
+    await api.createProjectStream(props.ctx, { description: description || undefined, prompt: content }, (event: ProjectMessageStreamEvent) => {
+      if (isProjectAssistantUIStreamEvent(event)) {
+        if (projectAssistantUIEventRequestsPreviewRefresh(event)) {
+          shouldRefreshPreviewAfterRun = true
+        }
+        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event)
+        if (!assistantMessageID && nextAssistantMessageID) {
+          assistantMessageID = nextAssistantMessageID
         }
       } else if (event.type === 'project') {
         if (!event.project) return
@@ -1118,24 +1117,20 @@ async function createProjectAndStartConversation(content: string) {
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
         }
-        if (assistantMessageID) {
-          commitAssistantMessageContent(projectName, assistantMessageID)
-        }
       } else if (event.type === 'run_failed') {
         throw new Error(event.error ?? 'Streaming error')
       }
     }, controller.signal)
 
-		if (projectName) {
-			if (await refreshProjectConversationAfterAssistantRun(projectName) && shouldRefreshPreviewAfterRun) {
-				await syncDevelopmentPreviewForProject(projectName, 'Preview refreshed')
-			}
-		}
+    if (projectName) {
+      if (await refreshProjectConversationAfterAssistantRun(projectName) && shouldRefreshPreviewAfterRun) {
+        await refreshDevelopmentPreviewFrame('Preview refreshed')
+      }
+    }
   } catch (e) {
     if (isAbortError(e)) {
       if (projectName) {
         markAssistantMessageInterrupted(projectName, assistantMessageID)
-        clearAssistantMessageContentDraft(assistantMessageID)
       } else {
         selected.value = null
         messages.value = []
@@ -1158,7 +1153,6 @@ async function createProjectAndStartConversation(content: string) {
       props.navigate(CREATE_PROJECT_ROUTE)
     } else {
       messages.value = messages.value.filter((message) => message.id !== assistantMessageID)
-      clearAssistantMessageContentDraft(assistantMessageID)
     }
   } finally {
     if (activeMessageStreamController === controller) {
@@ -1505,11 +1499,11 @@ async function sendMessage() {
   prompt.value = ''
   busy.value = true
   messageStreaming.value = true
-	error.value = null
-	let assistantMessageID = ''
-	let shouldRefreshPreviewAfterRun = false
-	const controller = new AbortController()
-	activeMessageStreamController = controller
+  error.value = null
+  let assistantMessageID = ''
+  let shouldRefreshPreviewAfterRun = false
+  const controller = new AbortController()
+  activeMessageStreamController = controller
 
   const optimisticUserMessage: ProjectMessage = {
     id: `temp-${Date.now()}-user`,
@@ -1519,40 +1513,35 @@ async function sendMessage() {
     createdAt: new Date().toISOString(),
   }
   const optimisticMessages = [...messages.value, optimisticUserMessage]
-	messages.value = optimisticMessages
-	try {
-		await api.createMessageStream(props.ctx, projectName, content, (event: ProjectMessageStreamEvent) => {
-			if (isProjectAssistantUIStreamEvent(event)) {
-				if (projectAssistantUIEventRequestsPreviewRefresh(event)) {
-					shouldRefreshPreviewAfterRun = true
-				}
-				const nextAssistantMessageID = applyAssistantUIEvent(projectName, event)
-				if (!assistantMessageID && nextAssistantMessageID) {
-					assistantMessageID = nextAssistantMessageID
+  messages.value = optimisticMessages
+  try {
+    await api.createMessageStream(props.ctx, projectName, content, (event: ProjectMessageStreamEvent) => {
+      if (isProjectAssistantUIStreamEvent(event)) {
+        if (projectAssistantUIEventRequestsPreviewRefresh(event)) {
+          shouldRefreshPreviewAfterRun = true
+        }
+        const nextAssistantMessageID = applyAssistantUIEvent(projectName, event)
+        if (!assistantMessageID && nextAssistantMessageID) {
+          assistantMessageID = nextAssistantMessageID
         }
       } else if (event.type === 'run_finished') {
         conversationStatus.value = ''
         if (!assistantMessageID) {
           assistantMessageID = event.assistantMessageID ?? ''
         }
-        if (assistantMessageID) {
-          commitAssistantMessageContent(projectName, assistantMessageID)
-        }
       } else if (event.type === 'run_failed') {
         throw new Error(event.error ?? 'Streaming error')
-			}
-		}, controller.signal)
-		if (await refreshProjectConversationAfterAssistantRun(projectName) && shouldRefreshPreviewAfterRun) {
-			await syncDevelopmentPreviewForProject(projectName, 'Preview refreshed')
-		}
-	} catch (e) {
+      }
+    }, controller.signal)
+    if (await refreshProjectConversationAfterAssistantRun(projectName) && shouldRefreshPreviewAfterRun) {
+      await refreshDevelopmentPreviewFrame('Preview refreshed')
+    }
+  } catch (e) {
     if (isAbortError(e)) {
       markAssistantMessageInterrupted(projectName, assistantMessageID)
-      clearAssistantMessageContentDraft(assistantMessageID)
       return
     }
     messages.value = messages.value.filter((message) => message.id !== assistantMessageID)
-    clearAssistantMessageContentDraft(assistantMessageID)
     error.value = e instanceof Error ? e.message : String(e)
     prompt.value = content
   } finally {
@@ -1588,8 +1577,8 @@ function ensureAssistantMessage(projectName: string, assistantMessageID: string)
 }
 
 function applyAssistantUIEvent(projectName: string, ui: ProjectAssistantUIEvent): string | undefined {
-	const assistantMessageID = projectAssistantUIEventSurfaceID(ui)
-	let touchedAssistantMessageID: string | undefined
+  const assistantMessageID = projectAssistantUIEventSurfaceID(ui)
+  let touchedAssistantMessageID: string | undefined
 
   if (ui.beginRendering && projectName && assistantMessageID) {
     touchedAssistantMessageID = assistantMessageID
@@ -1609,16 +1598,16 @@ function applyAssistantUIEvent(projectName: string, ui: ProjectAssistantUIEvent)
         continue
       }
       if (content.key === 'builder.event') {
-			conversationStatus.value = builderEventStatus(content.valueString)
-			continue
-		}
-		if (content.key === 'development.previewRefreshNeeded') {
-			continue
-		}
-		if (!projectName || !assistantMessageID) continue
-		conversationStatus.value = ''
-		touchedAssistantMessageID = assistantMessageID
-		updateAssistantSurfaceData(projectName, assistantMessageID, content.key, content.valueString || '')
+        conversationStatus.value = builderEventStatus(content.valueString)
+        continue
+      }
+      if (content.key === 'development.previewRefreshNeeded') {
+        continue
+      }
+      if (!projectName || !assistantMessageID) continue
+      conversationStatus.value = ''
+      touchedAssistantMessageID = assistantMessageID
+      updateAssistantSurfaceData(projectName, assistantMessageID, content.key, content.valueString || '', content.append === true)
     }
   }
 
@@ -1628,17 +1617,17 @@ function applyAssistantUIEvent(projectName: string, ui: ProjectAssistantUIEvent)
     applyAssistantInterrupt(projectName, assistantMessageID, ui.interruptRequest)
   }
 
-	return touchedAssistantMessageID
+  return touchedAssistantMessageID
 }
 
 function projectAssistantUIEventRequestsPreviewRefresh(ui: ProjectAssistantUIEvent): boolean {
-	return ui.dataModelUpdate?.contents?.some((content) =>
-		content.key === 'development.previewRefreshNeeded' && content.valueString !== 'false',
-	) ?? false
+  return ui.dataModelUpdate?.contents?.some((content) =>
+    content.key === 'development.previewRefreshNeeded' && content.valueString !== 'false',
+  ) ?? false
 }
 
 function isProjectAssistantUIStreamEvent(event: ProjectMessageStreamEvent): event is ProjectAssistantUIEvent {
-	return ('beginRendering' in event && Boolean(event.beginRendering)) ||
+  return ('beginRendering' in event && Boolean(event.beginRendering)) ||
     ('surfaceUpdate' in event && Boolean(event.surfaceUpdate)) ||
     ('dataModelUpdate' in event && Boolean(event.dataModelUpdate)) ||
     ('interruptRequest' in event && Boolean(event.interruptRequest))
@@ -1686,18 +1675,19 @@ function upsertAssistantSurfaceComponents(projectName: string, assistantMessageI
   messages.value = [...messages.value]
 }
 
-function updateAssistantSurfaceData(projectName: string, assistantMessageID: string, key: string, value: string) {
+function updateAssistantSurfaceData(projectName: string, assistantMessageID: string, key: string, value: string, appendValue = false) {
   const idx = ensureAssistantSurface(projectName, assistantMessageID, messages.value.find((message) => message.id === assistantMessageID)?.surface?.rootId || 'root-col')
   const message = messages.value[idx]
   const surface = message.surface ?? { rootId: 'root-col', components: {}, dataModel: {} }
+  const nextValue = appendValue ? `${surface.dataModel[key] || ''}${value}` : value
   messages.value[idx] = {
     ...message,
-    content: assistantSurfaceHasAssistantBinding(surface, key) ? value : message.content,
+    content: assistantSurfaceHasAssistantBinding(surface, key) ? nextValue : message.content,
     surface: {
       ...surface,
       dataModel: {
         ...surface.dataModel,
-        [key]: value,
+        [key]: nextValue,
       },
     },
   }
@@ -1706,25 +1696,6 @@ function updateAssistantSurfaceData(projectName: string, assistantMessageID: str
 
 function assistantSurfaceHasAssistantBinding(surface: ProjectAssistantSurface, key: string): boolean {
   return Object.values(surface.components).some((component) => component.Text?.dataKey === key)
-}
-
-function commitAssistantMessageContent(projectName: string, assistantMessageID: string) {
-  const content = assistantMessageContentDrafts.get(assistantMessageID)
-  if (content === undefined) return
-  assistantMessageContentDrafts.delete(assistantMessageID)
-  const idx = ensureAssistantMessage(projectName, assistantMessageID)
-  const message = messages.value[idx]
-  if (message.content === content) return
-  messages.value[idx] = {
-    ...message,
-    content,
-  }
-  messages.value = [...messages.value]
-}
-
-function clearAssistantMessageContentDraft(assistantMessageID: string) {
-  if (!assistantMessageID) return
-  assistantMessageContentDrafts.delete(assistantMessageID)
 }
 
 function builderEventStatus(eventType?: string): string {
@@ -1803,7 +1774,7 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
     responseApplied = true
     await refreshSelectedProjectConversation(projectName)
     if (shouldRefreshPreview) {
-      await syncDevelopmentPreviewForProject(projectName, 'Preview refreshed')
+      await refreshDevelopmentPreviewFrame('Preview refreshed')
     }
   } catch (e) {
     await handleResumeFailure(projectName, key, e, {
@@ -1848,7 +1819,7 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
     responseApplied = true
     await refreshSelectedProjectConversation(projectName)
     if (shouldRefreshPreview) {
-      await syncDevelopmentPreviewForProject(projectName, 'Preview refreshed')
+      await refreshDevelopmentPreviewFrame('Preview refreshed')
     }
     const answers = { ...followUpAnswers.value }
     delete answers[key]
@@ -2237,6 +2208,9 @@ function assistantSurfaceChildCards(surface: ProjectAssistantSurface, id: string
   if (!component) return []
   if (component.Column) {
     return component.Column.children.flatMap((child) => assistantSurfaceChildCards(surface, child))
+  }
+  if (component.Row) {
+    return component.Row.children.flatMap((child) => assistantSurfaceChildCards(surface, child))
   }
   if (!component.Card) return []
   return [assistantSurfaceCard(surface, id, component.Card.children)]

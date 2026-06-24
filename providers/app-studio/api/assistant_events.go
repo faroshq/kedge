@@ -16,14 +16,16 @@ limitations under the License.
 
 package api
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
 
 type projectAssistantStreamWriter struct {
 	assistantID       string
 	began             bool
 	rootChildren      []string
 	msgIdx            int
-	assistantContent  string
 	assistantDataKey  string
 	assistantShellSet bool
 	pendingPermission *projectAssistantPermission
@@ -155,8 +157,7 @@ func (w *projectAssistantStreamWriter) writeAssistantContent(ctx context.Context
 		}
 		w.assistantShellSet = true
 	}
-	w.assistantContent += delta
-	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataUpdateEvent(w.assistantID, w.assistantDataKey, w.assistantContent)))
+	return w.write(projectMessageStreamEventFromUI(projectAssistantUIDataAppendEvent(w.assistantID, w.assistantDataKey, delta)))
 }
 
 func (w *projectAssistantStreamWriter) writeToolCard(ctx context.Context, kind, text string) error {
@@ -212,26 +213,12 @@ func (w *projectAssistantStreamWriter) ensureBegin(ctx context.Context) error {
 func (w *projectAssistantStreamWriter) nextMessageComponentIDs() (string, string, string, string) {
 	idx := w.msgIdx
 	w.msgIdx++
-	cardID := "msg-" + intString(idx) + "-card"
-	colID := "msg-" + intString(idx) + "-col"
-	labelID := "msg-" + intString(idx) + "-label"
-	textID := "msg-" + intString(idx) + "-text"
+	id := strconv.Itoa(idx)
+	cardID := "msg-" + id + "-card"
+	colID := "msg-" + id + "-col"
+	labelID := "msg-" + id + "-label"
+	textID := "msg-" + id + "-text"
 	return cardID, colID, labelID, textID
-}
-
-func intString(value int) string {
-	if value == 0 {
-		return "0"
-	}
-	const digits = "0123456789"
-	var buf [20]byte
-	i := len(buf)
-	for value > 0 {
-		i--
-		buf[i] = digits[value%10]
-		value /= 10
-	}
-	return string(buf[i:])
 }
 
 func projectAssistantUIToolCardText(action projectAssistantUIAction) string {

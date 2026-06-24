@@ -137,7 +137,7 @@ const allowedAssistantUIComponentValueKeys = new Set(['Text', 'Column', 'Card', 
 const allowedAssistantUITextComponentKeys = new Set(['value', 'dataKey', 'usageHint'])
 const allowedAssistantUIContainerComponentKeys = new Set(['children'])
 const allowedAssistantUIDataModelUpdateKeys = new Set(['surfaceId', 'contents'])
-const allowedAssistantUIDataContentKeys = new Set(['key', 'valueString'])
+const allowedAssistantUIDataContentKeys = new Set(['key', 'valueString', 'append'])
 const allowedAssistantUIInterruptRequestKeys = new Set([
   'interruptId',
   'kind',
@@ -325,9 +325,13 @@ function parseAssistantUIEnvelope(parsed: Record<string, unknown>, envelopeKey: 
       if (content.valueString !== undefined && !isString(content.valueString)) {
         return { error: 'A2UI dataModelUpdate.contents[].valueString must be a string when provided' }
       }
+      if (content.append !== undefined && typeof content.append !== 'boolean') {
+        return { error: 'A2UI dataModelUpdate.contents[].append must be a boolean when provided' }
+      }
       parsedContents.push({
         key: content.key,
         ...(content.valueString !== undefined ? { valueString: content.valueString } : {}),
+        ...(content.append !== undefined ? { append: content.append } : {}),
       })
     }
     ui.dataModelUpdate = {

@@ -2977,101 +2977,6 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
 
       <template v-if="selected">
         <div
-          v-if="pendingFollowUp"
-          class="mx-4 mt-3 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
-        >
-          <div class="flex min-w-0 items-start gap-3">
-            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
-              <MessageSquare class="h-4 w-4" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
-              <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
-                {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
-              </div>
-              <ul v-if="pendingFollowUp.interrupt.questions?.length" class="mt-2 list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
-                <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
-              </ul>
-              <textarea
-                class="mt-3 min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                aria-label="Clarification response"
-                placeholder="Answer here..."
-                :value="followUpAnswer(pendingFollowUp.interrupt)"
-                :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
-              />
-              <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
-                {{ followUpError(pendingFollowUp.interrupt) }}
-              </div>
-              <div class="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
-                  @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
-                >
-                  <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                  <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  Continue
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div
-          v-else-if="pendingApproval"
-          class="mx-4 mt-3 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
-        >
-          <div class="flex min-w-0 items-start gap-3">
-            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
-              <ClipboardList class="h-4 w-4" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex min-w-0 items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
-                  <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
-                    {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
-                  </div>
-                </div>
-              </div>
-              <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
-                {{ permissionError(pendingApproval.interrupt) }}
-              </div>
-              <div class="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
-                >
-                  <Loader2
-                    v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
-                    class="h-3.5 w-3.5 animate-spin"
-                    :stroke-width="1.75"
-                  />
-                  <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  Allow
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                  @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
-                >
-                  <Loader2
-                    v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
-                    class="h-3.5 w-3.5 animate-spin"
-                    :stroke-width="1.75"
-                  />
-                  <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  Deny
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div
           ref="messagesRef"
           class="min-h-0 flex-1 overflow-auto px-4 py-3"
           :aria-busy="messageStreaming"
@@ -3249,6 +3154,101 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         </div>
 
         <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage">
+          <div
+            v-if="pendingFollowUp"
+            class="mb-2 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+          >
+            <div class="flex min-w-0 items-start gap-3">
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+                <MessageSquare class="h-4 w-4" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-[13px] font-semibold text-text-primary">Clarification needed</div>
+                <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
+                  {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
+                </div>
+                <ul v-if="pendingFollowUp.interrupt.questions?.length" class="mt-2 list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
+                  <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
+                </ul>
+                <textarea
+                  class="mt-3 min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  aria-label="Clarification response"
+                  placeholder="Answer here..."
+                  :value="followUpAnswer(pendingFollowUp.interrupt)"
+                  :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                  @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
+                />
+                <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                  {{ followUpError(pendingFollowUp.interrupt) }}
+                </div>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
+                    @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
+                  >
+                    <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                    <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Continue
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            v-else-if="pendingApproval"
+            class="mb-2 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
+          >
+            <div class="flex min-w-0 items-start gap-3">
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent">
+                <ClipboardList class="h-4 w-4" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex min-w-0 items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="text-[13px] font-semibold text-text-primary">Approval required</div>
+                    <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
+                      {{ pendingApproval.interrupt.description || 'Review this action before it runs.' }}
+                    </div>
+                  </div>
+                </div>
+                <div v-if="permissionError(pendingApproval.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
+                  {{ permissionError(pendingApproval.interrupt) }}
+                </div>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                    @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
+                  >
+                    <Loader2
+                      v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
+                      class="h-3.5 w-3.5 animate-spin"
+                      :stroke-width="1.75"
+                    />
+                    <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Allow
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
+                    @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
+                  >
+                    <Loader2
+                      v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
+                      class="h-3.5 w-3.5 animate-spin"
+                      :stroke-width="1.75"
+                    />
+                    <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Deny
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="relative min-h-[58px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
             <textarea
               ref="promptRef"

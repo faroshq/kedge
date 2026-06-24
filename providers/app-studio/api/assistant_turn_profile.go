@@ -347,6 +347,8 @@ func (p projectAssistantTurnPolicy) AllowsTool(spec projectAssistantToolSpec) bo
 		switch projectAssistantToolBundleForSpec(spec) {
 		case projectAssistantToolBundleWorkflow, projectAssistantToolBundleWorkspaceRead:
 			return true
+		case projectAssistantToolBundleInfrastructure:
+			return spec.Risk == projectAssistantToolRiskRead
 		case projectAssistantToolBundleRuntime:
 			return p.requiresRuntimeState && spec.Risk == projectAssistantToolRiskRead
 		default:
@@ -356,6 +358,8 @@ func (p projectAssistantTurnPolicy) AllowsTool(spec projectAssistantToolSpec) bo
 		switch projectAssistantToolBundleForSpec(spec) {
 		case projectAssistantToolBundleWorkflow, projectAssistantToolBundleWorkspaceRead:
 			return true
+		case projectAssistantToolBundleInfrastructure:
+			return spec.Risk == projectAssistantToolRiskRead
 		case projectAssistantToolBundleRuntime:
 			return spec.Risk == projectAssistantToolRiskRead
 		default:

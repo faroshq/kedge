@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -272,6 +273,37 @@ func TestProjectAssistantModePromptsPutBuilderGuidanceOnlyOnWriteProfiles(t *tes
 	}
 }
 
+func TestProjectAssistantPromptRequiresEvidenceForProductCapabilities(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo-project"
+	project.Spec.DisplayName = "Demo Project"
+	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
+
+	prompt := projectSystemPrompt(project, repository, projectAssistantTurnProfileExploration)
+	for _, want := range []string{
+		"Do not invent App Studio product capabilities",
+		"UI tabs",
+		"cloud providers",
+		"infrastructure templates",
+		"I don't see that capability available in this workspace",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing product capability guardrail %q:\n%s", want, prompt)
+		}
+	}
+	for _, unsupported := range []string{
+		"AWS App Runner",
+		"Google Cloud Run",
+		"Cloud Connections",
+		"Deployments tab",
+		"Environments tab",
+	} {
+		if strings.Contains(prompt, unsupported) {
+			t.Fatalf("prompt should not contain unsupported product example %q:\n%s", unsupported, prompt)
+		}
+	}
+}
+
 func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -292,30 +324,39 @@ func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 		{
 			name:       "exploration",
 			profile:    projectAssistantTurnProfileExploration,
-			wantAllow:  []string{projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles},
-			wantReject: []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
+			wantAllow:  []string{projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
+			wantReject: []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 		},
 		{
 			name:       "debugging",
 			profile:    projectAssistantTurnProfileDebugging,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolGetRuntimeStatus, projectToolGetPreviewURL},
-			wantReject: []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolSearchProjectFiles, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate, projectToolInfrastructureListInstances, projectToolInfrastructureGetInstance},
+			wantReject: []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 		},
 		{
 			name:       "debug fix",
 			profile:    projectAssistantTurnProfileDebugFix,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolDeployProjectRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolDeployProjectRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 			wantReject: nil,
 		},
 		{
 			name:       "implementation",
 			profile:    projectAssistantTurnProfileImplementation,
-			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolDeployProjectRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp},
+			wantAllow:  []string{projectToolCheckProjectReadiness, projectToolReadProjectFile, projectToolGetRuntimeStatus, projectToolDeployProjectRuntime, projectToolRequestProjectPlanApproval, projectToolWriteFile, projectToolCommitProjectFiles, projectToolAskFollowUp, projectToolInfrastructureProvision},
 			wantReject: nil,
 		},
 	}
 
-	registry := projectAssistantLocalToolRegistry(nil)
+	registry := newProjectAssistantToolRegistry(projectAssistantLocalToolRegistry(nil).Tools(true)...)
+	for _, tool := range projectAssistantMCPToolsForSpecs([]projectMCPTool{
+		{Name: projectToolInfrastructureListTemplates, Description: "List templates", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: projectToolInfrastructureDescribeTemplate, Description: "Describe template", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: projectToolInfrastructureListInstances, Description: "List instances", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: projectToolInfrastructureGetInstance, Description: "Get instance", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: projectToolInfrastructureProvision, Description: "Provision", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}) {
+		registry = newProjectAssistantToolRegistry(append(registry.Tools(true), tool)...)
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			policy := projectAssistantTurnPolicyForProfile(tt.profile)

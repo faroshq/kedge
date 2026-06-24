@@ -66,23 +66,28 @@ const (
 )
 
 const (
-	projectToolListProjectFiles           = "list_project_files"
-	projectToolReadProjectFile            = "read_project_file"
-	projectToolSearchProjectFiles         = "search_project_files"
-	projectToolPlanProjectChanges         = "plan_project_changes"
-	projectToolCheckProjectReadiness      = "check_project_readiness"
-	projectToolPrepareProjectDeployment   = "prepare_project_deployment"
-	projectToolDeployProjectRuntime       = "deploy_project_runtime"
-	projectToolGetRuntimeStatus           = "get_runtime_status"
-	projectToolGetPreviewURL              = "get_preview_url"
-	projectToolAskFollowUp                = "ask_follow_up"
-	projectToolRequestProjectPlanApproval = "request_project_plan_approval"
-	projectToolWriteFile                  = "write_file"
-	projectToolApplyPatch                 = "apply_patch"
-	projectToolMkdir                      = "mkdir"
-	projectToolCommitProjectFiles         = "commit_project_files"
-	projectToolCommitFiles                = "commit_files"
-	projectToolCodeCommitFiles            = "code__commit_files"
+	projectToolListProjectFiles               = "list_project_files"
+	projectToolReadProjectFile                = "read_project_file"
+	projectToolSearchProjectFiles             = "search_project_files"
+	projectToolPlanProjectChanges             = "plan_project_changes"
+	projectToolCheckProjectReadiness          = "check_project_readiness"
+	projectToolPrepareProjectDeployment       = "prepare_project_deployment"
+	projectToolDeployProjectRuntime           = "deploy_project_runtime"
+	projectToolGetRuntimeStatus               = "get_runtime_status"
+	projectToolGetPreviewURL                  = "get_preview_url"
+	projectToolAskFollowUp                    = "ask_follow_up"
+	projectToolRequestProjectPlanApproval     = "request_project_plan_approval"
+	projectToolWriteFile                      = "write_file"
+	projectToolApplyPatch                     = "apply_patch"
+	projectToolMkdir                          = "mkdir"
+	projectToolCommitProjectFiles             = "commit_project_files"
+	projectToolCommitFiles                    = "commit_files"
+	projectToolCodeCommitFiles                = "code__commit_files"
+	projectToolInfrastructureListTemplates    = "infrastructure__list_templates"
+	projectToolInfrastructureDescribeTemplate = "infrastructure__describe_template"
+	projectToolInfrastructureProvision        = "infrastructure__provision"
+	projectToolInfrastructureListInstances    = "infrastructure__list_instances"
+	projectToolInfrastructureGetInstance      = "infrastructure__get_instance"
 )
 
 var (
@@ -1017,29 +1022,38 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 	}
 	registry := s.projectAssistantToolRegistry()
 	out := registry.ChatTools(false)
-	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
-	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
+	mcpTools, codeCommitAvailable, err := s.loadProjectMCPAssistantTools(r, id, settings)
 	if err != nil {
 		return out, err
-	}
-	if len(tools) == 0 {
-		return out, nil
-	}
-	codeCommitAvailable := false
-	for _, t := range tools {
-		if strings.TrimSpace(t.Name) == "" {
-			continue
-		}
-		if projectMCPCommitToolAvailable(t.Name) {
-			codeCommitAvailable = true
-		}
 	}
 	if codeCommitAvailable {
 		if tool, ok := registry.ChatTool(projectToolCommitProjectFiles); ok {
 			out = append(out, tool)
 		}
 	}
+	for _, tool := range mcpTools {
+		out = append(out, tool.Spec().chatTool())
+	}
 	return out, nil
+}
+
+func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ projectLLMSettings) ([]projectAssistantTool, bool, error) {
+	if id.tenantPath == "" {
+		return nil, false, errors.New("tenant context missing")
+	}
+	mcpEndpoint := s.mcpEndpoint(id.tenantPath)
+	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, r, id.tenantPath, s.mcpInsecureSkipTLSVerify)
+	if err != nil {
+		return nil, false, err
+	}
+	codeCommitAvailable := false
+	for _, t := range tools {
+		if projectMCPCommitToolAvailable(t.Name) {
+			codeCommitAvailable = true
+			break
+		}
+	}
+	return projectAssistantMCPToolsForSpecs(tools, s.mcpInsecureSkipTLSVerify), codeCommitAvailable, nil
 }
 
 // mcpEndpoint returns the hub's unified MCPServer virtual-workspace endpoint for
@@ -1557,6 +1571,8 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	b.WriteString("Help the user reason about and build the application represented by this Project. ")
 	b.WriteString("Do not narrate tool calls or say what tool you will call next in assistant prose; App Studio shows tool progress through its status and tool summary UI. ")
 	b.WriteString("Do not claim that you changed files or deployed resources unless a tool result or other evidence supports it. ")
+	b.WriteString("Do not invent App Studio product capabilities, UI tabs, cloud providers, infrastructure templates, setup flows, deployment targets, or integrations. ")
+	b.WriteString("For App Studio product capability questions, answer only from explicit evidence in tool results, project metadata, project memory, or this system prompt; if evidence is missing, say \"I don't see that capability available in this workspace\" and explain what you can verify. ")
 	b.WriteString("When requirements are unclear, ask concise follow-up questions instead of guessing.\n\n")
 	b.WriteString("Conversation mode: " + string(profile) + "\n")
 	b.WriteString("Project metadata:\n")
@@ -1599,7 +1615,7 @@ func appendProjectAssistantModePrompt(b *strings.Builder, profile projectAssista
 	case projectAssistantTurnProfileGuidance:
 		b.WriteString("Give practical guidance, recommendations, and tradeoffs. Do not claim to know current file or runtime state unless tool evidence is available; ask the user for missing context in plain language when needed.\n")
 	case projectAssistantTurnProfileExploration:
-		b.WriteString("Use read-only App Studio workflow and workspace-read tools when current project state is needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, and search_project_files for bounded inspection. Do not edit, deploy, or commit.\n")
+		b.WriteString("Use read-only App Studio workflow, workspace-read, and aggregate MCP infrastructure discovery tools when current project state or available infrastructure templates are needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, search_project_files, infrastructure__list_templates, infrastructure__describe_template, infrastructure__list_instances, and infrastructure__get_instance for bounded inspection. Do not edit, deploy, provision, or commit.\n")
 	case projectAssistantTurnProfileDebugging:
 		b.WriteString("Diagnose in read-only mode. Use check_project_readiness, list_project_files, read_project_file, search_project_files, get_runtime_status, and get_preview_url as needed. Do not mutate files, deploy runtime resources, or commit unless the user explicitly asks you to fix the issue.\n")
 	case projectAssistantTurnProfileDebugFix:
@@ -1615,6 +1631,7 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("When a named App Studio tool is deferred, load it first with tool_search using select:<tool_name>, then call the loaded tool. ")
 	b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
 	b.WriteString("Use deploy_project_runtime, get_runtime_status, and get_preview_url only as App Studio runtime graph workflows; they return structured not_configured blockers until a tenant RuntimeTarget exists. ")
+	b.WriteString("For supporting infrastructure, use infrastructure__list_templates before naming any available template, infrastructure__describe_template before recommending values, and infrastructure__provision only after the user explicitly asks to create supporting infrastructure and the permission flow approves the call. ")
 	b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
 	b.WriteString("When requirements are unclear during implementation, call ask_follow_up with at most three concise questions instead of guessing. ")
 	b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
@@ -1657,8 +1674,9 @@ func projectLocalToolAllowed(name string) bool {
 	return projectAssistantLocalToolRegistry(nil).Has(name)
 }
 
-func projectMCPToolAllowed(_ string) bool {
-	return false
+func projectMCPToolAllowed(name string) bool {
+	_, ok := projectAssistantMCPToolSpec(projectMCPTool{Name: name})
+	return ok
 }
 
 func projectMCPCommitToolAvailable(name string) bool {
@@ -1676,6 +1694,63 @@ func projectMCPToolBaseName(name string) string {
 		}
 	}
 	return strings.TrimSpace(name)
+}
+
+func projectAssistantMCPToolsForSpecs(tools []projectMCPTool, skipTLSVerify ...bool) []projectAssistantTool {
+	out := make([]projectAssistantTool, 0, len(tools))
+	insecureSkipTLSVerify := false
+	if len(skipTLSVerify) > 0 {
+		insecureSkipTLSVerify = skipTLSVerify[0]
+	}
+	for _, tool := range tools {
+		spec, ok := projectAssistantMCPToolSpec(tool)
+		if !ok {
+			continue
+		}
+		toolSpec := spec
+		out = append(out, projectAssistantToolFunc{
+			spec: toolSpec,
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				if req.HTTPRequest == nil {
+					return "", errors.New("HTTP request is required for aggregate MCP tools")
+				}
+				return callProjectMCPTool(ctx, req.MCPEndpoint, req.HTTPRequest, req.Identity.tenantPath, insecureSkipTLSVerify, toolSpec.Name, req.Arguments)
+			},
+		})
+	}
+	return out
+}
+
+func projectAssistantMCPToolSpec(tool projectMCPTool) (projectAssistantToolSpec, bool) {
+	name := strings.TrimSpace(tool.Name)
+	if name == "" {
+		return projectAssistantToolSpec{}, false
+	}
+	risk := projectAssistantToolRiskRead
+	switch name {
+	case projectToolInfrastructureListTemplates,
+		projectToolInfrastructureDescribeTemplate,
+		projectToolInfrastructureListInstances,
+		projectToolInfrastructureGetInstance:
+	case projectToolInfrastructureProvision:
+		risk = projectAssistantToolRiskRuntime
+	default:
+		return projectAssistantToolSpec{}, false
+	}
+	description := strings.TrimSpace(tool.Description)
+	if description == "" {
+		description = "Call the aggregate MCP tool " + name + "."
+	}
+	params := tool.InputSchema
+	if len(params) == 0 || strings.TrimSpace(string(params)) == "" {
+		params = json.RawMessage(`{"type":"object"}`)
+	}
+	return projectAssistantToolSpec{
+		Name:        name,
+		Description: description,
+		Parameters:  params,
+		Risk:        risk,
+	}, true
 }
 
 func appendMemoryList(b *strings.Builder, label string, items []string) {

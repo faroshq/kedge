@@ -118,6 +118,20 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 	if projectMCPToolAllowed("code__delete_repository") {
 		t.Fatal("delete_repository should not be allowed from App Studio")
 	}
+	for _, name := range []string{
+		"infrastructure__list_templates",
+		"infrastructure__describe_template",
+		"infrastructure__list_instances",
+		"infrastructure__get_instance",
+		"infrastructure__provision",
+	} {
+		if !projectMCPToolAllowed(name) {
+			t.Fatalf("%s should be allowed from the aggregate MCP infrastructure provider", name)
+		}
+	}
+	if projectMCPToolAllowed("infrastructure__delete_instance") {
+		t.Fatal("infrastructure__delete_instance should not be allowed from App Studio")
+	}
 }
 
 func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
@@ -167,7 +181,7 @@ func projectChatToolNames(tools []chatTool) []string {
 	return names
 }
 
-func TestLoadProjectMCPToolsExposesCommitBridgeOnly(t *testing.T) {
+func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing.T) {
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope struct {
 			Method string `json:"method"`
@@ -179,7 +193,7 @@ func TestLoadProjectMCPToolsExposesCommitBridgeOnly(t *testing.T) {
 			t.Fatalf("method = %q, want tools/list", envelope.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}}]}}`)
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}},{"name":"infrastructure__list_templates","description":"List templates","inputSchema":{"type":"object","properties":{"cloud":{"type":"string"}}}},{"name":"infrastructure__describe_template","description":"Describe template","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision template","inputSchema":{"type":"object","required":["template","name"],"properties":{"template":{"type":"string"},"name":{"type":"string"},"values":{"type":"object"}}}},{"name":"infrastructure__delete_instance","description":"Delete instance","inputSchema":{"type":"object"}}]}}`)
 	}))
 	defer mcp.Close()
 
@@ -199,8 +213,20 @@ func TestLoadProjectMCPToolsExposesCommitBridgeOnly(t *testing.T) {
 	if !names["commit_project_files"] {
 		t.Fatalf("tool names = %#v, want commit_project_files", names)
 	}
+	for _, want := range []string{
+		"infrastructure__list_templates",
+		"infrastructure__describe_template",
+		"infrastructure__provision",
+	} {
+		if !names[want] {
+			t.Fatalf("tool names = %#v, want %s", names, want)
+		}
+	}
 	if names["code__commit_files"] || names["code__read_repository_file"] {
 		t.Fatalf("tool names = %#v, should not expose raw provider-code tools", names)
+	}
+	if names["infrastructure__delete_instance"] {
+		t.Fatalf("tool names = %#v, should not expose destructive infrastructure tools", names)
 	}
 }
 
@@ -264,6 +290,77 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	}
 	if !projectChatToolsInclude(model.Inputs[0].Tools, "tool_search") {
 		t.Fatalf("model tools = %#v, want tool_search for deferred commit bridge", model.Inputs[0].Tools)
+	}
+}
+
+func TestGenerateProjectAssistantStreamDiscoversInfrastructureTemplatesForInfraQuestions(t *testing.T) {
+	mcpCalls := 0
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mcpCalls++
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if envelope.Method != "tools/list" {
+			t.Fatalf("method = %q, want tools/list", envelope.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"infrastructure__list_templates","description":"List every template available in your workspace catalog","inputSchema":{"type":"object"}},{"name":"infrastructure__describe_template","description":"Return a template's metadata and JSON schema","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision a template instance","inputSchema":{"type":"object"}}]}}`)
+	}))
+	defer mcp.Close()
+
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "What infrastructure templates can I deploy?"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("I will answer from the template catalog.", nil),
+	}}}
+	setProjectAssistantModelForTest(server, model)
+	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
+		return projectAssistantTurnDecision{
+			Profile:              projectAssistantTurnProfileExploration,
+			RequiresCurrentState: true,
+			Confidence:           projectAssistantTurnConfidenceHigh,
+		}, nil
+	}
+
+	reply, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if reply != "I will answer from the template catalog." {
+		t.Fatalf("reply = %q, want template catalog answer", reply)
+	}
+	if mcpCalls != 1 {
+		t.Fatalf("MCP tools/list calls = %d, want 1", mcpCalls)
+	}
+	var joined string
+	for _, msg := range model.Inputs[0].Messages {
+		joined += msg.Content + "\n"
+	}
+	for _, want := range []string{projectToolInfrastructureListTemplates, projectToolInfrastructureDescribeTemplate} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("model input missing %s:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, projectToolInfrastructureProvision) {
+		t.Fatalf("exploration prompt should not expose provisioning:\n%s", joined)
 	}
 }
 

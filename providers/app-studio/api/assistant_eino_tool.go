@@ -27,12 +27,16 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
+
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 const projectEinoToolParametersExtraKey = "parametersJSON"
 
 type projectEinoAssistantToolDiscovery struct {
 	IncludeCommitBridge bool
+	MCPTools            []projectAssistantTool
 	Prompt              string
 }
 
@@ -50,7 +54,8 @@ func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToo
 		}
 		registry := server.projectAssistantToolRegistry()
 		discovery := projectEinoAssistantEnsureToolDiscovery(ctx, server, req, runState)
-		tools := projectAssistantToolsForTurnPolicy(registry.Tools(discovery.IncludeCommitBridge), req.TurnPolicy)
+		candidateTools := append(registry.Tools(discovery.IncludeCommitBridge), discovery.MCPTools...)
+		tools := projectAssistantToolsForTurnPolicy(candidateTools, req.TurnPolicy)
 		out := make([]einotool.BaseTool, 0, len(tools))
 		graphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), req.TurnPolicy)
 		if err != nil {
@@ -86,20 +91,54 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 	discovery := projectEinoAssistantToolDiscovery{
 		Prompt: projectMCPToolsPrompt(chatTools),
 	}
-	if req.HTTPRequest == nil || !policy.AllowsTool(projectAssistantToolSpec{
-		Name: projectToolCommitProjectFiles,
-		Risk: projectAssistantToolRiskCommit,
-	}) {
+	if req.HTTPRequest == nil || !projectAssistantTurnPolicyCanUseMCP(policy, req) {
 		return discovery
 	}
-	discovered, err := server.loadProjectMCPTools(req.HTTPRequest.WithContext(ctx), req.Identity, req.LLM)
+	mcpTools, includeCommitBridge, err := server.loadProjectMCPAssistantTools(req.HTTPRequest.WithContext(ctx), req.Identity, req.LLM)
 	if err != nil {
 		discovery.Prompt = projectMCPToolsFailurePrompt(err)
 		return discovery
 	}
-	discovery.IncludeCommitBridge = projectChatToolsInclude(discovered, projectToolCommitProjectFiles)
-	discovery.Prompt = projectMCPToolsPrompt(projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(registry.Tools(discovery.IncludeCommitBridge)), policy)))
+	discovery.IncludeCommitBridge = includeCommitBridge
+	discovery.MCPTools = mcpTools
+	allTools := append(registry.Tools(discovery.IncludeCommitBridge), discovery.MCPTools...)
+	discovery.Prompt = projectMCPToolsPrompt(projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(allTools), policy)))
 	return discovery
+}
+
+func projectAssistantTurnPolicyCanUseMCP(policy projectAssistantTurnPolicy, req projectAssistantRunRequest) bool {
+	if policy.AllowsTool(projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit}) {
+		return true
+	}
+	if !projectAssistantTurnNeedsInfrastructureMCP(req.History) {
+		return false
+	}
+	for _, name := range []string{
+		projectToolInfrastructureListTemplates,
+		projectToolInfrastructureDescribeTemplate,
+		projectToolInfrastructureListInstances,
+		projectToolInfrastructureGetInstance,
+		projectToolInfrastructureProvision,
+	} {
+		spec, ok := projectAssistantMCPToolSpec(projectMCPTool{Name: name})
+		if ok && policy.AllowsTool(spec) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectAssistantTurnNeedsInfrastructureMCP(history []store.Message) bool {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != aiv1alpha1.ProjectMessageRoleUser {
+			continue
+		}
+		content := strings.ToLower(strings.TrimSpace(history[i].Content))
+		return containsProjectAssistantTurnKeyword(content, []string{
+			"infrastructure", "infra", "template", "templates", "provision", "database", "postgres", "redis", "supporting resource", "provider",
+		})
+	}
+	return false
 }
 
 func projectAssistantChatToolsForSpecs(specs []projectAssistantToolSpec) []chatTool {

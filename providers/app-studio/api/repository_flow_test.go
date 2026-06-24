@@ -267,6 +267,79 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	}
 }
 
+func TestGenerateProjectAssistantStreamHonorsRuntimeStateRouterDecision(t *testing.T) {
+	mcpCalls := 0
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mcpCalls++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}}]}}`)
+	}))
+	defer mcp.Close()
+
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
+		return projectAssistantTurnDecision{
+			Profile:              projectAssistantTurnProfileExploration,
+			RequiresCurrentState: true,
+			RequiresRuntimeState: true,
+			Confidence:           projectAssistantTurnConfidenceHigh,
+		}, nil
+	}
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "Show me the current preview URL"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("Preview status checked.", nil),
+	}}}
+	setProjectAssistantModelForTest(server, model)
+	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
+		return projectAssistantTurnDecision{
+			Profile:              projectAssistantTurnProfileExploration,
+			RequiresCurrentState: true,
+			RequiresRuntimeState: true,
+			Confidence:           projectAssistantTurnConfidenceHigh,
+		}, nil
+	}
+
+	reply, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if reply != "Preview status checked." {
+		t.Fatalf("reply = %q, want Preview status checked.", reply)
+	}
+	if mcpCalls != 0 {
+		t.Fatalf("MCP tools/list calls = %d, want 0 for read-only runtime-state exploration", mcpCalls)
+	}
+	var joined string
+	for _, msg := range model.Inputs[0].Messages {
+		joined += msg.Content + "\n"
+	}
+	for _, want := range []string{projectToolGetRuntimeStatus, projectToolGetPreviewURL} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("model input missing %s:\n%s", want, joined)
+		}
+	}
+	for _, unwanted := range []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("model input unexpectedly mentions %s:\n%s", unwanted, joined)
+		}
+	}
+}
+
 func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"
@@ -278,7 +351,7 @@ func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
 		Ready:  true,
 	}
 
-	prompt := projectSystemPrompt(project, repository)
+	prompt := projectSystemPrompt(project, repository, projectAssistantTurnProfileImplementation)
 	for _, want := range []string{"check_project_readiness", "prepare_project_deployment", "deploy_project_runtime", "get_runtime_status", "get_preview_url", "list_project_files", "read_project_file", "search_project_files", "write_file", "apply_patch", "mkdir", "commit_project_files"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -560,20 +633,17 @@ func TestProjectLocalToolRunsWorkspaceReadTool(t *testing.T) {
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, "", false)
 
-	resp, err := server.callProjectLocalTool(
-		context.Background(),
-		identity{},
-		nil,
-		nil,
-		scope,
-		"",
-		"",
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		projectToolReadProjectFile,
-		map[string]any{"path": "README.md"},
-	)
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolReadProjectFile)
+	if !ok {
+		t.Fatal("read_project_file missing from registry")
+	}
+	resp, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
+		WorkspaceScope: scope,
+		HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+		Arguments:      map[string]any{"path": "README.md"},
+	})
 	if err != nil {
-		t.Fatalf("callProjectLocalTool returned error: %v", err)
+		t.Fatalf("read_project_file returned error: %v", err)
 	}
 	if !strings.Contains(resp, "hello from App Studio workspace") {
 		t.Fatalf("tool response = %q, want workspace file content", resp)
@@ -593,19 +663,16 @@ func TestProjectLocalToolRunsWorkspaceMutationTools(t *testing.T) {
 		{name: projectToolWriteFile, args: map[string]any{"path": "src/App.tsx", "content": "hello world\n"}},
 		{name: projectToolApplyPatch, args: map[string]any{"path": "src/App.tsx", "oldText": "world", "newText": "Kedge"}},
 	} {
-		if _, err := server.callProjectLocalTool(
-			context.Background(),
-			identity{},
-			nil,
-			nil,
-			scope,
-			"",
-			"",
-			httptest.NewRequest(http.MethodPost, "/", nil),
-			call.name,
-			call.args,
-		); err != nil {
-			t.Fatalf("callProjectLocalTool(%s) returned error: %v", call.name, err)
+		tool, ok := server.projectAssistantToolRegistry().Get(call.name)
+		if !ok {
+			t.Fatalf("%s missing from registry", call.name)
+		}
+		if _, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
+			WorkspaceScope: scope,
+			HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
+			Arguments:      call.args,
+		}); err != nil {
+			t.Fatalf("%s returned error: %v", call.name, err)
 		}
 	}
 	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/App.tsx"})
@@ -997,6 +1064,7 @@ func setProjectAssistantModelForTest(server *Server, model einomodel.BaseChatMod
 		},
 		newTools: newProjectEinoAssistantToolsFactory(server),
 	}
+	server.assistantTurnRouter = projectAssistantFallbackTurnRouter
 }
 
 func startEinoPermissionForTest(
@@ -2294,44 +2362,6 @@ func TestResumeProjectAssistantRunContinuesLLMAfterApprovedPermission(t *testing
 	}
 	if !sawContinuation {
 		t.Fatalf("messages = %#v, want persisted resumed assistant continuation", recent)
-	}
-}
-
-func TestProjectAssistantWorkflowUsesRepositoryContext(t *testing.T) {
-	messages := store.NewMemoryStore()
-	workspaces := workspace.NewFileStore(t.TempDir())
-	server := NewWithWorkspace(nil, messages, workspaces, "", false)
-	project := projectWithRepository("demo-repo", "demo", "github")
-	project.Name = "demo"
-	project.Spec.DisplayName = "Demo"
-	project.Spec.Memory.Requirements = []string{"Keep the implementation small."}
-	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
-	workspaceScope := projectWorkspaceScope(id, project.Name)
-	resp, err := server.callProjectLocalTool(
-		context.Background(),
-		id,
-		project,
-		&ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady},
-		workspaceScope,
-		projectLinkedRepositoryRef(project),
-		"",
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		projectToolPlanProjectChanges,
-		map[string]any{"includeFiles": false},
-	)
-	if err != nil {
-		t.Fatalf("callProjectLocalTool returned error: %v", err)
-	}
-	var plan projectAssistantWorkflowPlan
-	if err := json.Unmarshal([]byte(resp), &plan); err != nil {
-		t.Fatalf("decode planning workflow result: %v", err)
-	}
-	if plan.Repository == nil || plan.Repository.Ref != "demo-repo" || plan.Repository.Status != projectRepositoryStatusReady {
-		t.Fatalf("repository = %#v, want ready demo-repo", plan.Repository)
-	}
-	steps := strings.Join(plan.Steps, "\n")
-	if !strings.Contains(steps, "commit_project_files") || strings.Contains(steps, "Defer commit handoff") {
-		t.Fatalf("steps = %#v, want ready repository commit guidance", plan.Steps)
 	}
 }
 

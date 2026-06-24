@@ -271,6 +271,14 @@ func (s *Server) generateProjectAssistantStream(
 		return "", err
 	}
 	p = projectWithLiveBindingStatus(ctx, c, p, id)
+	turnDecision, err := s.projectAssistantTurnRouter()(ctx, projectAssistantTurnRouteRequest{
+		LLM:     settings,
+		History: recent,
+	})
+	if err != nil {
+		return "", err
+	}
+	turnPolicy := projectAssistantTurnPolicyForDecision(turnDecision)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		HTTPRequest:              r,
@@ -286,6 +294,8 @@ func (s *Server) generateProjectAssistantStream(
 		MCPInsecureSkipTLSVerify: s.mcpInsecureSkipTLSVerify,
 		AutoApproveActions:       s.autoApproveAssistantActions(),
 		StreamCallbacks:          callbacks,
+		TurnProfile:              turnPolicy.profile,
+		TurnPolicy:               turnPolicy,
 	}
 	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req)
 	if err != nil {
@@ -470,27 +480,6 @@ func projectLinkedRepositoryRef(p *aiv1alpha1.Project) string {
 		return ""
 	}
 	return strings.TrimSpace(p.Spec.Repository.RepositoryRef)
-}
-
-func (s *Server) callProjectLocalTool(ctx context.Context, id identity, project *aiv1alpha1.Project, repository *ProjectRepositoryView, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, name string, args map[string]any) (string, error) {
-	tool, ok := s.projectAssistantToolRegistry().Get(name)
-	if !ok {
-		return "", fmt.Errorf("unknown local project tool %q", name)
-	}
-	result, err := tool.Call(ctx, projectAssistantToolCallRequest{
-		Identity:             id,
-		Project:              project,
-		Repository:           repository,
-		WorkspaceScope:       scope,
-		ProjectRepositoryRef: projectRepositoryRef,
-		MCPEndpoint:          mcpEndpoint,
-		HTTPRequest:          r,
-		Arguments:            args,
-	})
-	if err == nil {
-		s.scheduleDevelopmentSyncAfterMutation(id, project, name)
-	}
-	return result, err
 }
 
 func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, scope workspace.Scope, projectRepositoryRef, mcpEndpoint string, r *http.Request, args map[string]any) (string, error) {
@@ -1534,7 +1523,11 @@ func normalizeLLMBasePath(path string, host string) string {
 }
 
 func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryView, history []store.Message) []chatMessage {
-	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p, repository)}}
+	return projectPromptMessagesForProfile(p, repository, history, classifyProjectAssistantTurnProfile(history))
+}
+
+func projectPromptMessagesForProfile(p *aiv1alpha1.Project, repository *ProjectRepositoryView, history []store.Message, profile projectAssistantTurnProfile) []chatMessage {
+	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p, repository, profile)}}
 	var lastRole, lastContent string
 	for _, m := range history {
 		if m.Role != aiv1alpha1.ProjectMessageRoleUser && m.Role != aiv1alpha1.ProjectMessageRoleAssistant {
@@ -1554,13 +1547,18 @@ func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryV
 	return messages
 }
 
-func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryView) string {
+func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryView, profiles ...projectAssistantTurnProfile) string {
+	profile := projectAssistantTurnProfileDiscussion
+	if len(profiles) > 0 {
+		profile = normalizeProjectAssistantTurnProfile(profiles[0])
+	}
 	var b strings.Builder
 	b.WriteString("You are the assistant for a persistent Kedge Project workspace. ")
 	b.WriteString("Help the user reason about and build the application represented by this Project. ")
 	b.WriteString("Do not narrate tool calls or say what tool you will call next in assistant prose; App Studio shows tool progress through its status and tool summary UI. ")
 	b.WriteString("Do not claim that you changed files or deployed resources unless a tool result or other evidence supports it. ")
-	b.WriteString("When requirements are unclear, call ask_follow_up with at most three concise questions instead of guessing.\n\n")
+	b.WriteString("When requirements are unclear, ask concise follow-up questions instead of guessing.\n\n")
+	b.WriteString("Conversation mode: " + string(profile) + "\n")
 	b.WriteString("Project metadata:\n")
 	b.WriteString("- Name: " + p.Name + "\n")
 	b.WriteString("- Display name: " + p.Spec.DisplayName + "\n")
@@ -1584,18 +1582,7 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 			}
 			b.WriteString("Do not attempt to commit files until the user restores the missing Code repository or connection.\n")
 		} else {
-			b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
-			b.WriteString("When a named App Studio tool is deferred, load it first with tool_search using select:<tool_name>, then call the loaded tool. ")
-			b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
-			b.WriteString("Use deploy_project_runtime, get_runtime_status, and get_preview_url only as App Studio runtime graph workflows; they return structured not_configured blockers until a tenant RuntimeTarget exists. ")
-			b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
-			b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
-			b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
-			b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")
-			b.WriteString("Use provider-code only as the git-source boundary; do not use provider-code tools to inspect or mutate the live App Studio workspace. ")
-			b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")
-			b.WriteString("Do not paste large file contents into user-facing answers; summarize what you inspected instead. ")
-			b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
+			appendProjectAssistantModePrompt(&b, profile, repoRef)
 		}
 	}
 	b.WriteString("\nProject memory:\n")
@@ -1603,6 +1590,40 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	appendMemoryList(&b, "Requirements", p.Spec.Memory.Requirements)
 	appendMemoryList(&b, "Constraints", p.Spec.Memory.Constraints)
 	return b.String()
+}
+
+func appendProjectAssistantModePrompt(b *strings.Builder, profile projectAssistantTurnProfile, repoRef string) {
+	switch normalizeProjectAssistantTurnProfile(profile) {
+	case projectAssistantTurnProfileDiscussion:
+		b.WriteString("Answer exploratory or conceptual questions directly from the conversation and project memory. Do not inspect current workspace state unless the user asks a current-state question or asks to change/debug the app.\n")
+	case projectAssistantTurnProfileGuidance:
+		b.WriteString("Give practical guidance, recommendations, and tradeoffs. Do not claim to know current file or runtime state unless tool evidence is available; ask the user for missing context in plain language when needed.\n")
+	case projectAssistantTurnProfileExploration:
+		b.WriteString("Use read-only App Studio workflow and workspace-read tools when current project state is needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, and search_project_files for bounded inspection. Do not edit, deploy, or commit.\n")
+	case projectAssistantTurnProfileDebugging:
+		b.WriteString("Diagnose in read-only mode. Use check_project_readiness, list_project_files, read_project_file, search_project_files, get_runtime_status, and get_preview_url as needed. Do not mutate files, deploy runtime resources, or commit unless the user explicitly asks you to fix the issue.\n")
+	case projectAssistantTurnProfileDebugFix:
+		b.WriteString("First diagnose the issue with read-only workflow, workspace, and runtime status tools. ")
+		appendProjectAssistantBuilderPrompt(b, repoRef)
+	case projectAssistantTurnProfileImplementation:
+		appendProjectAssistantBuilderPrompt(b, repoRef)
+	}
+}
+
+func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
+	b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
+	b.WriteString("When a named App Studio tool is deferred, load it first with tool_search using select:<tool_name>, then call the loaded tool. ")
+	b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
+	b.WriteString("Use deploy_project_runtime, get_runtime_status, and get_preview_url only as App Studio runtime graph workflows; they return structured not_configured blockers until a tenant RuntimeTarget exists. ")
+	b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
+	b.WriteString("When requirements are unclear during implementation, call ask_follow_up with at most three concise questions instead of guessing. ")
+	b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
+	b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
+	b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")
+	b.WriteString("Use provider-code only as the git-source boundary; do not use provider-code tools to inspect or mutate the live App Studio workspace. ")
+	b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")
+	b.WriteString("Do not paste large file contents into user-facing answers; summarize what you inspected instead. ")
+	b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
 }
 
 func projectMCPToolsPrompt(tools []chatTool) string {

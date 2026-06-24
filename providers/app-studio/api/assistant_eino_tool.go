@@ -50,8 +50,13 @@ func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToo
 		}
 		registry := server.projectAssistantToolRegistry()
 		discovery := projectEinoAssistantEnsureToolDiscovery(ctx, server, req, runState)
-		tools := registry.Tools(discovery.IncludeCommitBridge)
+		tools := projectAssistantToolsForTurnPolicy(registry.Tools(discovery.IncludeCommitBridge), req.TurnPolicy)
 		out := make([]einotool.BaseTool, 0, len(tools))
+		graphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), req.TurnPolicy)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, graphTools...)
 		for _, tool := range tools {
 			out = append(out, newProjectEinoAssistantServerTool(server, tool, req, runState))
 		}
@@ -73,11 +78,18 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 		return projectEinoAssistantToolDiscovery{}
 	}
 	registry := server.projectAssistantToolRegistry()
-	chatTools := registry.ChatTools(false)
+	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
+	chatTools := projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(registry.Tools(false)), policy))
+	if len(chatTools) == 0 {
+		return projectEinoAssistantToolDiscovery{}
+	}
 	discovery := projectEinoAssistantToolDiscovery{
 		Prompt: projectMCPToolsPrompt(chatTools),
 	}
-	if req.HTTPRequest == nil {
+	if req.HTTPRequest == nil || !policy.AllowsTool(projectAssistantToolSpec{
+		Name: projectToolCommitProjectFiles,
+		Risk: projectAssistantToolRiskCommit,
+	}) {
 		return discovery
 	}
 	discovered, err := server.loadProjectMCPTools(req.HTTPRequest.WithContext(ctx), req.Identity, req.LLM)
@@ -86,8 +98,19 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 		return discovery
 	}
 	discovery.IncludeCommitBridge = projectChatToolsInclude(discovered, projectToolCommitProjectFiles)
-	discovery.Prompt = projectMCPToolsPrompt(discovered)
+	discovery.Prompt = projectMCPToolsPrompt(projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(registry.Tools(discovery.IncludeCommitBridge)), policy)))
 	return discovery
+}
+
+func projectAssistantChatToolsForSpecs(specs []projectAssistantToolSpec) []chatTool {
+	out := make([]chatTool, 0, len(specs))
+	for _, spec := range specs {
+		if strings.TrimSpace(spec.Name) == "" {
+			continue
+		}
+		out = append(out, spec.chatTool())
+	}
+	return out
 }
 
 func newProjectEinoAssistantTool(tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {

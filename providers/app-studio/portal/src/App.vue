@@ -365,7 +365,7 @@ const conversationWorkingLabel = computed(() => {
   if (conversationStatus.value) return conversationStatus.value
   if (!messageStreaming.value) return ''
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
-  if (lastAssistant?.content.trim()) return 'Writing'
+  if (lastAssistant?.content.trim()) return 'Working'
   return 'Working'
 })
 const deleteProjectMessage = computed(() => {

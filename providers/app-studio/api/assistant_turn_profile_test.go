@@ -330,6 +330,30 @@ func TestProjectAssistantPromptFramesAppStudioAsBusinessUserEasyButton(t *testin
 	}
 }
 
+func TestProjectAssistantPromptExplainsTemplateAgentUsageFitDecision(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo-project"
+	project.Spec.DisplayName = "Demo Project"
+	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
+
+	prompt := projectSystemPrompt(project, repository, projectAssistantTurnProfileImplementation)
+	lowerPrompt := strings.ToLower(prompt)
+	for _, want := range []string{
+		"agent.usage as the provider-authored operating contract",
+		"do not recommend a template merely because it contains one thing the user asked for",
+		"application template",
+		"includes postgres",
+		"full 3-tier web app",
+		"frontend and backend container images",
+		"production-style app deployment template",
+		"not a simple add a database to my sandbox app option",
+	} {
+		if !strings.Contains(lowerPrompt, strings.ToLower(want)) {
+			t.Fatalf("prompt missing template agent.usage fit guidance %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 	tests := []struct {
 		name       string

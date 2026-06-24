@@ -1619,7 +1619,9 @@ func appendProjectAssistantModePrompt(b *strings.Builder, profile projectAssista
 	case projectAssistantTurnProfileGuidance:
 		b.WriteString("Give practical guidance, recommendations, and tradeoffs. Do not claim to know current file or runtime state unless tool evidence is available; ask the user for missing context in plain language when needed.\n")
 	case projectAssistantTurnProfileExploration:
-		b.WriteString("Use read-only App Studio workflow, workspace-read, and aggregate MCP infrastructure discovery tools when current project state or available infrastructure templates are needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, search_project_files, infrastructure__list_templates, infrastructure__describe_template, infrastructure__list_instances, and infrastructure__get_instance for bounded inspection. Treat infrastructure templates as capability evidence, not as a menu the user must operate. Before deciding whether a template fits, describe the template and consult the template's agent.usage guidance when that field is available. Explain template fit in business terms, and call out when a template includes more than the user asked for. Do not edit, deploy, provision, or commit.\n")
+		b.WriteString("Use read-only App Studio workflow, workspace-read, and aggregate MCP infrastructure discovery tools when current project state or available infrastructure templates are needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, search_project_files, infrastructure__list_templates, infrastructure__describe_template, infrastructure__list_instances, and infrastructure__get_instance for bounded inspection. Treat infrastructure templates as capability evidence, not as a menu the user must operate. Before deciding whether a template fits, describe the template and consult the template's agent.usage guidance when that field is available. ")
+		appendProjectAssistantTemplateFitPrompt(b)
+		b.WriteString("Do not edit, deploy, provision, or commit.\n")
 	case projectAssistantTurnProfileDebugging:
 		b.WriteString("Diagnose in read-only mode. Use check_project_readiness, list_project_files, read_project_file, search_project_files, get_runtime_status, and get_preview_url as needed. Do not mutate files, deploy runtime resources, or commit unless the user explicitly asks you to fix the issue.\n")
 	case projectAssistantTurnProfileDebugFix:
@@ -1636,7 +1638,7 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
 	b.WriteString("Use deploy_project_runtime, get_runtime_status, and get_preview_url only as App Studio runtime graph workflows; they return structured not_configured blockers until a tenant RuntimeTarget exists. ")
 	b.WriteString("For supporting infrastructure, use infrastructure__list_templates before naming any available template, infrastructure__describe_template before recommending values, and infrastructure__provision only after the user explicitly asks to create supporting infrastructure and the permission flow approves the call. ")
-	b.WriteString("When infrastructure__describe_template returns provider-authored guidance, consult the template's agent.usage guidance to decide whether the template should be used, what prerequisites it assumes, and whether it includes more than the user's smaller business need. ")
+	appendProjectAssistantTemplateFitPrompt(b)
 	b.WriteString("When the user asks for a supporting capability such as persistent data, first decide whether the current sandbox app can satisfy the development need before provisioning infrastructure. ")
 	b.WriteString("Do not recommend a full application or runtime template just to satisfy a smaller need like persistent data, and do not duplicate App Studio's sandbox runtime unless the user is explicitly moving toward a production launch. ")
 	b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
@@ -1648,6 +1650,15 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")
 	b.WriteString("Do not paste large file contents into user-facing answers; summarize what you inspected instead. ")
 	b.WriteString("Do not create another repository for this Project unless the user explicitly asks for a different repository.\n")
+}
+
+func appendProjectAssistantTemplateFitPrompt(b *strings.Builder) {
+	b.WriteString("When infrastructure__describe_template returns provider-authored guidance, consult the template's agent.usage guidance and treat agent.usage as the provider-authored operating contract for the template. ")
+	b.WriteString("Use it to decide the user outcome the template satisfies, the prerequisites it assumes, and whether it provisions a narrow supporting capability or a broader app/runtime stack that may duplicate App Studio's development sandbox. ")
+	b.WriteString("Do not recommend a template merely because it contains one thing the user asked for. ")
+	b.WriteString("For example, if the user asks for persistent todo data while already working in an App Studio sandbox, do not recommend the application template just because it includes Postgres. ")
+	b.WriteString("Its agent.usage says it deploys a full 3-tier web app from frontend and backend container images behind one URL, so it is a production-style app deployment template, not a simple add a database to my sandbox app option. ")
+	b.WriteString("Explain template fit in business terms, and call out when a template includes more than the user asked for. ")
 }
 
 func projectMCPToolsPrompt(tools []chatTool) string {

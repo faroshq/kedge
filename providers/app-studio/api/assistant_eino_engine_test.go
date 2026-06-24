@@ -524,6 +524,30 @@ func TestEinoAssistantEngineRequiresTurnLoopOutput(t *testing.T) {
 	}
 }
 
+func TestEinoAssistantEngineAcceptsAssistantMultiContentOutput(t *testing.T) {
+	engine := projectEinoAssistantEngine{
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return multiContentOutputEinoChatModel{}, nil
+		},
+		newTools: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return nil, nil
+		},
+	}
+	result, err := engine.StreamProjectAssistant(
+		context.Background(),
+		projectAssistantRunRequest{
+			Project:     &aiv1alpha1.Project{},
+			TurnProfile: projectAssistantTurnProfileDiscussion,
+		},
+	)
+	if err != nil {
+		t.Fatalf("StreamProjectAssistant returned error: %v", err)
+	}
+	if result.Content != "multi content answer" {
+		t.Fatalf("content = %q, want multi content answer", result.Content)
+	}
+}
+
 func TestEinoAssistantEngineSummarizesLongProjectSessions(t *testing.T) {
 	chatModel := &summarizingEinoChatModel{}
 	engine := projectEinoAssistantEngine{
@@ -1577,6 +1601,28 @@ func (emptyOutputEinoChatModel) Generate(ctx context.Context, _ []*schema.Messag
 }
 
 func (m emptyOutputEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	msg, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{msg}), nil
+}
+
+type multiContentOutputEinoChatModel struct{}
+
+func (multiContentOutputEinoChatModel) Generate(ctx context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &schema.Message{
+		Role: schema.Assistant,
+		AssistantGenMultiContent: []schema.MessageOutputPart{
+			{Type: schema.ChatMessagePartTypeText, Text: "multi content answer"},
+		},
+	}, nil
+}
+
+func (m multiContentOutputEinoChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	msg, err := m.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, err

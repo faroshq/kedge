@@ -495,8 +495,12 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 		if role == "" && msg != nil {
 			role = msg.Role
 		}
-		if msg != nil && role == schema.Assistant && strings.TrimSpace(msg.Content) != "" {
-			outcome.result.Content = msg.Content
+		if msg != nil && role == schema.Assistant {
+			content := projectEinoAssistantSummaryText(msg)
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			outcome.result.Content = content
 			outcome.receivedOutput = true
 		}
 	}

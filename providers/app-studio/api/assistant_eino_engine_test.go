@@ -504,7 +504,7 @@ func TestEinoAssistantRunStateCheckpointsProjectSnapshot(t *testing.T) {
 	}
 }
 
-func TestEinoAssistantEngineRequiresTurnLoopOutput(t *testing.T) {
+func TestEinoAssistantEngineFallsBackWhenTurnLoopHasNoAssistantOutput(t *testing.T) {
 	engine := projectEinoAssistantEngine{
 		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
 			return emptyOutputEinoChatModel{}, nil
@@ -513,14 +513,17 @@ func TestEinoAssistantEngineRequiresTurnLoopOutput(t *testing.T) {
 			return nil, nil
 		},
 	}
-	_, err := engine.StreamProjectAssistant(
+	result, err := engine.StreamProjectAssistant(
 		context.Background(),
 		projectAssistantRunRequest{
 			Project: &aiv1alpha1.Project{},
 		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "eino turn loop completed without assistant output") {
-		t.Fatalf("StreamProjectAssistant error = %v, want missing turn loop output error", err)
+	if err != nil {
+		t.Fatalf("StreamProjectAssistant returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "couldn't produce a response") || strings.Contains(result.Content, "eino") {
+		t.Fatalf("result content = %q, want user-facing empty-output fallback", result.Content)
 	}
 }
 

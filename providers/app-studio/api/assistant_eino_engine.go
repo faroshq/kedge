@@ -37,6 +37,7 @@ const (
 	projectEinoAssistantSummaryContextMessages = 128
 	projectEinoAssistantSummaryContextTokens   = 24000
 	projectEinoAssistantSummaryInstruction     = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
+	projectEinoAssistantNoOutputFallback       = "I couldn't produce a response for that turn. Please try again or rephrase the request, and I can continue from the current project context."
 
 	// Bundle search is for App Studio's full product toolbox. Smaller injected
 	// tool sets stay direct so focused permission/resume flows keep their shape.
@@ -394,7 +395,7 @@ func (e projectEinoAssistantEngine) runProjectAssistantTurnLoop(
 		return projectAssistantRunResult{}, exit.ExitReason
 	}
 	if !outcome.receivedOutput {
-		return projectAssistantRunResult{}, errors.New("eino turn loop completed without assistant output")
+		return projectAssistantRunResult{Content: projectEinoAssistantNoOutputFallback}, nil
 	}
 	return outcome.result, nil
 }

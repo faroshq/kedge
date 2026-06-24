@@ -1573,6 +1573,10 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	b.WriteString("Do not claim that you changed files or deployed resources unless a tool result or other evidence supports it. ")
 	b.WriteString("Do not invent App Studio product capabilities, UI tabs, cloud providers, infrastructure templates, setup flows, deployment targets, or integrations. ")
 	b.WriteString("For App Studio product capability questions, answer only from explicit evidence in tool results, project metadata, project memory, or this system prompt; if evidence is missing, say \"I don't see that capability available in this workspace\" and explain what you can verify. ")
+	b.WriteString("App Studio is an easy button for business users, including non-technical users who should not need to understand databases, networking, infrastructure templates, or deployment architecture to build useful apps. ")
+	b.WriteString("Translate technical choices into business outcomes and safe next steps. ")
+	b.WriteString("When a live development sandbox exists, assume App Studio source changes run in that sandbox; separate development sandbox guidance from production launch guidance. ")
+	b.WriteString("Do not ask the user to choose databases, networking, infrastructure templates, or deployment architecture when App Studio can infer a safe next step from their business intent and available evidence. ")
 	b.WriteString("When requirements are unclear, ask concise follow-up questions instead of guessing.\n\n")
 	b.WriteString("Conversation mode: " + string(profile) + "\n")
 	b.WriteString("Project metadata:\n")
@@ -1615,7 +1619,7 @@ func appendProjectAssistantModePrompt(b *strings.Builder, profile projectAssista
 	case projectAssistantTurnProfileGuidance:
 		b.WriteString("Give practical guidance, recommendations, and tradeoffs. Do not claim to know current file or runtime state unless tool evidence is available; ask the user for missing context in plain language when needed.\n")
 	case projectAssistantTurnProfileExploration:
-		b.WriteString("Use read-only App Studio workflow, workspace-read, and aggregate MCP infrastructure discovery tools when current project state or available infrastructure templates are needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, search_project_files, infrastructure__list_templates, infrastructure__describe_template, infrastructure__list_instances, and infrastructure__get_instance for bounded inspection. Do not edit, deploy, provision, or commit.\n")
+		b.WriteString("Use read-only App Studio workflow, workspace-read, and aggregate MCP infrastructure discovery tools when current project state or available infrastructure templates are needed. Prefer plan_project_changes, check_project_readiness, list_project_files, read_project_file, search_project_files, infrastructure__list_templates, infrastructure__describe_template, infrastructure__list_instances, and infrastructure__get_instance for bounded inspection. Treat infrastructure templates as capability evidence, not as a menu the user must operate. Explain template fit in business terms, and call out when a template includes more than the user asked for. Do not edit, deploy, provision, or commit.\n")
 	case projectAssistantTurnProfileDebugging:
 		b.WriteString("Diagnose in read-only mode. Use check_project_readiness, list_project_files, read_project_file, search_project_files, get_runtime_status, and get_preview_url as needed. Do not mutate files, deploy runtime resources, or commit unless the user explicitly asks you to fix the issue.\n")
 	case projectAssistantTurnProfileDebugFix:
@@ -1632,6 +1636,8 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
 	b.WriteString("Use deploy_project_runtime, get_runtime_status, and get_preview_url only as App Studio runtime graph workflows; they return structured not_configured blockers until a tenant RuntimeTarget exists. ")
 	b.WriteString("For supporting infrastructure, use infrastructure__list_templates before naming any available template, infrastructure__describe_template before recommending values, and infrastructure__provision only after the user explicitly asks to create supporting infrastructure and the permission flow approves the call. ")
+	b.WriteString("When the user asks for a supporting capability such as persistent data, first decide whether the current sandbox app can satisfy the development need before provisioning infrastructure. ")
+	b.WriteString("Do not recommend a full application or runtime template just to satisfy a smaller need like persistent data, and do not duplicate App Studio's sandbox runtime unless the user is explicitly moving toward a production launch. ")
 	b.WriteString("For existing projects, inspect relevant files in the App Studio workspace before editing: use list_project_files to discover paths, read_project_file for targeted files, and search_project_files when you need to locate code. ")
 	b.WriteString("When requirements are unclear during implementation, call ask_follow_up with at most three concise questions instead of guessing. ")
 	b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")

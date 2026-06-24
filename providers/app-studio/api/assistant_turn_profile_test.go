@@ -304,6 +304,31 @@ func TestProjectAssistantPromptRequiresEvidenceForProductCapabilities(t *testing
 	}
 }
 
+func TestProjectAssistantPromptFramesAppStudioAsBusinessUserEasyButton(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo-project"
+	project.Spec.DisplayName = "Demo Project"
+	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
+
+	prompt := projectSystemPrompt(project, repository, projectAssistantTurnProfileImplementation)
+	lowerPrompt := strings.ToLower(prompt)
+	for _, want := range []string{
+		"business users",
+		"non-technical",
+		"easy button",
+		"live development sandbox",
+		"source changes run in that sandbox",
+		"translate technical choices into business outcomes",
+		"do not ask the user to choose databases, networking, infrastructure templates, or deployment architecture",
+		"do not recommend a full application or runtime template just to satisfy a smaller need like persistent data",
+		"separate development sandbox guidance from production launch guidance",
+	} {
+		if !strings.Contains(lowerPrompt, strings.ToLower(want)) {
+			t.Fatalf("prompt missing business-user App Studio guidance %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestProjectAssistantTurnPolicyAllowsExpectedToolBundles(t *testing.T) {
 	tests := []struct {
 		name       string

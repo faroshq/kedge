@@ -9,7 +9,6 @@ import {
   Braces,
   Check,
   ClipboardList,
-  Database,
   ExternalLink,
   Folder,
   GitBranch,
@@ -305,7 +304,6 @@ const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewTokenExpiresAt = ref('')
 const developmentPreviewFrameKey = ref(0)
 const publishingAccess = ref<'public' | 'members' | 'private'>('members')
-const publishingDatabase = ref<'managed' | 'external'>('managed')
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
@@ -1622,7 +1620,6 @@ function openWorkbenchLauncherItem(item: WorkbenchLauncherItem) {
 
 function resetPublishingSettings() {
   publishingAccess.value = 'members'
-  publishingDatabase.value = 'managed'
 }
 
 function activateWorkbenchTabByID(tabID: string) {
@@ -3633,54 +3630,6 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 <input v-model="publishingAccess" type="radio" value="private" name="publishing-access" class="h-3.5 w-3.5" />
                 <span>Private</span>
               </label>
-            </div>
-          </section>
-
-          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
-            <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Database settings</div>
-            <div class="grid gap-2">
-              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
-                <input
-                  v-model="publishingDatabase"
-                  type="radio"
-                  value="managed"
-                  name="publishing-database"
-                  class="h-3.5 w-3.5"
-                />
-                <Database class="h-3.5 w-3.5" :stroke-width="1.75" />
-                <span>Use a managed production data store</span>
-              </label>
-              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
-                <input
-                  v-model="publishingDatabase"
-                  type="radio"
-                  value="external"
-                  name="publishing-database"
-                  class="h-3.5 w-3.5"
-                />
-                <span>Bring an existing database later</span>
-              </label>
-            </div>
-            <div class="text-[11px] leading-4 text-text-muted">
-              App Studio can review the sandbox app and recommend a production database template when publishing is wired to infrastructure.
-            </div>
-          </section>
-
-          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
-            <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Engagement & tools</div>
-            <div class="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2">
-              <div class="min-w-0">
-                <div class="text-[12px] font-medium text-text-primary">Feedback widget</div>
-                <div class="text-[11px] leading-4 text-text-muted">Collect comments from users of the published app.</div>
-              </div>
-              <span class="shrink-0 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-medium text-text-muted">Later</span>
-            </div>
-            <div class="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2">
-              <div class="min-w-0">
-                <div class="text-[12px] font-medium text-text-primary">App Studio badge</div>
-                <div class="text-[11px] leading-4 text-text-muted">Show or hide the App Studio attribution on published apps.</div>
-              </div>
-              <span class="shrink-0 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-medium text-text-muted">Later</span>
             </div>
           </section>
 

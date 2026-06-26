@@ -146,7 +146,6 @@ const GOOGLE_CLOUD_DEFAULT_MODEL = 'google/gemini-3.5-flash'
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
 const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
-const PREVIEW_ROUTE_BINDING_NAME = 'preview-route'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
@@ -681,17 +680,12 @@ const developmentBinding = computed(() => {
   )
 })
 
-const developmentPreviewRouteBinding = computed<ProjectProviderBinding | null>(() => {
-  const bindings = developmentEnvironment.value?.bindings ?? []
-  return bindings.find((binding) => binding.name === PREVIEW_ROUTE_BINDING_NAME) ?? null
-})
-
 const developmentPreviewRawURL = computed(() => {
-  return projectBindingPreviewURL(developmentPreviewRouteBinding.value)
+  return projectBindingPreviewURL(developmentBinding.value)
 })
 
 const developmentPreviewNeedsAuthorization = computed(() => {
-  return !!developmentPreviewRouteBinding.value
+  return !!developmentBinding.value && developmentBinding.value.provider === 'app-studio'
 })
 
 const developmentPreviewURL = computed(() => {
@@ -707,7 +701,7 @@ const developmentPreviewPhase = computed(() => {
 })
 
 const developmentPreviewCanOpenInBrowser = computed(() => {
-  return !!developmentPreviewRouteBinding.value &&
+  return !!developmentBinding.value &&
     !developmentPreviewAuthorizing.value &&
     !!developmentPreviewOverrideURL.value &&
     !developmentPreviewAuthorizationError.value

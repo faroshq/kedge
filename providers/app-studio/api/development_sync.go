@@ -257,7 +257,7 @@ func sandboxRunnerPreviewRoute(obj *unstructured.Unstructured) (sandboxPreviewHT
 	if httpRouteNamespace == "" {
 		httpRouteNamespace = sandboxPreviewHTTPRouteNamespace
 	}
-	if httpRouteNamespace != sandboxPreviewHTTPRouteNamespace {
+	if !isExpectedSandboxPreviewHTTPRouteNamespace(obj, httpRouteNamespace) {
 		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview HTTPRoute namespace %q does not match expected namespace %q", httpRouteNamespace, sandboxPreviewHTTPRouteNamespace)
 	}
 	return sandboxPreviewHTTPRouteInfo{
@@ -276,6 +276,14 @@ func sandboxRunnerPreviewRouteHost(runnerName string) string {
 		return ""
 	}
 	return runnerName + "." + baseDomain
+}
+
+func isExpectedSandboxPreviewHTTPRouteNamespace(obj *unstructured.Unstructured, namespace string) bool {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == sandboxPreviewHTTPRouteNamespace {
+		return true
+	}
+	return namespace != "" && namespace == expectedKROPrefixedNamespace(obj, sandboxPreviewHTTPRouteNamespace)
 }
 
 func (s *Server) ensureSandboxPreviewReferenceGrant(ctx context.Context, projectName string, route sandboxPreviewHTTPRouteInfo) error {

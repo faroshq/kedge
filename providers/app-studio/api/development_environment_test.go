@@ -624,6 +624,50 @@ func TestAuthorizeProjectDevelopmentPreviewTargetEnsuresBackendReferenceGrant(t 
 	}
 }
 
+func TestAuthorizeProjectDevelopmentPreviewTargetAllowsKROPrefixedHTTPRouteNamespace(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
+	ctx := context.Background()
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com", token: "caller-token"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	clusterID := "5n0g2q17plwnurrz"
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+		},
+	}
+	runner := testSandboxRunnerWithPreviewRoute(runnerName, project.Name, "https://"+runnerName+".preview.example.com/")
+	runner.SetAnnotations(map[string]string{kcpClusterAnnotation: clusterID})
+	if err := unstructured.SetNestedField(runner.Object, clusterID+"-default", "status", "previewRoute", "httpRouteRef", "namespace"); err != nil {
+		t.Fatalf("set prefixed route namespace: %v", err)
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), runner))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testReadyPreviewEndpoints(runnerName))
+	server.runtimeDynamic = fake.NewSimpleDynamicClient(runtime.NewScheme())
+	server.previewSigner = previewtoken.NewSigner([]byte("test-secret"))
+
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(ctx, client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
+	if err != nil {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+	}
+	if !got.Ready {
+		t.Fatalf("ready = false, want true: %#v", got)
+	}
+	grant, err := server.runtimeDynamic.Resource(gatewayReferenceGrantGVR).Namespace("preview-system").Get(ctx, runnerName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get ReferenceGrant: %v", err)
+	}
+	from := mustNestedSlice(t, grant.Object, "spec", "from")
+	fromEntry, ok := from[0].(map[string]any)
+	if !ok {
+		t.Fatalf("ReferenceGrant from entry type = %T, want map[string]any", from[0])
+	}
+	if got, want := fromEntry["namespace"], clusterID+"-default"; got != want {
+		t.Fatalf("ReferenceGrant from.namespace = %q, want %q", got, want)
+	}
+}
+
 func TestAuthorizeProjectDevelopmentPreviewTargetAddsConfiguredPublicPort(t *testing.T) {
 	setPreviewHTTPRouteEnv(t)
 	t.Setenv("APP_STUDIO_PREVIEW_PUBLIC_PORT", "10443")

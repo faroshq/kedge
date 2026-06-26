@@ -123,11 +123,19 @@ func sandboxRunnerStatusRuntimeNamespace(obj *unstructured.Unstructured, name st
 }
 
 func expectedKROPrefixedRuntimeNamespace(obj *unstructured.Unstructured, name string) string {
+	return expectedKROPrefixedNamespace(obj, name)
+}
+
+func expectedKROPrefixedNamespace(obj *unstructured.Unstructured, namespace string) string {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		return ""
+	}
 	clusterID := strings.TrimSpace(obj.GetAnnotations()[kcpClusterAnnotation])
 	if clusterID == "" {
 		return ""
 	}
-	return clusterID + "-" + name
+	return clusterID + "-" + namespace
 }
 
 func sandboxRunnerInstanceName(obj *unstructured.Unstructured) (string, error) {

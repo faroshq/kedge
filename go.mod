@@ -327,6 +327,6 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
 
-replace github.com/platform-mesh/kubernetes-graphql-gateway => github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260612154300-f9c2b298c4cd
+replace github.com/platform-mesh/kubernetes-graphql-gateway => github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626173633-9c3bfe012c22
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0

@@ -38,6 +38,7 @@ const (
 	projectDevelopmentBindingName       = "dev"
 	projectDevelopmentProviderAppStudio = "app-studio"
 	previewChannelDevelopment           = "development-preview"
+	sandboxPreviewHTTPRouteNamespace    = "default"
 	projectSandboxSyncTimeout           = 20 * time.Second
 )
 
@@ -131,34 +132,6 @@ func projectDevelopmentSyncTarget(p *aiv1alpha1.Project, id identity) (projectDe
 	return projectDevelopmentSyncTargetInfo{}, false
 }
 
-func projectDevelopmentPreviewHTTPRouteTarget(p *aiv1alpha1.Project, id identity) (projectDevelopmentSyncTargetInfo, bool) {
-	if p == nil {
-		return projectDevelopmentSyncTargetInfo{}, false
-	}
-	for _, env := range p.Spec.Environments {
-		if strings.TrimSpace(env.Name) != projectDevelopmentEnvironmentName {
-			continue
-		}
-		for _, binding := range env.Bindings {
-			if !isSandboxPreviewHTTPRouteBinding(binding) {
-				continue
-			}
-			values, _ := projectProviderBindingValues(binding)
-			name := projectProviderBindingResourceName(p, binding, values, id)
-			if name == "" {
-				return projectDevelopmentSyncTargetInfo{}, false
-			}
-			return projectDevelopmentSyncTargetInfo{
-				EnvironmentName: env.Name,
-				BindingName:     binding.Name,
-				Provider:        binding.Provider,
-				ResourceName:    name,
-			}, true
-		}
-	}
-	return projectDevelopmentSyncTargetInfo{}, false
-}
-
 func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -230,7 +203,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 }
 
 func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
-	runtimeTarget, _, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
+	runtimeTarget, runner, err := s.runtimeTargetForProject(ctx, c, target.ResourceName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return projectSandboxPreviewURLResponse{
@@ -245,30 +218,15 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 	if !preview.Ready {
 		return preview, nil
 	}
-	routeTarget, ok := projectDevelopmentPreviewHTTPRouteTarget(p, id)
-	if !ok {
-		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "sandbox_preview_httproute_missing",
-			Message: "Preview is getting ready. The sandbox preview HTTPRoute has not been configured yet.",
-		}, nil
-	}
-	route, err := sandboxPreviewHTTPRoute(ctx, c, routeTarget.ResourceName)
+	route, err := sandboxRunnerPreviewRoute(runner)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return projectSandboxPreviewURLResponse{
-				Ready:   false,
-				Reason:  "sandbox_preview_httproute_not_found",
-				Message: "Preview is getting ready. The sandbox preview HTTPRoute has not been created yet.",
-			}, nil
-		}
 		return projectSandboxPreviewURLResponse{}, err
 	}
 	if strings.TrimSpace(route.URL) == "" {
 		return projectSandboxPreviewURLResponse{
 			Ready:   false,
-			Reason:  "sandbox_preview_httproute_not_ready",
-			Message: "Preview is getting ready. The sandbox preview HTTPRoute does not have a URL yet.",
+			Reason:  "sandbox_preview_route_not_ready",
+			Message: "Preview is getting ready. The sandbox preview route does not have a URL yet.",
 		}, nil
 	}
 	if err := s.ensureSandboxPreviewReferenceGrant(ctx, p.Name, route); err != nil {
@@ -278,22 +236,46 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 	return preview, nil
 }
 
-func sandboxPreviewHTTPRoute(ctx context.Context, c *asclient.Client, name string) (sandboxPreviewHTTPRouteInfo, error) {
-	obj, err := c.Dynamic().Resource(sandboxPreviewHTTPRouteGVR).Get(ctx, name, metav1.GetOptions{})
+func sandboxRunnerPreviewRoute(obj *unstructured.Unstructured) (sandboxPreviewHTTPRouteInfo, error) {
+	if obj == nil {
+		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox runner is nil")
+	}
+	name, err := sandboxRunnerInstanceName(obj)
 	if err != nil {
 		return sandboxPreviewHTTPRouteInfo{}, err
 	}
-	rawURL, _, _ := unstructured.NestedString(obj.Object, "status", "url")
-	httpRouteNamespace, _, _ := unstructured.NestedString(obj.Object, "status", "httpRouteRef", "namespace")
-	backendNamespace, _, _ := unstructured.NestedString(obj.Object, "spec", "backend", "namespace")
-	backendServiceName, _, _ := unstructured.NestedString(obj.Object, "spec", "backend", "serviceName")
+	rawURL, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "url")
+	httpRouteNamespace, _, _ := unstructured.NestedString(obj.Object, "status", "previewRoute", "httpRouteRef", "namespace")
+	expectedHost := sandboxRunnerPreviewRouteHost(name)
+	if strings.TrimSpace(rawURL) == "" || expectedHost == "" {
+		return sandboxPreviewHTTPRouteInfo{ReferenceGrantName: name}, nil
+	}
+	if host := previewtoken.NormalizeHost(rawURL); host != expectedHost {
+		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview route host %q does not match expected host %q", host, expectedHost)
+	}
+	httpRouteNamespace = strings.TrimSpace(httpRouteNamespace)
+	if httpRouteNamespace == "" {
+		httpRouteNamespace = sandboxPreviewHTTPRouteNamespace
+	}
+	if httpRouteNamespace != sandboxPreviewHTTPRouteNamespace {
+		return sandboxPreviewHTTPRouteInfo{}, fmt.Errorf("sandbox preview HTTPRoute namespace %q does not match expected namespace %q", httpRouteNamespace, sandboxPreviewHTTPRouteNamespace)
+	}
 	return sandboxPreviewHTTPRouteInfo{
 		URL:                previewPublicURL(strings.TrimSpace(rawURL)),
-		HTTPRouteNamespace: strings.TrimSpace(httpRouteNamespace),
-		BackendNamespace:   strings.TrimSpace(backendNamespace),
-		BackendServiceName: strings.TrimSpace(backendServiceName),
-		ReferenceGrantName: strings.TrimSpace(name),
+		HTTPRouteNamespace: httpRouteNamespace,
+		BackendNamespace:   previewBackendNamespace(),
+		BackendServiceName: previewBackendServiceName(),
+		ReferenceGrantName: name,
 	}, nil
+}
+
+func sandboxRunnerPreviewRouteHost(runnerName string) string {
+	runnerName = strings.TrimSpace(runnerName)
+	baseDomain := strings.Trim(previewtoken.NormalizeHost(previewHTTPRouteBaseDomain()), ".")
+	if runnerName == "" || baseDomain == "" || !previewHTTPRouteEnabled() {
+		return ""
+	}
+	return runnerName + "." + baseDomain
 }
 
 func (s *Server) ensureSandboxPreviewReferenceGrant(ctx context.Context, projectName string, route sandboxPreviewHTTPRouteInfo) error {

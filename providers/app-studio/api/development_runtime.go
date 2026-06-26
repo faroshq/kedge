@@ -44,12 +44,6 @@ var sandboxRunnerGVR = schema.GroupVersionResource{
 	Resource: "sandboxrunners",
 }
 
-var sandboxPreviewHTTPRouteGVR = schema.GroupVersionResource{
-	Group:    "infrastructure.kedge.faros.sh",
-	Version:  "v1alpha1",
-	Resource: "sandboxpreviewhttproutes",
-}
-
 type runtimeServiceRef struct {
 	Namespace string
 	Name      string

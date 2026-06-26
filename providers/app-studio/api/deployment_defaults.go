@@ -44,16 +44,12 @@ func privateProjectSharingSpec() aiv1alpha1.ProjectSharingSpec {
 }
 
 func defaultProjectDevelopmentEnvironment(projectName string) aiv1alpha1.ProjectEnvironmentSpec {
-	bindings := []aiv1alpha1.ProjectProviderBindingSpec{defaultSandboxRunnerBinding(projectName)}
-	if previewHTTPRouteEnabled() {
-		bindings = append(bindings, defaultSandboxPreviewHTTPRouteBinding(projectName))
-	}
 	return aiv1alpha1.ProjectEnvironmentSpec{
 		Name:       "development",
 		Mode:       aiv1alpha1.ProjectEnvironmentModeLive,
 		AutoDeploy: false,
 		Promotion:  aiv1alpha1.ProjectPromotionManual,
-		Bindings:   bindings,
+		Bindings:   []aiv1alpha1.ProjectProviderBindingSpec{defaultSandboxRunnerBinding(projectName)},
 	}
 }
 
@@ -71,20 +67,6 @@ func defaultSandboxRunnerBinding(projectName string) aiv1alpha1.ProjectProviderB
 	}
 }
 
-func defaultSandboxPreviewHTTPRouteBinding(projectName string) aiv1alpha1.ProjectProviderBindingSpec {
-	return aiv1alpha1.ProjectProviderBindingSpec{
-		Name:     "preview-route",
-		Provider: "app-studio",
-		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
-		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-			APIVersion: "infrastructure.kedge.faros.sh/v1alpha1",
-			Kind:       "SandboxPreviewHTTPRoute",
-			Resource:   "sandboxpreviewhttproutes",
-		},
-		Values: projectDeploymentJSONValues(sandboxPreviewHTTPRouteValues(projectName)),
-	}
-}
-
 func sandboxRunnerValues(projectName string) map[string]any {
 	values := map[string]any{
 		"projectRef": projectName,
@@ -96,25 +78,6 @@ func sandboxRunnerValues(projectName string) map[string]any {
 		values["tokenGeneratorImage"] = image
 	}
 	return values
-}
-
-func sandboxPreviewHTTPRouteValues(projectName string) map[string]any {
-	return map[string]any{
-		"projectRef": projectName,
-		"channel":    previewChannelDevelopment,
-		"accessMode": string(aiv1alpha1.ProjectSharingModePrivate),
-		"baseDomain": previewHTTPRouteBaseDomain(),
-		"parentGateway": map[string]any{
-			"name":        previewHTTPRouteParentGatewayName(),
-			"namespace":   previewHTTPRouteParentGatewayNamespace(),
-			"sectionName": previewHTTPRouteParentGatewaySectionName(),
-		},
-		"backend": map[string]any{
-			"namespace":   previewBackendNamespace(),
-			"serviceName": previewBackendServiceName(),
-			"servicePort": previewBackendServicePort(),
-		},
-	}
 }
 
 func previewHTTPRouteEnabled() bool {

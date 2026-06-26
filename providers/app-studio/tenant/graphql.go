@@ -76,13 +76,26 @@ var (
 )
 
 // groupField mirrors the gateway's SanitizeGroupName: non-[a-zA-Z0-9_] become
-// "_", and a leading invalid char gets an "_" prefix.
+// "_", and a leading invalid char gets an "_" prefix. The core group ("")
+// returns "" — its versions sit directly on the root, with no group wrapper.
 func groupField(group string) string {
 	s := invalidGroupChar.ReplaceAllString(group, "_")
 	if s != "" && !validGroupStart.MatchString(s) {
 		s = "_" + s
 	}
 	return s
+}
+
+// wrapSelection nests the inner field selection under the resource's group and
+// version, and returns the matching response-data path. The core group ("")
+// has no group wrapper — its version sits directly on the root query/mutation.
+func wrapSelection(res Resource, inner string) (selection string, path []string) {
+	gf := groupField(res.GVR.Group)
+	v := res.GVR.Version
+	if gf == "" {
+		return fmt.Sprintf("%s { %s }", v, inner), []string{v}
+	}
+	return fmt.Sprintf("%s { %s { %s } }", gf, v, inner), []string{gf, v}
 }
 
 // Scope is a GraphQL client bound to one workspace cluster and caller token.
@@ -189,14 +202,14 @@ func mapGraphQLError(errs []gqlError, res *Resource, name string) error {
 func (s *Scope) Get(ctx context.Context, res Resource, namespace, name string) (*unstructured.Unstructured, error) {
 	field := res.Kind + "Yaml"
 	varDefs, args, vars := itemArgs(res, namespace, name)
-	q := fmt.Sprintf("query(%s) { %s { %s { %s(%s) } } }",
-		varDefs, groupField(res.GVR.Group), res.GVR.Version, field, args)
+	sel, path := wrapSelection(res, fmt.Sprintf("%s(%s)", field, args))
+	q := fmt.Sprintf("query(%s) { %s }", varDefs, sel)
 
 	data, err := s.exec(ctx, q, vars, &res, name)
 	if err != nil {
 		return nil, err
 	}
-	str, err := nestedString(data, groupField(res.GVR.Group), res.GVR.Version, field)
+	str, err := nestedString(data, append(path, field)...)
 	if err != nil {
 		return nil, err
 	}
@@ -209,28 +222,27 @@ func (s *Scope) List(ctx context.Context, res Resource, namespace string) ([]uns
 	field := res.Plural + "Yaml"
 	var (
 		varDefs string
-		args    string
+		inner   = field
 		vars    = map[string]any{}
 	)
 	if res.Namespaced && namespace != "" {
 		varDefs = "$namespace: String"
-		args = "namespace: $namespace"
+		inner = field + "(namespace: $namespace)"
 		vars["namespace"] = namespace
 	}
+	sel, path := wrapSelection(res, inner)
 	q := ""
 	if varDefs != "" {
-		q = fmt.Sprintf("query(%s) { %s { %s { %s(%s) } } }",
-			varDefs, groupField(res.GVR.Group), res.GVR.Version, field, args)
+		q = fmt.Sprintf("query(%s) { %s }", varDefs, sel)
 	} else {
-		q = fmt.Sprintf("query { %s { %s { %s } } }",
-			groupField(res.GVR.Group), res.GVR.Version, field)
+		q = fmt.Sprintf("query { %s }", sel)
 	}
 
 	data, err := s.exec(ctx, q, vars, &res, "")
 	if err != nil {
 		return nil, err
 	}
-	str, err := nestedString(data, groupField(res.GVR.Group), res.GVR.Version, field)
+	str, err := nestedString(data, append(path, field)...)
 	if err != nil {
 		return nil, err
 	}
@@ -272,8 +284,8 @@ func (s *Scope) ApplyStatus(ctx context.Context, obj *unstructured.Unstructured)
 func (s *Scope) Delete(ctx context.Context, res Resource, namespace, name string) error {
 	field := "delete" + res.Kind
 	varDefs, args, vars := itemArgs(res, namespace, name)
-	q := fmt.Sprintf("mutation(%s) { %s { %s { %s(%s) } } }",
-		varDefs, groupField(res.GVR.Group), res.GVR.Version, field, args)
+	sel, _ := wrapSelection(res, fmt.Sprintf("%s(%s)", field, args))
+	q := fmt.Sprintf("mutation(%s) { %s }", varDefs, sel)
 	_, err := s.exec(ctx, q, vars, &res, name)
 	return err
 }

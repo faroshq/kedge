@@ -151,14 +151,10 @@ func (s *Scope) exec(ctx context.Context, query string, vars map[string]any, res
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		// No schema for this cluster: the gateway hasn't (yet) generated a
-		// schema for the workspace. Surface a NotFound the caller can treat as
-		// "initializing" rather than a hard failure.
-		gr := schema.GroupResource{}
-		if res != nil {
-			gr = res.GVR.GroupResource()
-		}
-		return nil, apierrors.NewNotFound(gr, name)
+		// No schema for this cluster yet: the gateway hasn't generated a schema
+		// for the workspace. Distinct from an object-not-found (which comes back
+		// as a GraphQL error) so callers can treat it as "initializing".
+		return nil, fmt.Errorf("graphql gateway has no schema for cluster %q yet — workspace initializing", s.clusterID)
 	}
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("graphql gateway HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

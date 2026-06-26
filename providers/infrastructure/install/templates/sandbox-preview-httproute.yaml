@@ -1,0 +1,113 @@
+apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: sandbox-preview-httproute
+spec:
+  displayName: "Sandbox preview HTTPRoute"
+  description: "Creates a Gateway API HTTPRoute for sandbox previews via the shared preview gateway service and records routing metadata for proxy enforcement."
+  category: Networking
+  version: 0.1.0
+  backend: kro
+  instanceCRD:
+    group: infrastructure.kedge.faros.sh
+    version: v1alpha1
+    resource: sandboxpreviewhttproutes
+    kind: SandboxPreviewHTTPRoute
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "HTTPRoute resource name and provider instance name."
+      projectRef:
+        type: string
+        description: "App Studio Project name this sandbox preview belongs to."
+      channel:
+        type: string
+        description: "Preview channel used for grouping routing policy and metadata."
+        default: "development-preview"
+      accessMode:
+        type: string
+        description: "Planned preview access mode for this host."
+        enum: ["private", "shared", "public"]
+        default: "private"
+      host:
+        type: string
+        description: "Public host for the preview HTTPRoute."
+      parentGateway:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Parent Gateway name that owns this route."
+          namespace:
+            type: string
+            description: "Parent Gateway namespace."
+          sectionName:
+            type: string
+            description: "Listener section name on the parent Gateway."
+            default: "https"
+      backend:
+        type: object
+        properties:
+          namespace:
+            type: string
+            description: "Namespace of the shared preview gateway Service."
+            default: "kedge-preview"
+          serviceName:
+            type: string
+            description: "Preview gateway Service name."
+            default: "sandbox-preview-gateway"
+          servicePort:
+            type: integer
+            description: "Preview gateway Service port."
+            default: 8080
+      target:
+        type: object
+        properties:
+          namespace:
+            type: string
+            description: "Target runtime namespace for tenant sandbox workload metadata."
+          serviceName:
+            type: string
+            description: "Target sandbox service name for token metadata binding."
+          servicePortName:
+            type: string
+            description: "Target sandbox service port name for token metadata binding."
+            default: "preview"
+  required:
+    - name
+    - projectRef
+    - host
+  backendConfig:
+    resources:
+      - id: httpRoute
+        template:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+          spec:
+            parentRefs:
+              - name: ${schema.spec.parentGateway.name}
+                namespace: ${schema.spec.parentGateway.namespace}
+                sectionName: ${schema.spec.parentGateway.sectionName}
+            hostnames:
+              - ${schema.spec.host}
+            rules:
+              - backendRefs:
+                  - name: ${schema.spec.backend.serviceName}
+                    namespace: ${schema.spec.backend.namespace}
+                    port: ${schema.spec.backend.servicePort}
+                    kind: Service
+    status:
+      host: ${httpRoute.spec.hostnames[0]}
+      url: ${"https://" + httpRoute.spec.hostnames[0]}
+      phase: ${httpRoute.status.parents[0].conditions[0].status}
+      httpRouteRef:
+        name: ${httpRoute.metadata.name}
+        namespace: ${httpRoute.metadata.namespace}
+      gatewayRef:
+        name: ${httpRoute.spec.parentRefs[0].name}
+        namespace: ${httpRoute.spec.parentRefs[0].namespace}

@@ -18,11 +18,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/gorilla/mux"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,11 +33,13 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/previewtoken"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func TestDefaultProjectDevelopmentEnvironmentUsesInfrastructureBackedSandboxRunner(t *testing.T) {
+	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
 	env := defaultProjectDevelopmentEnvironment("todo")
 	if got, want := env.Name, "development"; got != want {
 		t.Fatalf("Name = %q, want %q", got, want)
@@ -81,34 +81,64 @@ func TestDefaultProjectDevelopmentEnvironmentUsesInfrastructureBackedSandboxRunn
 	}
 }
 
-func TestRewritePreviewJavaScriptRootURLsRewritesRootAbsoluteStringConstants(t *testing.T) {
-	basePath := "/services/providers/app-studio/api/projects/simply-done/preview/__kedge_preview/abc123/"
-	raw := []byte(`const API_URL = '/api/todos';
-fetch(API_URL);`)
+func TestDefaultProjectDevelopmentEnvironmentCanIncludeSandboxPreviewHTTPRoute(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
 
-	got := string(rewritePreviewResponseBody("application/javascript", basePath, raw))
-	want := `const API_URL = '/services/providers/app-studio/api/projects/simply-done/preview/__kedge_preview/abc123/api/todos';
-fetch(API_URL);`
-	if got != want {
-		t.Fatalf("rewritten JavaScript = %q, want %q", got, want)
+	env := defaultProjectDevelopmentEnvironment("todo")
+	if got := len(env.Bindings); got != 2 {
+		t.Fatalf("bindings = %d, want sandbox runner plus preview HTTPRoute", got)
 	}
-}
-
-func TestRewritePreviewHTMLInjectsCredentialedPreviewFetchShim(t *testing.T) {
-	basePath := "/services/providers/app-studio/api/projects/simply-done/preview/__kedge_preview/abc123/"
-	raw := []byte(`<html><head><script src="/assets/app.js"></script></head><body></body></html>`)
-
-	got := string(rewritePreviewResponseBody("text/html", basePath, raw))
-	for _, want := range []string{
-		`<script data-kedge-preview-credentials>`,
-		`credentials = 'include'`,
-		`NativeXHR.prototype.open`,
-		`this.withCredentials = true`,
-		`<script src="` + basePath + `assets/app.js"></script>`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("rewritten HTML missing %q: %s", want, got)
-		}
+	binding := env.Bindings[1]
+	if got, want := binding.Name, "preview-route"; got != want {
+		t.Fatalf("Name = %q, want %q", got, want)
+	}
+	if got, want := binding.ResourceRef.APIVersion, "infrastructure.kedge.faros.sh/v1alpha1"; got != want {
+		t.Fatalf("APIVersion = %q, want %q", got, want)
+	}
+	if got, want := binding.ResourceRef.Kind, "SandboxPreviewHTTPRoute"; got != want {
+		t.Fatalf("Kind = %q, want %q", got, want)
+	}
+	if got, want := binding.ResourceRef.Resource, "sandboxpreviewhttproutes"; got != want {
+		t.Fatalf("Resource = %q, want %q", got, want)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
+		t.Fatalf("unmarshal binding values: %v", err)
+	}
+	if got, want := values["projectRef"], "todo"; got != want {
+		t.Fatalf("projectRef = %q, want %q", got, want)
+	}
+	if got, want := values["channel"], "development-preview"; got != want {
+		t.Fatalf("channel = %q, want %q", got, want)
+	}
+	if got, want := values["accessMode"], "private"; got != want {
+		t.Fatalf("accessMode = %q, want %q", got, want)
+	}
+	parentGateway, ok := values["parentGateway"].(map[string]any)
+	if !ok {
+		t.Fatalf("parentGateway = %#v, want object", values["parentGateway"])
+	}
+	if got, want := parentGateway["namespace"], "preview-system"; got != want {
+		t.Fatalf("parentGateway.namespace = %q, want %q", got, want)
+	}
+	if got, want := parentGateway["name"], "kedge-preview"; got != want {
+		t.Fatalf("parentGateway.name = %q, want %q", got, want)
+	}
+	if got, want := parentGateway["sectionName"], "https"; got != want {
+		t.Fatalf("parentGateway.sectionName = %q, want %q", got, want)
+	}
+	backend, ok := values["backend"].(map[string]any)
+	if !ok {
+		t.Fatalf("backend = %#v, want object", values["backend"])
+	}
+	if got, want := backend["namespace"], "preview-system"; got != want {
+		t.Fatalf("backend.namespace = %q, want %q", got, want)
+	}
+	if got, want := backend["serviceName"], "preview-gateway"; got != want {
+		t.Fatalf("backend.serviceName = %q, want %q", got, want)
+	}
+	if got, want := backend["servicePort"], float64(9443); got != want {
+		t.Fatalf("backend.servicePort = %#v, want %#v", got, want)
 	}
 }
 
@@ -142,12 +172,64 @@ func TestProjectAssistantRuntimePreviewURLPrefersDevelopment(t *testing.T) {
 }
 
 func TestCreateProjectSpecIncludesDevelopmentEnvironment(t *testing.T) {
+	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
 	spec := defaultProjectSpec("todo", "Todo", "Tasks", &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "todo"})
 	if got := len(spec.Environments); got != 1 {
 		t.Fatalf("environments = %d, want 1", got)
 	}
 	if got, want := spec.Environments[0].Name, "development"; got != want {
 		t.Fatalf("environment name = %q, want %q", got, want)
+	}
+	if got, want := spec.Sharing.Preview.Mode, aiv1alpha1.ProjectSharingModePrivate; got != want {
+		t.Fatalf("preview sharing mode = %q, want %q", got, want)
+	}
+	if got, want := spec.Sharing.Publishing.Mode, aiv1alpha1.ProjectSharingModePrivate; got != want {
+		t.Fatalf("publishing sharing mode = %q, want %q", got, want)
+	}
+}
+
+func TestProjectViewDefaultsMissingSharingToPrivate(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec: aiv1alpha1.ProjectSpec{
+			DisplayName: "Todo",
+		},
+	}
+	view := projectView(context.Background(), nil, project, identity{})
+	if got, want := view.Sharing.Preview.Mode, aiv1alpha1.ProjectSharingModePrivate; got != want {
+		t.Fatalf("preview sharing mode = %q, want %q", got, want)
+	}
+	if got, want := view.Sharing.Publishing.Mode, aiv1alpha1.ProjectSharingModePrivate; got != want {
+		t.Fatalf("publishing sharing mode = %q, want %q", got, want)
+	}
+}
+
+func TestApplyProjectPatchRequestPersistsSharing(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec:       defaultProjectSpec("todo", "Todo", "Tasks", nil),
+	}
+	changed, err := applyProjectPatchRequest(project, PatchProjectRequest{
+		Sharing: &aiv1alpha1.ProjectSharingSpec{
+			Preview: aiv1alpha1.ProjectSharingPolicy{
+				Mode: aiv1alpha1.ProjectSharingModeShared,
+			},
+			Publishing: aiv1alpha1.ProjectSharingPolicy{
+				Mode: aiv1alpha1.ProjectSharingModePublic,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("applyProjectPatchRequest returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	if got, want := project.Spec.Sharing.Preview.Mode, aiv1alpha1.ProjectSharingModeShared; got != want {
+		t.Fatalf("preview sharing mode = %q, want %q", got, want)
+	}
+	if got, want := project.Spec.Sharing.Publishing.Mode, aiv1alpha1.ProjectSharingModePublic; got != want {
+		t.Fatalf("publishing sharing mode = %q, want %q", got, want)
 	}
 }
 
@@ -205,7 +287,7 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToRuntime(t *testing.T) 
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/api/v1/namespaces/"+runnerName+"/services/"+runnerName+":control/proxy/sync"; got != want {
+		if got, want := r.URL.Path, "/api/v1/namespaces/"+runnerName+"/services/"+runnerName+"-control:control/proxy/sync"; got != want {
 			t.Fatalf("path = %q, want %q", got, want)
 		}
 		gotControlToken = r.Header.Get("X-Sandbox-Control-Token")
@@ -240,7 +322,6 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToRuntime(t *testing.T) 
 	server := NewWithWorkspace(nil, nil, workspaces, "http://hub.example", false)
 	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
 	server.runtimeClient = kubernetesfake.NewSimpleClientset(testRuntimeControlSecret(runnerName, "runtime-token"))
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
 	target, ok := projectDevelopmentSyncTarget(project, id)
 	if !ok {
 		t.Fatal("projectDevelopmentSyncTarget returned !ok")
@@ -256,28 +337,40 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToRuntime(t *testing.T) 
 		t.Fatalf("files = %#v, want src/App.tsx content", gotFiles)
 	}
 	var decoded struct {
-		PreviewURL            string `json:"previewURL"`
-		PreviewTokenExpiresAt string `json:"previewTokenExpiresAt"`
+		Phase   string   `json:"phase"`
+		Changed []string `json:"changed"`
 	}
 	if err := json.Unmarshal(result, &decoded); err != nil {
 		t.Fatalf("decode sync result: %v", err)
 	}
-	if !strings.HasPrefix(decoded.PreviewURL, "/services/providers/app-studio/api/projects/todo/preview/?kedgePreviewToken=") {
-		t.Fatalf("previewURL = %q, want app-studio project preview URL", decoded.PreviewURL)
+	if got, want := decoded.Phase, "Synced"; got != want {
+		t.Fatalf("phase = %q, want %q", got, want)
 	}
-	if decoded.PreviewTokenExpiresAt == "" {
-		t.Fatal("previewTokenExpiresAt is empty, want signed token expiry")
+	if got, want := decoded.Changed, []string{"src/App.tsx"}; len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("changed = %#v, want %#v", got, want)
 	}
 }
 
-func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedAppStudioURL(t *testing.T) {
-	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", token: "caller-token"}
+func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedHTTPRouteHostURL(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com", token: "caller-token"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
-	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "todo"}}
-	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
+	routeName := sandboxPreviewHTTPRouteResourceName(id.tenantPath, "todo")
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+		},
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		testSandboxRunner(runnerName, project.Name),
+		testSandboxPreviewHTTPRoute(routeName, "https://"+runnerName+".preview.example.com/"),
+	))
 	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
 	server.runtimeClient = kubernetesfake.NewSimpleClientset(testReadyPreviewEndpoints(runnerName))
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
+	server.runtimeDynamic = fake.NewSimpleDynamicClient(runtime.NewScheme())
+	server.previewSigner = previewtoken.NewSigner([]byte("test-secret"))
 	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
 	if err != nil {
 		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
@@ -285,22 +378,49 @@ func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedAppStudioURL(t *testi
 	if !got.Ready {
 		t.Fatalf("ready = false, want true: %#v", got)
 	}
-	if !strings.HasPrefix(got.PreviewURL, "/services/providers/app-studio/api/projects/todo/preview/?kedgePreviewToken=") {
-		t.Fatalf("previewURL = %q, want app-studio project preview URL", got.PreviewURL)
-	}
-	if got.PreviewTokenExpiresAt == "" {
-		t.Fatal("PreviewTokenExpiresAt is empty, want signed token expiry")
-	}
 	parsed, err := url.Parse(got.PreviewURL)
 	if err != nil {
 		t.Fatalf("parse preview URL: %v", err)
 	}
-	payload, err := server.previewSigner.verify(parsed.Query().Get(previewTokenQuery), project.Name)
+	if parsed.Scheme != "https" || parsed.Host != runnerName+".preview.example.com" || parsed.Path != "/" {
+		t.Fatalf("previewURL = %q, want signed root URL on preview host", got.PreviewURL)
+	}
+	if strings.Contains(got.PreviewURL, "/services/providers/app-studio/") {
+		t.Fatalf("previewURL = %q, must not use legacy provider path", got.PreviewURL)
+	}
+	if got.PreviewTokenExpiresAt == "" {
+		t.Fatal("PreviewTokenExpiresAt is empty, want signed token expiry")
+	}
+	payload, err := server.previewSigner.Verify(parsed.Query().Get(previewtoken.QueryParam))
 	if err != nil {
 		t.Fatalf("verify preview token: %v", err)
 	}
-	if got, want := payload.SandboxRunner, runnerName; got != want {
-		t.Fatalf("token SandboxRunner = %q, want %q", got, want)
+	if got, want := payload.ProjectName, project.Name; got != want {
+		t.Fatalf("token ProjectName = %q, want %q", got, want)
+	}
+	if got, want := payload.TenantPath, id.tenantPath; got != want {
+		t.Fatalf("token TenantPath = %q, want %q", got, want)
+	}
+	if got, want := payload.ResourceName, runnerName; got != want {
+		t.Fatalf("token ResourceName = %q, want %q", got, want)
+	}
+	if got, want := payload.Host, runnerName+".preview.example.com"; got != want {
+		t.Fatalf("token Host = %q, want %q", got, want)
+	}
+	if got, want := payload.RuntimeNamespace, runnerName; got != want {
+		t.Fatalf("token RuntimeNamespace = %q, want %q", got, want)
+	}
+	if got, want := payload.PreviewServiceName, runnerName+"-preview"; got != want {
+		t.Fatalf("token PreviewServiceName = %q, want %q", got, want)
+	}
+	if got, want := payload.PreviewPortName, "preview"; got != want {
+		t.Fatalf("token PreviewPortName = %q, want %q", got, want)
+	}
+	if got, want := payload.AccessMode, string(aiv1alpha1.ProjectSharingModePrivate); got != want {
+		t.Fatalf("token AccessMode = %q, want %q", got, want)
+	}
+	if got, want := payload.Subject, "user@example.com"; got != want {
+		t.Fatalf("token Subject = %q, want %q", got, want)
 	}
 	expiresAt, err := time.Parse(time.RFC3339, got.PreviewTokenExpiresAt)
 	if err != nil {
@@ -311,6 +431,150 @@ func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedAppStudioURL(t *testi
 	}
 }
 
+func TestAuthorizeProjectDevelopmentPreviewTargetEnsuresBackendReferenceGrant(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
+	ctx := context.Background()
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com", token: "caller-token"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	routeName := sandboxPreviewHTTPRouteResourceName(id.tenantPath, "todo")
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+		},
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		testSandboxRunner(runnerName, project.Name),
+		testSandboxPreviewHTTPRoute(routeName, "https://"+runnerName+".preview.example.com/"),
+	))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testReadyPreviewEndpoints(runnerName))
+	server.runtimeDynamic = fake.NewSimpleDynamicClient(runtime.NewScheme())
+	server.previewSigner = previewtoken.NewSigner([]byte("test-secret"))
+
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(ctx, client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
+	if err != nil {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+	}
+	if !got.Ready {
+		t.Fatalf("ready = false, want true: %#v", got)
+	}
+	grant, err := server.runtimeDynamic.Resource(gatewayReferenceGrantGVR).Namespace("preview-system").Get(ctx, routeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get ReferenceGrant: %v", err)
+	}
+	from := mustNestedSlice(t, grant.Object, "spec", "from")
+	if len(from) != 1 {
+		t.Fatalf("ReferenceGrant from entries = %d, want 1", len(from))
+	}
+	fromEntry, ok := from[0].(map[string]any)
+	if !ok {
+		t.Fatalf("ReferenceGrant from entry type = %T, want map[string]any", from[0])
+	}
+	if got, want := fromEntry["group"], "gateway.networking.k8s.io"; got != want {
+		t.Fatalf("ReferenceGrant from.group = %q, want %q", got, want)
+	}
+	if got, want := fromEntry["kind"], "HTTPRoute"; got != want {
+		t.Fatalf("ReferenceGrant from.kind = %q, want %q", got, want)
+	}
+	if got, want := fromEntry["namespace"], "tenant-preview"; got != want {
+		t.Fatalf("ReferenceGrant from.namespace = %q, want %q", got, want)
+	}
+	to := mustNestedSlice(t, grant.Object, "spec", "to")
+	if len(to) != 1 {
+		t.Fatalf("ReferenceGrant to entries = %d, want 1", len(to))
+	}
+	toEntry, ok := to[0].(map[string]any)
+	if !ok {
+		t.Fatalf("ReferenceGrant to entry type = %T, want map[string]any", to[0])
+	}
+	if got, want := toEntry["group"], ""; got != want {
+		t.Fatalf("ReferenceGrant to.group = %q, want empty core group", got)
+	}
+	if got, want := toEntry["kind"], "Service"; got != want {
+		t.Fatalf("ReferenceGrant to.kind = %q, want %q", got, want)
+	}
+	if got, want := toEntry["name"], "preview-gateway"; got != want {
+		t.Fatalf("ReferenceGrant to.name = %q, want %q", got, want)
+	}
+}
+
+func TestAuthorizeProjectDevelopmentPreviewTargetAddsConfiguredPublicPort(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
+	t.Setenv("APP_STUDIO_PREVIEW_PUBLIC_PORT", "10443")
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com", token: "caller-token"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	routeName := sandboxPreviewHTTPRouteResourceName(id.tenantPath, "todo")
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+		},
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		testSandboxRunner(runnerName, project.Name),
+		testSandboxPreviewHTTPRoute(routeName, "https://"+runnerName+".preview.example.com/"),
+	))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testReadyPreviewEndpoints(runnerName))
+	server.runtimeDynamic = fake.NewSimpleDynamicClient(runtime.NewScheme())
+	server.previewSigner = previewtoken.NewSigner([]byte("test-secret"))
+
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
+	if err != nil {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+	}
+	parsed, err := url.Parse(got.PreviewURL)
+	if err != nil {
+		t.Fatalf("parse preview URL: %v", err)
+	}
+	if got, want := parsed.Host, runnerName+".preview.example.com:10443"; got != want {
+		t.Fatalf("preview URL host = %q, want %q", got, want)
+	}
+	payload, err := server.previewSigner.Verify(parsed.Query().Get(previewtoken.QueryParam))
+	if err != nil {
+		t.Fatalf("verify preview token: %v", err)
+	}
+	if got, want := payload.Host, runnerName+".preview.example.com"; got != want {
+		t.Fatalf("token Host = %q, want normalized host without localdev port %q", got, want)
+	}
+}
+
+func TestAuthorizeProjectDevelopmentPreviewTargetRequiresSandboxPreviewHTTPRouteURL(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", token: "caller-token"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	routeName := sandboxPreviewHTTPRouteResourceName(id.tenantPath, "todo")
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+		},
+	}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		testSandboxRunner(runnerName, project.Name),
+		testSandboxPreviewHTTPRoute(routeName, ""),
+	))
+	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testReadyPreviewEndpoints(runnerName))
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
+	if err != nil {
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
+	}
+	if got.Ready {
+		t.Fatalf("ready = true, want false: %#v", got)
+	}
+	if got.PreviewURL != "" {
+		t.Fatalf("previewURL = %q, want empty while HTTPRoute has no status.url", got.PreviewURL)
+	}
+	if got.Reason != "sandbox_preview_httproute_not_ready" {
+		t.Fatalf("reason = %q, want sandbox_preview_httproute_not_ready", got.Reason)
+	}
+}
+
 func TestAuthorizeProjectDevelopmentPreviewTargetReturnsNotReady(t *testing.T) {
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", token: "caller-token"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
@@ -318,7 +582,6 @@ func TestAuthorizeProjectDevelopmentPreviewTargetReturnsNotReady(t *testing.T) {
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
 	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
 	server.runtimeClient = kubernetesfake.NewSimpleClientset()
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
 	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
 	if err != nil {
 		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
@@ -334,9 +597,11 @@ func TestAuthorizeProjectDevelopmentPreviewTargetReturnsNotReady(t *testing.T) {
 	}
 }
 
-func TestPreviewProjectDevelopmentRendersStartingPageForRuntimeServiceUnavailable(t *testing.T) {
+func TestAuthorizeProjectDevelopmentPreviewTargetWaitsForRuntimeServiceProxy(t *testing.T) {
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", token: "caller-token"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/api/v1/namespaces/runtime-ns/services/runtime-svc:preview/proxy/"; got != want {
+		if got, want := r.URL.Path, "/api/v1/namespaces/"+runnerName+"/services/"+runnerName+"-preview:preview/proxy/"; got != want {
 			t.Fatalf("runtime proxy path = %q, want %q", got, want)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -345,319 +610,28 @@ func TestPreviewProjectDevelopmentRendersStartingPageForRuntimeServiceUnavailabl
 	}))
 	defer runtimeAPI.Close()
 
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "todo"}}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), testSandboxRunner(runnerName, project.Name)))
 	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
 	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
-	token, _, err := server.previewSigner.sign(previewTokenPayload{
-		TenantPath:         "root:kedge:tenants:org-a:ws-1",
-		Project:            "todo",
-		RuntimeNamespace:   "runtime-ns",
-		PreviewServiceName: "runtime-svc",
-		PreviewPortName:    "preview",
-		SandboxRunner:      "runtime-svc",
-	})
+	server.runtimeClient = kubernetesfake.NewSimpleClientset(testReadyPreviewEndpoints(runnerName))
+	got, err := server.authorizeProjectDevelopmentPreviewTarget(context.Background(), client, id, project, projectDevelopmentSyncTargetInfo{ResourceName: runnerName})
 	if err != nil {
-		t.Fatalf("sign preview token: %v", err)
+		t.Fatalf("authorizeProjectDevelopmentPreviewTarget returned error: %v", err)
 	}
-	scope := previewTokenScope(token)
-	req := httptest.NewRequest(http.MethodGet, "/api/projects/todo/preview/"+previewScopePrefix+"/"+scope+"/", nil)
-	req.AddCookie(&http.Cookie{Name: previewCookieName("todo", scope), Value: token})
-	resp := httptest.NewRecorder()
-	router := mux.NewRouter()
-	server.Register(router)
-
-	router.ServeHTTP(resp, req)
-
-	if got, want := resp.Code, http.StatusServiceUnavailable; got != want {
-		t.Fatalf("status = %d, want %d", got, want)
+	if got.Ready {
+		t.Fatalf("ready = true, want false while service proxy returns runtime startup status: %#v", got)
 	}
-	body := resp.Body.String()
-	if !strings.Contains(resp.Header().Get("Content-Type"), "text/html") {
-		t.Fatalf("Content-Type = %q, want text/html", resp.Header().Get("Content-Type"))
+	if got.PreviewURL != "" {
+		t.Fatalf("previewURL = %q, want empty while not ready", got.PreviewURL)
 	}
-	if !strings.Contains(body, "Preview is starting") {
-		t.Fatalf("body = %q, want friendly preview starting page", body)
-	}
-	if strings.Contains(body, "dial tcp") || strings.Contains(body, `"kind":"Status"`) {
-		t.Fatalf("body leaked raw Kubernetes proxy error: %s", body)
-	}
-}
-
-func TestPreviewTokenRedirectSetsSecureCookie(t *testing.T) {
-	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
-	token, _, err := server.previewSigner.sign(previewTokenPayload{
-		TenantPath:         "root:kedge:tenants:org-a:ws-1",
-		Project:            "todo",
-		RuntimeNamespace:   "runtime-ns",
-		PreviewServiceName: "runtime-svc",
-		PreviewPortName:    "preview",
-		SandboxRunner:      "runtime-svc",
-	})
-	if err != nil {
-		t.Fatalf("sign preview token: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "https://kedge.example.test/api/projects/todo/preview/?"+previewTokenQuery+"="+url.QueryEscape(token), nil)
-	resp := httptest.NewRecorder()
-	router := mux.NewRouter()
-	server.Register(router)
-
-	router.ServeHTTP(resp, req)
-
-	if got, want := resp.Code, http.StatusFound; got != want {
-		t.Fatalf("status = %d, want %d", got, want)
-	}
-	cookies := resp.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("cookies = %d, want 1", len(cookies))
-	}
-	if !cookies[0].Secure {
-		t.Fatalf("preview token cookie Secure = false, want true")
-	}
-	if !cookies[0].HttpOnly {
-		t.Fatalf("preview token cookie HttpOnly = false, want true")
-	}
-	if got, want := cookies[0].SameSite, http.SameSiteNoneMode; got != want {
-		t.Fatalf("preview token cookie SameSite = %v, want %v", got, want)
-	}
-}
-
-func TestPreviewProjectDevelopmentRejectsScopedRequestWithoutCookieAfterTokenRedirect(t *testing.T) {
-	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("runtime proxy should not be reached without preview cookie; path = %q", r.URL.Path)
-	}))
-	defer runtimeAPI.Close()
-
-	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
-	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
-	token, _, err := server.previewSigner.sign(previewTokenPayload{
-		TenantPath:         "root:kedge:tenants:org-a:ws-1",
-		Project:            "todo",
-		RuntimeNamespace:   "runtime-ns",
-		PreviewServiceName: "runtime-svc",
-		PreviewPortName:    "preview",
-		SandboxRunner:      "runtime-svc",
-	})
-	if err != nil {
-		t.Fatalf("sign preview token: %v", err)
-	}
-	router := mux.NewRouter()
-	server.Register(router)
-
-	authReq := httptest.NewRequest(http.MethodGet, "https://kedge.example.test/api/projects/todo/preview/?"+previewTokenQuery+"="+url.QueryEscape(token), nil)
-	authResp := httptest.NewRecorder()
-	router.ServeHTTP(authResp, authReq)
-	if got, want := authResp.Code, http.StatusFound; got != want {
-		t.Fatalf("authorization status = %d, want %d", got, want)
-	}
-
-	scope := previewTokenScope(token)
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/todo/preview/"+previewScopePrefix+"/"+scope+"/api/todos", strings.NewReader(`{"title":"Buy milk"}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-
-	router.ServeHTTP(resp, req)
-
-	if got, want := resp.Code, http.StatusUnauthorized; got != want {
-		t.Fatalf("status = %d, want %d; body = %s", got, want, resp.Body.String())
-	}
-}
-
-func TestPreviewProjectDevelopmentSupportsSandboxedCORSScopeRequests(t *testing.T) {
-	var runtimeCalls atomic.Int32
-	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		runtimeCalls.Add(1)
-		if got, want := r.Method, http.MethodGet; got != want {
-			t.Fatalf("runtime method = %q, want %q", got, want)
-		}
-		if got, want := r.URL.Path, "/api/v1/namespaces/runtime-ns/services/runtime-svc:preview/proxy/api/todos"; got != want {
-			t.Fatalf("runtime proxy path = %q, want %q", got, want)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `[]`)
-	}))
-	defer runtimeAPI.Close()
-
-	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
-	server.runtimeConfig = &rest.Config{Host: runtimeAPI.URL}
-	server.previewSigner = newPreviewSigner([]byte("test-secret"))
-	token, _, err := server.previewSigner.sign(previewTokenPayload{
-		TenantPath:         "root:kedge:tenants:org-a:ws-1",
-		Project:            "todo",
-		RuntimeNamespace:   "runtime-ns",
-		PreviewServiceName: "runtime-svc",
-		PreviewPortName:    "preview",
-		SandboxRunner:      "runtime-svc",
-	})
-	if err != nil {
-		t.Fatalf("sign preview token: %v", err)
-	}
-	router := mux.NewRouter()
-	server.Register(router)
-	authReq := httptest.NewRequest(http.MethodGet, "https://kedge.example.test/api/projects/todo/preview/?"+previewTokenQuery+"="+url.QueryEscape(token), nil)
-	authResp := httptest.NewRecorder()
-	router.ServeHTTP(authResp, authReq)
-	if got, want := authResp.Code, http.StatusFound; got != want {
-		t.Fatalf("authorization status = %d, want %d", got, want)
-	}
-
-	scope := previewTokenScope(token)
-	scopedPath := "/api/projects/todo/preview/" + previewScopePrefix + "/" + scope + "/api/todos"
-	getReq := httptest.NewRequest(http.MethodGet, scopedPath, nil)
-	getReq.AddCookie(authResp.Result().Cookies()[0])
-	getReq.Header.Set("Origin", "null")
-	getResp := httptest.NewRecorder()
-	router.ServeHTTP(getResp, getReq)
-	if got, want := getResp.Code, http.StatusOK; got != want {
-		t.Fatalf("GET status = %d, want %d; body = %s", got, want, getResp.Body.String())
-	}
-	if got, want := getResp.Header().Get("Access-Control-Allow-Origin"), "null"; got != want {
-		t.Fatalf("GET Access-Control-Allow-Origin = %q, want %q", got, want)
-	}
-	if got, want := getResp.Header().Get("Access-Control-Allow-Credentials"), "true"; got != want {
-		t.Fatalf("GET Access-Control-Allow-Credentials = %q, want %q", got, want)
-	}
-	if got, want := len(getResp.Result().Header.Values("Access-Control-Allow-Origin")), 1; got != want {
-		t.Fatalf("GET Access-Control-Allow-Origin header count = %d, want %d", got, want)
-	}
-
-	preflightReq := httptest.NewRequest(http.MethodOptions, scopedPath, nil)
-	preflightReq.Header.Set("Origin", "null")
-	preflightReq.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	preflightReq.Header.Set("Access-Control-Request-Headers", "content-type")
-	preflightResp := httptest.NewRecorder()
-	router.ServeHTTP(preflightResp, preflightReq)
-	if got, want := preflightResp.Code, http.StatusNoContent; got != want {
-		t.Fatalf("OPTIONS status = %d, want %d; body = %s", got, want, preflightResp.Body.String())
-	}
-	if got, want := preflightResp.Header().Get("Access-Control-Allow-Origin"), "null"; got != want {
-		t.Fatalf("OPTIONS Access-Control-Allow-Origin = %q, want %q", got, want)
-	}
-	if got := strings.ToLower(preflightResp.Header().Get("Access-Control-Allow-Headers")); got != "content-type" {
-		t.Fatalf("OPTIONS Access-Control-Allow-Headers = %q, want content-type", got)
-	}
-	if got := preflightResp.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPost) {
-		t.Fatalf("OPTIONS Access-Control-Allow-Methods = %q, want POST", got)
-	}
-	if got, want := preflightResp.Header().Get("Access-Control-Allow-Credentials"), "true"; got != want {
-		t.Fatalf("OPTIONS Access-Control-Allow-Credentials = %q, want %q", got, want)
-	}
-	if got, want := runtimeCalls.Load(), int32(1); got != want {
-		t.Fatalf("runtime calls = %d, want %d", got, want)
-	}
-}
-
-func TestReadPreviewRewriteBodyRejectsOversizedResponses(t *testing.T) {
-	body := strings.NewReader(strings.Repeat("x", previewRewriteBodyLimit+1))
-	if _, err := readPreviewRewriteBody(body); err == nil {
-		t.Fatal("readPreviewRewriteBody returned nil error for oversized body")
-	}
-}
-
-func TestRuntimeTargetRejectsStatusRefsOutsideExpectedSandboxRunner(t *testing.T) {
-	runnerName := "kedge-sandbox-1234567890abcdef"
-	obj := testSandboxRunner(runnerName, "todo")
-	if err := unstructured.SetNestedStringMap(obj.Object, map[string]string{
-		"namespace": "kube-system",
-		"name":      "stolen",
-	}, "status", "controlSecretRef"); err != nil {
-		t.Fatalf("set controlSecretRef: %v", err)
-	}
-	if _, err := runtimeTargetFromInstance(obj); err == nil {
-		t.Fatal("runtimeTargetFromInstance returned nil error for forged status refs")
-	}
-}
-
-func TestRuntimeTargetAcceptsKROPrefixedRuntimeNamespace(t *testing.T) {
-	runnerName := "kedge-sandbox-1234567890abcdef"
-	clusterID := "1z5cyn8ghmwpxk8v"
-	runtimeNamespace := clusterID + "-" + runnerName
-	obj := testSandboxRunner(runnerName, "todo")
-	obj.SetAnnotations(map[string]string{"kcp.io/cluster": clusterID})
-	if err := unstructured.SetNestedField(obj.Object, runtimeNamespace, "status", "runtimeNamespace"); err != nil {
-		t.Fatalf("set runtimeNamespace: %v", err)
-	}
-	for _, field := range []string{"previewServiceRef", "controlServiceRef", "controlSecretRef"} {
-		if err := unstructured.SetNestedField(obj.Object, runtimeNamespace, "status", field, "namespace"); err != nil {
-			t.Fatalf("set %s namespace: %v", field, err)
-		}
-	}
-
-	target, err := runtimeTargetFromInstance(obj)
-	if err != nil {
-		t.Fatalf("runtimeTargetFromInstance returned error: %v", err)
-	}
-	if got, want := target.Preview.Namespace, runtimeNamespace; got != want {
-		t.Fatalf("Preview.Namespace = %q, want %q", got, want)
-	}
-	if got, want := target.Control.Namespace, runtimeNamespace; got != want {
-		t.Fatalf("Control.Namespace = %q, want %q", got, want)
-	}
-	if got, want := target.ControlSecret.Namespace, runtimeNamespace; got != want {
-		t.Fatalf("ControlSecret.Namespace = %q, want %q", got, want)
-	}
-}
-
-func TestReconcileProjectLiveBindingsCreatesInfrastructureSandboxRunner(t *testing.T) {
-	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "ai.kedge.faros.sh/v1alpha1",
-			"kind":       "Project",
-			"metadata": map[string]any{
-				"name": "todo",
-			},
-			"spec": map[string]any{
-				"displayName": "Todo",
-				"environments": []any{map[string]any{
-					"name": "development",
-					"mode": "live",
-					"bindings": []any{map[string]any{
-						"name":     "dev",
-						"provider": "app-studio",
-						"kind":     "providerResource",
-						"resourceRef": map[string]any{
-							"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
-							"kind":       "SandboxRunner",
-							"resource":   "sandboxrunners",
-						},
-						"values": map[string]any{
-							"projectRef": "todo",
-						},
-					}},
-				}},
-			},
-		},
-	}))
-	project := &aiv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
-	}
-	server := NewWithWorkspace(nil, nil, nil, "http://hub.example", false)
-	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
-	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
-	if _, err := server.reconcileProjectLiveBindings(context.Background(), client, project, id); err != nil {
-		t.Fatalf("reconcileProjectLiveBindings returned error: %v", err)
-	}
-	obj, err := client.Dynamic().Resource(infrastructureSandboxRunnerGVR()).Get(context.Background(), runnerName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get SandboxRunner returned error: %v", err)
-	}
-	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "name"); got != runnerName {
-		t.Fatalf("spec.name = %q, want %q", got, runnerName)
-	}
-	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "projectRef"); got != "todo" {
-		t.Fatalf("spec.projectRef = %q, want todo", got)
-	}
-	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "runnerImage"); got != sandboxRunnerImage() {
-		t.Fatalf("runnerImage = %q, want %q", got, sandboxRunnerImage())
-	}
-	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "tokenGeneratorImage"); got != sandboxTokenGeneratorImage() {
-		t.Fatalf("tokenGeneratorImage = %q, want %q", got, sandboxTokenGeneratorImage())
+	if got.Reason != "runtime_starting" {
+		t.Fatalf("reason = %q, want runtime_starting", got.Reason)
 	}
 }
 
 func TestDeleteProjectProviderResourcesRemovesInfrastructureSandboxRunner(t *testing.T) {
+	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
@@ -756,7 +730,8 @@ func TestProjectViewOverlaysSandboxPreviewStatus(t *testing.T) {
 			"name": runnerName,
 		},
 		"status": map[string]any{
-			"phase": "Running",
+			"phase":      "Running",
+			"previewURL": "/services/providers/app-studio/api/projects/todo/preview/",
 		},
 	}}
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), devEnv))
@@ -765,21 +740,61 @@ func TestProjectViewOverlaysSandboxPreviewStatus(t *testing.T) {
 		t.Fatalf("view environments = %#v, want one development binding", view.Environments)
 	}
 	binding := view.Environments[0].Bindings[0]
-	if got, want := binding.PreviewURL, "/services/providers/app-studio/api/projects/todo/preview/"; got != want {
-		t.Fatalf("PreviewURL = %q, want %q", got, want)
+	if got := binding.PreviewURL; got != "" {
+		t.Fatalf("PreviewURL = %q, want empty for SandboxRunner binding even with stale runner status.previewURL", got)
 	}
 	if got, want := view.Environments[0].Phase, "Running"; got != want {
 		t.Fatalf("environment phase = %q, want %q", got, want)
 	}
 }
 
+func TestProjectViewDerivesSandboxRunnerPhaseFromKROReadyCondition(t *testing.T) {
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+	}
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	devEnv := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"kind":       "SandboxRunner",
+		"metadata": map[string]any{
+			"name": runnerName,
+		},
+		"status": map[string]any{
+			"conditions": []any{
+				map[string]any{
+					"type":   "Ready",
+					"status": "True",
+					"reason": "Ready",
+				},
+			},
+			"state": "ACTIVE",
+		},
+	}}
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), devEnv))
+	view := projectView(context.Background(), client, project, id)
+	if len(view.Environments) != 1 || len(view.Environments[0].Bindings) != 1 {
+		t.Fatalf("view environments = %#v, want one development binding", view.Environments)
+	}
+	binding := view.Environments[0].Bindings[0]
+	if got, want := binding.Phase, "Ready"; got != want {
+		t.Fatalf("binding phase = %q, want %q", got, want)
+	}
+	if got, want := view.Environments[0].Phase, "Ready"; got != want {
+		t.Fatalf("environment phase = %q, want %q", got, want)
+	}
+}
+
 func TestGenerateProjectAssistantStreamUsesLiveBindingStatusOverlay(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
 	}
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	routeName := sandboxPreviewHTTPRouteResourceName(id.tenantPath, "todo")
 	devEnv := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
 		"kind":       "SandboxRunner",
@@ -793,6 +808,7 @@ func TestGenerateProjectAssistantStreamUsesLiveBindingStatusOverlay(t *testing.T
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
 		runtime.NewScheme(),
 		devEnv,
+		testSandboxPreviewHTTPRoute(routeName, "https://"+runnerName+".preview.example.com/"),
 		projectLLMSettingsSecret(projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "http://llm.example", Model: "test-model", APIKey: "test-key"}),
 	))
 	engine := &previewOverlayProbeEngine{}
@@ -809,8 +825,103 @@ func TestGenerateProjectAssistantStreamUsesLiveBindingStatusOverlay(t *testing.T
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
 	}
-	if got, want := engine.previewURL, "/services/providers/app-studio/api/projects/todo/preview/"; got != want {
+	if got, want := engine.previewURL, "https://"+runnerName+".preview.example.com/"; got != want {
 		t.Fatalf("engine project preview URL = %q, want %q", got, want)
+	}
+}
+
+func TestProjectViewOverlaysSandboxPreviewHTTPRouteStatus(t *testing.T) {
+	setPreviewHTTPRouteEnv(t)
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
+		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+	}
+	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
+	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
+	routeName := sandboxPreviewHTTPRouteResourceName(id.tenantPath, "todo")
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		testSandboxRunner(runnerName, project.Name),
+		testSandboxPreviewHTTPRoute(routeName, "https://"+runnerName+".preview.example.com/"),
+	))
+	view := projectView(context.Background(), client, project, id)
+	if len(view.Environments) != 1 || len(view.Environments[0].Bindings) != 2 {
+		t.Fatalf("view environments = %#v, want sandbox runner plus preview route bindings", view.Environments)
+	}
+	var routeBinding *ProjectProviderBindingView
+	for i := range view.Environments[0].Bindings {
+		if view.Environments[0].Bindings[i].Name == "preview-route" {
+			routeBinding = &view.Environments[0].Bindings[i]
+		}
+	}
+	if routeBinding == nil {
+		t.Fatalf("bindings = %#v, want preview-route binding", view.Environments[0].Bindings)
+	}
+	if got, want := routeBinding.PreviewURL, "https://"+runnerName+".preview.example.com/"; got != want {
+		t.Fatalf("PreviewURL = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeTargetFromInstanceUsesSplitPreviewAndControlServices(t *testing.T) {
+	runnerName := "kedge-sandbox-0123456789abcdef"
+	runner := testSandboxRunner(runnerName, "todo")
+	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(runtime.NewScheme(), runner))
+
+	target, _, err := (&Server{}).runtimeTargetForProject(context.Background(), client, runnerName)
+	if err != nil {
+		t.Fatalf("runtimeTargetForProject: %v", err)
+	}
+
+	if got, want := target.Preview.Name, runnerName+"-preview"; got != want {
+		t.Fatalf("Preview.Name = %q, want %q", got, want)
+	}
+	if got, want := target.Control.Name, runnerName+"-control"; got != want {
+		t.Fatalf("Control.Name = %q, want %q", got, want)
+	}
+	if got, want := target.ControlSecret.Name, runnerName+"-control"; got != want {
+		t.Fatalf("ControlSecret.Name = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeTargetFromInstanceRejectsForgedRuntimeRefs(t *testing.T) {
+	runnerName := "kedge-sandbox-0123456789abcdef"
+	tests := []struct {
+		name    string
+		fields  []string
+		value   string
+		wantErr string
+	}{
+		{
+			name:    "preview service",
+			fields:  []string{"status", "previewServiceRef", "name"},
+			value:   "kube-dns",
+			wantErr: "previewServiceRef",
+		},
+		{
+			name:    "control service",
+			fields:  []string{"status", "controlServiceRef", "name"},
+			value:   "kube-dns",
+			wantErr: "controlServiceRef",
+		},
+		{
+			name:    "control secret",
+			fields:  []string{"status", "controlSecretRef", "name"},
+			value:   "other-secret",
+			wantErr: "controlSecretRef",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := testSandboxRunner(runnerName, "todo")
+			if err := unstructured.SetNestedField(runner.Object, tt.value, tt.fields...); err != nil {
+				t.Fatalf("set forged ref: %v", err)
+			}
+
+			_, err := runtimeTargetFromInstance(runner)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("runtimeTargetFromInstance error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -830,12 +941,12 @@ func testSandboxRunner(name, project string) *unstructured.Unstructured {
 			"runtimeNamespace": name,
 			"previewServiceRef": map[string]any{
 				"namespace": name,
-				"name":      name,
+				"name":      name + "-preview",
 				"portName":  "preview",
 			},
 			"controlServiceRef": map[string]any{
 				"namespace": name,
-				"name":      name,
+				"name":      name + "-control",
 				"portName":  "control",
 			},
 			"controlSecretRef": map[string]any{
@@ -844,6 +955,50 @@ func testSandboxRunner(name, project string) *unstructured.Unstructured {
 			},
 		},
 	}}
+}
+
+func testSandboxPreviewHTTPRoute(name, rawURL string) *unstructured.Unstructured {
+	host := ""
+	if parsed, err := url.Parse(rawURL); err == nil && parsed.Host != "" {
+		host = parsed.Host
+	}
+	if host == "" {
+		host = previewtoken.NormalizeHost(rawURL)
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"kind":       "SandboxPreviewHTTPRoute",
+		"metadata": map[string]any{
+			"name": name,
+		},
+		"spec": map[string]any{
+			"backend": map[string]any{
+				"namespace":   previewBackendNamespace(),
+				"serviceName": previewBackendServiceName(),
+				"servicePort": previewBackendServicePort(),
+			},
+		},
+		"status": map[string]any{
+			"phase": "Ready",
+			"host":  host,
+			"url":   rawURL,
+			"httpRouteRef": map[string]any{
+				"name":      name,
+				"namespace": "tenant-preview",
+			},
+		},
+	}}
+}
+
+func setPreviewHTTPRouteEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "preview.example.com")
+	t.Setenv("APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAME", "kedge-preview")
+	t.Setenv("APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_NAMESPACE", "preview-system")
+	t.Setenv("APP_STUDIO_PREVIEW_HTTPROUTE_PARENT_GATEWAY_SECTION_NAME", "https")
+	t.Setenv("APP_STUDIO_PREVIEW_BACKEND_NAMESPACE", "preview-system")
+	t.Setenv("APP_STUDIO_PREVIEW_BACKEND_SERVICE_NAME", "preview-gateway")
+	t.Setenv("APP_STUDIO_PREVIEW_BACKEND_SERVICE_PORT", "9443")
 }
 
 func testRuntimeControlSecret(name, token string) *corev1.Secret {
@@ -860,7 +1015,7 @@ func testReadyPreviewEndpoints(name string) *corev1.Endpoints {
 	return &corev1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: name,
-			Name:      name,
+			Name:      name + "-preview",
 		},
 		Subsets: []corev1.EndpointSubset{{
 			Addresses: []corev1.EndpointAddress{{IP: "10.0.0.10"}},
@@ -888,4 +1043,24 @@ func infrastructureSandboxRunnerGVR() k8sschema.GroupVersionResource {
 		Version:  "v1alpha1",
 		Resource: "sandboxrunners",
 	}
+}
+
+func infrastructureSandboxPreviewHTTPRouteGVR() k8sschema.GroupVersionResource {
+	return k8sschema.GroupVersionResource{
+		Group:    "infrastructure.kedge.faros.sh",
+		Version:  "v1alpha1",
+		Resource: "sandboxpreviewhttproutes",
+	}
+}
+
+func mustNestedSlice(t *testing.T, obj map[string]any, fields ...string) []any {
+	t.Helper()
+	got, found, err := unstructured.NestedSlice(obj, fields...)
+	if err != nil {
+		t.Fatalf("read nested slice %v: %v", fields, err)
+	}
+	if !found {
+		t.Fatalf("nested slice %v not found", fields)
+	}
+	return got
 }

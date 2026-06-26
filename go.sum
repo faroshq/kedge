@@ -146,6 +146,8 @@ github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260612154300-f9c2b298c4cd
 github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260612154300-f9c2b298c4cd/go.mod h1:FTy6tfcfD1XoN081U3WaG+4t1GpgWNRYPYy+AcDYRKU=
 github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626173633-9c3bfe012c22 h1:MGjoHiISmJLY+lMbfaeA8qIUG6PhfKqOCotXyZt1ygY=
 github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626173633-9c3bfe012c22/go.mod h1:FTy6tfcfD1XoN081U3WaG+4t1GpgWNRYPYy+AcDYRKU=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626181934-a2eab00748ed h1:3s49oo4zW5ElcRDgxcWsxKWieqMhlNx+wVde/0BOP1Q=
+github.com/faroshq/kubernetes-graphql-gateway v0.0.0-20260626181934-a2eab00748ed/go.mod h1:FTy6tfcfD1XoN081U3WaG+4t1GpgWNRYPYy+AcDYRKU=
 github.com/fatih/color v1.18.0 h1:S8gINlzdQ840/4pfAwic/ZE0djQEH3wM94VfqLTZcOM=
 github.com/fatih/color v1.18.0/go.mod h1:4FelSpRwEGDpQ12mAdzqdOukCy4u8WUtOY6lkT/6HfU=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=

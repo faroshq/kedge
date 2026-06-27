@@ -730,8 +730,8 @@ func writeOrgWorkspaceForbidden(w http.ResponseWriter) {
 
 // Response bodies for the membership-gated cluster authorization (Option A).
 const (
-	bareNoClusterBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"no workspace selected — address /clusters/{id} (resolve the id via the hub REST endpoints, e.g. /api/orgs/{org}/workspaces)","reason":"BadRequest","code":400}`
-	addressByIDBody   = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"address workspaces by cluster ID (/clusters/{id}), not by path — resolve the id via /api/orgs/{org}/workspaces/{ws}","reason":"Forbidden","code":403}`
+	bareNoClusterBody       = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"no workspace selected — address /clusters/{id} (resolve the id via the hub REST endpoints, e.g. /api/orgs/{org}/workspaces)","reason":"BadRequest","code":400}`
+	addressByIDBody         = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"address workspaces by cluster ID (/clusters/{id}), not by path — resolve the id via /api/orgs/{org}/workspaces/{ws}","reason":"Forbidden","code":403}`
 	clusterAccessDeniedBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`
 )
 

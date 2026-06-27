@@ -23,7 +23,6 @@ import (
 	"testing"
 )
 
-
 // TestIsOrgWorkspacePath covers the structural rule that decides whether
 // a kcp logical-cluster path targets an Organization workspace (which the
 // proxy rejects per O-10) or a child team Workspace under one (which

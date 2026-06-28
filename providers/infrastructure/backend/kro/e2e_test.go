@@ -31,25 +31,45 @@ limitations under the License.
 //     an apply error. This is the exact failure that motivated the schema-default
 //     image convention ("apply results contain errors: ... image: Required
 //     value"). It does NOT require the images to pull — apply validates the spec.
+//  3. The child objects the RGD declares actually EXIST in the runtime cluster
+//     (the Deployment, Service, StatefulSet, HTTPRoute, …), matched by kro's
+//     instance-id/node-id labels. Resources gated by includeWhen (e.g. the
+//     preview HTTPRoute) are verified only when present, never required.
 package kro
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+)
+
+// kro stamps every child object it applies for an instance with these labels
+// (see the kro fork's pkg/metadata). instance-id is the instance UID; node-id is
+// the RGD resource's id. We use them to prove the actual Deployment/Service/
+// HTTPRoute/etc. landed in the runtime cluster, not just that the instance
+// reported no apply error.
+const (
+	kroInstanceIDLabel = "kro.run/instance-id"
+	kroNodeIDLabel     = "kro.run/node-id"
 )
 
 const (
@@ -67,6 +87,22 @@ var e2eMinimalSpecs = map[string]map[string]any{
 	"sandbox-runner": {"name": "kedge-sandbox-0000111122223333", "projectRef": "e2e"},
 }
 
+// e2ePlatformStamped are spec fields a platform component normally writes onto an
+// instance before kro reconciles it — values the user does NOT supply (the
+// sampleValues correctly omit them, marked "do NOT set"). With no controller
+// running in the standalone-kro e2e, the test stands in for the platform and
+// supplies them, so platform-stamped resources can render (e.g. application's
+// HTTPRoute needs spec.expose.fqdn — without it kro can't evaluate the route's
+// hostname and never creates it). Deep-merged onto the spec.
+var e2ePlatformStamped = map[string]map[string]any{
+	// The infra controller computes expose.fqdn and stamps credentialsSecretName
+	// (see the application template's "platform stamps …" note).
+	"application": {
+		"expose":                map[string]any{"fqdn": "demo.e2e.test"},
+		"credentialsSecretName": "demo-oidc",
+	},
+}
+
 // e2eApplyErrorMarkers are substrings kro puts in an instance condition when it
 // FAILS to apply a child resource (the bug class we guard against). Readiness
 // waits (pods not up because an image can't pull in CI) do not contain these.
@@ -79,7 +115,12 @@ var e2eApplyErrorMarkers = []string{
 }
 
 func TestE2ESeedTemplates(t *testing.T) {
-	dyn := e2eDynamicClient(t)
+	dyn, mapper := e2eClients(t)
+	// A per-run nonce makes every instance (and therefore every child object)
+	// uniquely named, so re-running against a reused cluster can't collide with a
+	// previous run's not-yet-garbage-collected objects. 16 hex digits because
+	// sandbox-runner's name must match ^kedge-sandbox-[a-f0-9]{16}$.
+	runID := fmt.Sprintf("%016x", time.Now().UnixNano())
 	dir := filepath.Join("..", "..", "install", "templates")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -118,14 +159,23 @@ func TestE2ESeedTemplates(t *testing.T) {
 				Version:  tmpl.Spec.InstanceCRD.Version,
 				Resource: tmpl.Spec.InstanceCRD.Resource,
 			}
-			inst := e2eInstance(t, tmpl)
+			inst := e2eInstance(t, tmpl, runID)
 			createInstance(t, dyn, instGVR, inst)
 			t.Cleanup(func() {
 				_ = dyn.Resource(instGVR).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
 			})
 
 			waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
-			t.Logf("template %q: instance reconciled (objects applied)", tmpl.Name)
+			t.Logf("template %q: instance reconciled (no apply error)", tmpl.Name)
+
+			// 3. The child objects the RGD declares actually exist in the
+			// runtime cluster (the Deployment/Service/StatefulSet/HTTPRoute/…),
+			// not just a clean instance status.
+			created, err := dyn.Resource(instGVR).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("template %q: re-get instance for UID: %v", tmpl.Name, err)
+			}
+			verifyChildrenCreated(t, dyn, mapper, rgd, string(created.GetUID()), tmpl.Name)
 		})
 	}
 	if seen == 0 {
@@ -133,7 +183,11 @@ func TestE2ESeedTemplates(t *testing.T) {
 	}
 }
 
-func e2eDynamicClient(t *testing.T) dynamic.Interface {
+// e2eClients builds a dynamic client and a discovery-backed REST mapper against
+// the cluster in KUBECONFIG. The mapper turns each child kind the RGD declares
+// (Deployment, Service, HTTPRoute, …) into the resource we List to verify it was
+// created.
+func e2eClients(t *testing.T) (dynamic.Interface, meta.RESTMapper) {
 	t.Helper()
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
@@ -147,7 +201,15 @@ func e2eDynamicClient(t *testing.T) dynamic.Interface {
 	if err != nil {
 		t.Fatalf("dynamic client: %v", err)
 	}
-	return dyn
+	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		t.Fatalf("discovery client: %v", err)
+	}
+	groups, err := restmapper.GetAPIGroupResources(dc)
+	if err != nil {
+		t.Fatalf("discover API groups: %v", err)
+	}
+	return dyn, restmapper.NewDiscoveryRESTMapper(groups)
 }
 
 func applyRGD(t *testing.T, dyn dynamic.Interface, rgd *unstructured.Unstructured) {
@@ -171,7 +233,7 @@ func applyRGD(t *testing.T, dyn dynamic.Interface, rgd *unstructured.Unstructure
 
 // e2eInstance builds a sample instance: the template's sampleValues when present
 // (the curated working example), otherwise a minimal valid spec.
-func e2eInstance(t *testing.T, tmpl *infrav1alpha1.Template) *unstructured.Unstructured {
+func e2eInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *unstructured.Unstructured {
 	t.Helper()
 	spec := map[string]any{}
 	if sv := tmpl.Spec.SampleValues; sv != nil && len(sv.Raw) > 0 {
@@ -179,21 +241,53 @@ func e2eInstance(t *testing.T, tmpl *infrav1alpha1.Template) *unstructured.Unstr
 			t.Fatalf("template %q: decode sampleValues: %v", tmpl.Name, err)
 		}
 	} else if min, ok := e2eMinimalSpecs[tmpl.Name]; ok {
-		spec = min
+		// Copy so the per-run rename below never mutates the shared map.
+		spec = map[string]any{}
+		mergeSpec(spec, min)
 	} else {
 		t.Fatalf("template %q has no sampleValues and no e2eMinimalSpecs entry — add one", tmpl.Name)
 	}
-	name, _ := spec["name"].(string)
-	if name == "" {
-		name = "e2e-" + tmpl.Name
-		spec["name"] = name
+	if overlay, ok := e2ePlatformStamped[tmpl.Name]; ok {
+		mergeSpec(spec, overlay)
 	}
+	name := e2eInstanceName(tmpl.Name, spec, runID)
+	spec["name"] = name
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": tmpl.Spec.InstanceCRD.Group + "/" + tmpl.Spec.InstanceCRD.Version,
 		"kind":       tmpl.Spec.InstanceCRD.Kind,
 		"metadata":   map[string]any{"name": name},
 		"spec":       spec,
 	}}
+}
+
+// e2eInstanceName returns a per-run-unique instance name so child objects from
+// one run never collide with a prior run's on a reused cluster. sandbox-runner's
+// name is constrained to ^kedge-sandbox-[a-f0-9]{16}$, so it takes the 16-hex
+// runID verbatim; every other template suffixes its base name with a short slice
+// of it (still a valid DNS label).
+func e2eInstanceName(tmplName string, spec map[string]any, runID string) string {
+	if tmplName == "sandbox-runner" {
+		return "kedge-sandbox-" + runID
+	}
+	base, _ := spec["name"].(string)
+	if base == "" {
+		base = "e2e-" + tmplName
+	}
+	return base + "-" + runID[:8]
+}
+
+// mergeSpec deep-merges src into dst (nested maps recurse; other values
+// overwrite). Used to overlay platform-stamped fields onto a sample spec.
+func mergeSpec(dst, src map[string]any) {
+	for k, v := range src {
+		if vm, ok := v.(map[string]any); ok {
+			if dm, ok := dst[k].(map[string]any); ok {
+				mergeSpec(dm, vm)
+				continue
+			}
+		}
+		dst[k] = v
+	}
 }
 
 // createInstance retries Create until kro has established + served the
@@ -253,6 +347,102 @@ func waitInstanceApplied(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVe
 	if !sawConditions {
 		t.Fatalf("template %q: kro never reconciled instance %q within %s", tmplName, name, e2eInstanceWait)
 	}
+}
+
+// verifyChildrenCreated asserts kro actually created, in the runtime cluster,
+// the child objects the RGD declares for this instance — not merely that the
+// instance reported no apply error. The expected set comes straight from the
+// RGD: every resource with NO includeWhen is created unconditionally and must
+// be found; a resource gated by includeWhen (e.g. the preview HTTPRoute +
+// ReferenceGrant, off in the minimal specs) is verified only if it shows up,
+// never required. Children are matched by kro's own labels
+// (kro.run/instance-id = the instance UID, kro.run/node-id = the RGD resource
+// id), so this is fully template-driven: add a resource to a template and it is
+// automatically required here.
+func verifyChildrenCreated(t *testing.T, dyn dynamic.Interface, mapper meta.RESTMapper, rgd *unstructured.Unstructured, instanceUID, tmplName string) {
+	t.Helper()
+	type childNode struct {
+		id       string
+		gvk      schema.GroupVersionKind
+		required bool
+	}
+	resources, _, _ := unstructured.NestedSlice(rgd.Object, "spec", "resources")
+	var nodes []childNode
+	gvks := map[schema.GroupVersionKind]bool{}
+	for _, r := range resources {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _, _ := unstructured.NestedString(rm, "id")
+		apiVersion, _, _ := unstructured.NestedString(rm, "template", "apiVersion")
+		kind, _, _ := unstructured.NestedString(rm, "template", "kind")
+		if apiVersion == "" || kind == "" {
+			continue
+		}
+		gv, err := schema.ParseGroupVersion(apiVersion)
+		if err != nil {
+			t.Fatalf("template %q: resource %q has invalid apiVersion %q: %v", tmplName, id, apiVersion, err)
+		}
+		gvk := gv.WithKind(kind)
+		gvks[gvk] = true
+		includeWhen, hasInclude, _ := unstructured.NestedSlice(rm, "includeWhen")
+		nodes = append(nodes, childNode{id: id, gvk: gvk, required: !hasInclude || len(includeWhen) == 0})
+	}
+	if len(nodes) == 0 {
+		t.Fatalf("template %q: RGD declares no child resources to verify", tmplName)
+	}
+
+	// Resolve each declared kind to a listable resource once.
+	gvrByGVK := map[schema.GroupVersionKind]schema.GroupVersionResource{}
+	for gvk := range gvks {
+		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err != nil {
+			t.Fatalf("template %q: cannot map child kind %s to a resource (is its CRD installed?): %v", tmplName, gvk, err)
+		}
+		gvrByGVK[gvk] = mapping.Resource
+	}
+
+	selector := kroInstanceIDLabel + "=" + instanceUID
+	deadline := time.Now().Add(e2eInstanceWait)
+	var missing []string
+	for {
+		present := map[string]bool{}    // node-id -> created
+		byKind := map[string][]string{} // kind -> object names (for the log)
+		for gvk, gvr := range gvrByGVK {
+			list, err := dyn.Resource(gvr).List(context.Background(), metav1.ListOptions{LabelSelector: selector})
+			if err != nil {
+				continue // transient; retried until the deadline
+			}
+			for i := range list.Items {
+				item := &list.Items[i]
+				present[item.GetLabels()[kroNodeIDLabel]] = true
+				byKind[gvk.Kind] = append(byKind[gvk.Kind], item.GetName())
+			}
+		}
+		missing = missing[:0]
+		for _, n := range nodes {
+			if n.required && !present[n.id] {
+				missing = append(missing, n.id+" ("+n.gvk.Kind+")")
+			}
+		}
+		if len(missing) == 0 {
+			summary := make([]string, 0, len(byKind))
+			for kind, names := range byKind {
+				summary = append(summary, kind+"×"+strconv.Itoa(len(names)))
+			}
+			sort.Strings(summary)
+			t.Logf("template %q: kro created child objects in the runtime cluster: %s", tmplName, strings.Join(summary, ", "))
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(e2ePollEvery)
+	}
+	sort.Strings(missing)
+	t.Fatalf("template %q: kro did not create these required child objects within %s: %s",
+		tmplName, e2eInstanceWait, strings.Join(missing, ", "))
 }
 
 func waitGraphAccepted(t *testing.T, dyn dynamic.Interface, name string) (string, string) {

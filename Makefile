@@ -678,7 +678,9 @@ KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
 # …) diverges from SQLite and passing on SQLite has shipped real query bugs.
 # kuery-db-up starts a throwaway container matching KUERY_DEV_DATABASE_URL.
 KUERY_POSTGRES_CONTAINER ?= kedge-kuery-postgres
-KUERY_POSTGRES_IMAGE ?= postgres:16-alpine
+# Pulled from Google's Docker Hub mirror (same official image, more reliable
+# pulls — Docker Hub has been dropping them with "unexpected EOF").
+KUERY_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 KUERY_POSTGRES_PORT ?= 55433
 KUERY_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/kuery-postgres
 KUERY_POSTGRES_USER ?= kuery
@@ -862,7 +864,7 @@ APP_STUDIO_SANDBOX_RUNNER_IMAGE ?= $(SANDBOX_RUNNER_IMAGE)
 APP_STUDIO_SANDBOX_TOKEN_GENERATOR_IMAGE ?= $(SANDBOX_TOKEN_GENERATOR_IMAGE)
 APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
 APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
-APP_STUDIO_POSTGRES_IMAGE ?= postgres:16-alpine
+APP_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 APP_STUDIO_POSTGRES_PORT ?= 55432
 APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
 APP_STUDIO_POSTGRES_USER ?= appstudio

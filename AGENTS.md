@@ -390,6 +390,14 @@ whole point.
   build/test and `go.work` awareness; they are not in the root `./...`.
 - Before merging: `make verify` is the full gate
   (boilerplate + codegen + vet + lint + build + test).
+- **Infrastructure templates declare configurable inputs (container images,
+  versions, sizes) as `spec.schema` fields with sane defaults** — never via
+  `${kedge.*}` env-substitution tokens. Fixed sidecar images (e.g. the
+  control-token `kubectl` job) are hardcoded literals. `${kedge.*}` tokens are
+  reserved for genuinely platform-global values with no universal default (only
+  the exposure Gateway parent today). A missing env must never be able to
+  produce an empty/invalid field. See
+  [`providers/infrastructure/docs/template-conventions.md`](providers/infrastructure/docs/template-conventions.md).
 
 ---
 

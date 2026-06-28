@@ -115,6 +115,14 @@ the infrastructure provider as subresources on the `SandboxRunner` instance,
 which App Studio calls through the hub as the requesting user. See
 [`docs/app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decoupling.md).
 
+This is the platform
+[provider-isolation rule](../../docs/providers.md#provider-isolation-the-cross-provider-boundary)
+in practice: App Studio reaches infrastructure-owned workloads only through
+the `SandboxRunner` CR and its published subresources — never into the
+infrastructure provider's runtime cluster — which is what lets a tenant be
+backed by a different infrastructure provider (BYO compute) with no App
+Studio change.
+
 When `APP_STUDIO_PREVIEW_BASE_DOMAIN` is set, App Studio also creates a
 `SandboxPreviewHTTPRoute` infrastructure resource beside each `SandboxRunner`.
 That companion template creates a Gateway API `HTTPRoute` that attaches to the

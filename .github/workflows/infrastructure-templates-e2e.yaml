@@ -1,11 +1,13 @@
 name: Infrastructure Template E2E
 
 # Every seeded infrastructure Template must author a kro ResourceGraphDefinition
-# that kro ACCEPTS. Unit tests only check buildRGD's output; this stands up a
-# real (standalone) kro on kind and asserts GraphAccepted=True for each template,
-# catching the failures unit tests miss (string-vs-int fields, non-standalone
-# includeWhen expressions, images that resolved to ""). See
-# providers/infrastructure/backend/kro/e2e_test.go.
+# that kro ACCEPTS, and a sample instance of it must reconcile WITHOUT an apply
+# error. Unit tests only check buildRGD's output; this stands up a real
+# (standalone) kro on kind and, per template, asserts GraphAccepted=True and then
+# creates a sample instance that kro applies cleanly — catching the failures unit
+# tests miss (string-vs-int fields, non-standalone includeWhen expressions, an
+# image that resolved to "" surfacing as "Required value" only at apply time).
+# See providers/infrastructure/backend/kro/e2e_test.go.
 on:
   pull_request:
     branches: [main]
@@ -29,8 +31,8 @@ permissions:
   packages: read
 
 jobs:
-  template-rgd-acceptance:
-    name: Templates accepted by kro
+  template-e2e:
+    name: Templates accepted + instances apply
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

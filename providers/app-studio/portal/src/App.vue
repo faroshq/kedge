@@ -30,6 +30,12 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError } from './api'
+import {
+  canSubmitCreatePrompt,
+  createPromptBlockedMessage,
+  gitConnectionReady,
+  type ProjectCreateReadiness,
+} from './createReadiness'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useEscapeKey } from '@/composables/useEscapeKey'
@@ -313,6 +319,9 @@ const followUpAnswers = ref<Record<string, string>>({})
 const followUpBusy = ref<Record<string, boolean>>({})
 const followUpErrors = ref<Record<string, string>>({})
 const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const createReadiness = ref<ProjectCreateReadiness | null>(null)
+const createReadinessLoading = ref(false)
+const createReadinessError = ref<string | null>(null)
 const workbench = ref(createDefaultWorkbenchState())
 const draggedWorkbenchTabID = ref<string | null>(null)
 const dragOverWorkbenchTabID = ref<string | null>(null)
@@ -359,7 +368,7 @@ const isBuilderVisible = computed(() => !isAppStudioLandingRoute.value || select
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
-const canStartProjectFromPrompt = computed(() => prompt.value.trim().length > 0)
+const canStartProjectFromPrompt = computed(() => canSubmitCreatePrompt(prompt.value, createReadiness.value))
 const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0 && !messageStreaming.value && !assistantResumeBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
@@ -374,6 +383,28 @@ const conversationWorkingLabel = computed(() => {
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
   if (lastAssistant?.content.trim()) return 'Working'
   return 'Working'
+})
+const gitConnectionCreateReady = computed(() => gitConnectionReady(createReadiness.value))
+const createReadinessChecking = computed(() => createReadinessLoading.value || (!!props.ctx?.token && createReadiness.value === null && !createReadinessError.value))
+const createReadinessBlockMessage = computed(() => {
+  if (createReadinessError.value) return createReadinessError.value
+  if (createReadinessChecking.value) return 'Checking Git connection...'
+  return createPromptBlockedMessage(createReadiness.value)
+})
+const createPromptSubmitTitle = computed(() => {
+  if (!gitConnectionCreateReady.value) return 'Connect Git before creating a durable project'
+  return llmSettings.value?.configured ? 'Create project and send prompt' : 'Configure LLM settings before creating a project'
+})
+const createPromptSubmitLabel = computed(() => {
+  if (!gitConnectionCreateReady.value) return createReadinessChecking.value ? 'Checking Git' : 'Connect Git'
+  return llmSettings.value?.configured ? 'Create and send' : 'Set up and send'
+})
+const llmConfigured = computed(() => llmSettings.value?.configured ?? false)
+const workspaceSetupReady = computed(() => gitConnectionCreateReady.value && llmConfigured.value)
+const workspaceSetupLabel = computed(() => {
+  if (!gitConnectionCreateReady.value) return createReadinessChecking.value ? 'Checking Git' : 'Git setup needed'
+  if (!llmConfigured.value) return 'LLM setup needed'
+  return 'Workspace ready'
 })
 const deleteProjectMessage = computed(() => {
   const project = deleteProjectTarget.value
@@ -723,6 +754,7 @@ const developmentPreviewUnavailableMessage = computed(() => {
 onMounted(() => {
   void load()
   void loadProviders()
+  void loadCreateReadiness()
   void loadLLMSettings()
   startLandingPlaceholderRotation()
   window.addEventListener('focus', handleDevelopmentPreviewAuthorizationWake)
@@ -742,6 +774,7 @@ watch(
   () => props.ctx?.token,
   () => {
     void loadProviders()
+    void loadCreateReadiness()
     void loadLLMSettings()
   },
 )
@@ -903,6 +936,7 @@ function handleProjectAPIInitializing(err: unknown): boolean {
   initializationRetryTimer = window.setTimeout(() => {
     initializationRetryTimer = undefined
     void load()
+    void loadCreateReadiness()
     void loadLLMSettings()
   }, 2000)
   return true
@@ -935,6 +969,21 @@ async function loadProviders() {
     toolError.value = e instanceof Error ? e.message : String(e)
   } finally {
     providersLoading.value = false
+  }
+}
+
+async function loadCreateReadiness() {
+  if (!props.ctx?.token) return
+  createReadinessLoading.value = true
+  createReadinessError.value = null
+  try {
+    createReadiness.value = await api.getProjectCreateReadiness(props.ctx)
+  } catch (e) {
+    if (handleProjectAPIInitializing(e)) return
+    createReadiness.value = null
+    createReadinessError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    createReadinessLoading.value = false
   }
 }
 
@@ -1211,11 +1260,21 @@ async function clearLLMKey() {
 async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
+  if (!await ensureGitConnectionReady()) return
   if (!llmSettings.value?.configured) {
     openSettings()
     return
   }
   await createProjectAndStartConversation(content)
+}
+
+async function ensureGitConnectionReady(): Promise<boolean> {
+  if (!gitConnectionCreateReady.value && !createReadinessLoading.value) {
+    await loadCreateReadiness()
+  }
+  if (gitConnectionCreateReady.value) return true
+  error.value = createReadinessError.value || createPromptBlockedMessage(createReadiness.value)
+  return false
 }
 
 async function createProjectAndStartConversation(content: string) {
@@ -2881,16 +2940,16 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         <main class="flex min-h-0 flex-1 items-center justify-center py-4">
           <section class="w-full max-w-[1060px]">
             <div class="mx-auto flex max-w-[760px] flex-col items-center text-center">
-              <span
-                class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium"
-                :class="llmSettings?.configured
-                  ? 'border-success/30 bg-success-subtle text-success'
-                  : 'border-warning/30 bg-warning-subtle text-warning'"
-              >
-                <Check v-if="llmSettings?.configured" class="h-3.5 w-3.5" :stroke-width="2" />
-                <Settings2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ llmSettings?.configured ? 'Workspace ready' : 'LLM setup needed' }}
-              </span>
+	              <span
+	                class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium"
+	                :class="workspaceSetupReady
+	                  ? 'border-success/30 bg-success-subtle text-success'
+	                  : 'border-warning/30 bg-warning-subtle text-warning'"
+	              >
+	                <Check v-if="workspaceSetupReady" class="h-3.5 w-3.5" :stroke-width="2" />
+	                <Settings2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+	                {{ workspaceSetupLabel }}
+	              </span>
               <h2 class="mt-5 text-[44px] font-semibold leading-[1.05] text-text-primary md:text-[56px]">
                 What do you want to build?
               </h2>
@@ -2938,16 +2997,29 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                     <span v-else class="text-[12px] text-text-muted">
                       The first message will create the project and start the conversation.
                     </span>
+                    <span
+                      v-if="createReadinessBlockMessage"
+                      class="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning-subtle px-2.5 py-1.5 text-[12px] font-medium text-warning"
+                    >
+                      <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      <template v-if="isMissingCodeConnectionError(createReadinessBlockMessage)">
+                        <a :href="CODE_CONNECTIONS_URL" class="underline underline-offset-2 hover:text-warning/80">
+                          Connect Git
+                        </a>
+                        <span>to create a durable project.</span>
+                      </template>
+                      <template v-else>{{ createReadinessBlockMessage }}</template>
+                    </span>
                   </div>
                   <button
                     class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
                     type="submit"
                     :disabled="busy || !canStartProjectFromPrompt"
-                    :title="llmSettings?.configured ? 'Create project and send prompt' : 'Configure LLM settings before creating a project'"
+                    :title="createPromptSubmitTitle"
                   >
-                    <Plus v-if="llmSettings?.configured" class="h-4 w-4" :stroke-width="2" />
+                    <Plus v-if="gitConnectionCreateReady && llmSettings?.configured" class="h-4 w-4" :stroke-width="2" />
                     <Settings2 v-else class="h-4 w-4" :stroke-width="1.75" />
-                    {{ llmSettings?.configured ? 'Create and send' : 'Set up and send' }}
+                    {{ createPromptSubmitLabel }}
                   </button>
                 </div>
               </div>

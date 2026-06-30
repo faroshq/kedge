@@ -32,7 +32,7 @@ import {
 import { api, isProjectAPIInitializingError } from './api'
 import {
   canSubmitCreatePrompt,
-  createPromptBlockedMessage,
+  createSetupItems,
   gitConnectionReady,
   type ProjectCreateReadiness,
 } from './createReadiness'
@@ -368,7 +368,8 @@ const isBuilderVisible = computed(() => !isAppStudioLandingRoute.value || select
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
-const canStartProjectFromPrompt = computed(() => canSubmitCreatePrompt(prompt.value, createReadiness.value))
+const llmConfigured = computed(() => llmSettings.value?.configured ?? false)
+const canStartProjectFromPrompt = computed(() => canSubmitCreatePrompt(prompt.value, createReadiness.value) && llmConfigured.value)
 const canSendPrompt = computed(() => (llmSettings.value?.configured ?? false) && prompt.value.trim().length > 0 && !messageStreaming.value && !assistantResumeBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
@@ -386,26 +387,17 @@ const conversationWorkingLabel = computed(() => {
 })
 const gitConnectionCreateReady = computed(() => gitConnectionReady(createReadiness.value))
 const createReadinessChecking = computed(() => createReadinessLoading.value || (!!props.ctx?.token && createReadiness.value === null && !createReadinessError.value))
-const createReadinessBlockMessage = computed(() => {
-  if (createReadinessError.value) return createReadinessError.value
-  if (createReadinessChecking.value) return 'Checking Git connection...'
-  return createPromptBlockedMessage(createReadiness.value)
-})
+const createSetupItemsForPrompt = computed(() => createSetupItems({
+  readiness: createReadiness.value,
+  llmConfigured: llmConfigured.value,
+  checkingGit: createReadinessChecking.value,
+}))
 const createPromptSubmitTitle = computed(() => {
-  if (!gitConnectionCreateReady.value) return 'Connect Git before creating a durable project'
-  return llmSettings.value?.configured ? 'Create project and send prompt' : 'Configure LLM settings before creating a project'
+  if (createSetupItemsForPrompt.value.length > 0) return 'Complete setup before creating a project'
+  return prompt.value.trim() ? 'Create project and send prompt' : 'Describe what you want to build'
 })
-const createPromptSubmitLabel = computed(() => {
-  if (!gitConnectionCreateReady.value) return createReadinessChecking.value ? 'Checking Git' : 'Connect Git'
-  return llmSettings.value?.configured ? 'Create and send' : 'Set up and send'
-})
-const llmConfigured = computed(() => llmSettings.value?.configured ?? false)
-const workspaceSetupReady = computed(() => gitConnectionCreateReady.value && llmConfigured.value)
-const workspaceSetupLabel = computed(() => {
-  if (!gitConnectionCreateReady.value) return createReadinessChecking.value ? 'Checking Git' : 'Git setup needed'
-  if (!llmConfigured.value) return 'LLM setup needed'
-  return 'Workspace ready'
-})
+const createSetupVisible = computed(() => createSetupItemsForPrompt.value.length > 0 || !!createReadinessError.value)
+const createSetupErrorMessage = computed(() => createReadinessError.value || '')
 const deleteProjectMessage = computed(() => {
   const project = deleteProjectTarget.value
   if (!project) return ''
@@ -1260,20 +1252,16 @@ async function clearLLMKey() {
 async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
-  if (!await ensureGitConnectionReady()) return
-  if (!llmSettings.value?.configured) {
-    openSettings()
-    return
-  }
+  if (!await ensureCreateSetupReady()) return
   await createProjectAndStartConversation(content)
 }
 
-async function ensureGitConnectionReady(): Promise<boolean> {
+async function ensureCreateSetupReady(): Promise<boolean> {
   if (!gitConnectionCreateReady.value && !createReadinessLoading.value) {
     await loadCreateReadiness()
   }
-  if (gitConnectionCreateReady.value) return true
-  error.value = createReadinessError.value || createPromptBlockedMessage(createReadiness.value)
+  if (gitConnectionCreateReady.value && llmConfigured.value) return true
+  error.value = null
   return false
 }
 
@@ -2811,6 +2799,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             Back to projects
           </button>
           <button
+            v-if="!showNewProjectComposer"
             type="button"
             class="flex h-9 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
             title="LLM settings"
@@ -2940,17 +2929,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         <main class="flex min-h-0 flex-1 items-center justify-center py-4">
           <section class="w-full max-w-[1060px]">
             <div class="mx-auto flex max-w-[760px] flex-col items-center text-center">
-	              <span
-	                class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-medium"
-	                :class="workspaceSetupReady
-	                  ? 'border-success/30 bg-success-subtle text-success'
-	                  : 'border-warning/30 bg-warning-subtle text-warning'"
-	              >
-	                <Check v-if="workspaceSetupReady" class="h-3.5 w-3.5" :stroke-width="2" />
-	                <Settings2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-	                {{ workspaceSetupLabel }}
-	              </span>
-              <h2 class="mt-5 text-[44px] font-semibold leading-[1.05] text-text-primary md:text-[56px]">
+              <h2 class="text-[44px] font-semibold leading-[1.05] text-text-primary md:text-[56px]">
                 What do you want to build?
               </h2>
               <p class="mt-4 max-w-[62ch] text-[14px] leading-6 text-text-muted">
@@ -2985,30 +2964,8 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                         <X class="h-3.5 w-3.5" :stroke-width="2" />
                       </button>
                     </span>
-                    <button
-                      v-if="!llmSettings?.configured"
-                      type="button"
-                      class="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
-                      @click="openSettings"
-                    >
-                      <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-                      Set up LLM
-                    </button>
-                    <span v-else class="text-[12px] text-text-muted">
+                    <span v-if="!createSetupVisible" class="text-[12px] text-text-muted">
                       The first message will create the project and start the conversation.
-                    </span>
-                    <span
-                      v-if="createReadinessBlockMessage"
-                      class="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning-subtle px-2.5 py-1.5 text-[12px] font-medium text-warning"
-                    >
-                      <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
-                      <template v-if="isMissingCodeConnectionError(createReadinessBlockMessage)">
-                        <a :href="CODE_CONNECTIONS_URL" class="underline underline-offset-2 hover:text-warning/80">
-                          Connect Git
-                        </a>
-                        <span>to create a durable project.</span>
-                      </template>
-                      <template v-else>{{ createReadinessBlockMessage }}</template>
                     </span>
                   </div>
                   <button
@@ -3017,10 +2974,62 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                     :disabled="busy || !canStartProjectFromPrompt"
                     :title="createPromptSubmitTitle"
                   >
-                    <Plus v-if="gitConnectionCreateReady && llmSettings?.configured" class="h-4 w-4" :stroke-width="2" />
-                    <Settings2 v-else class="h-4 w-4" :stroke-width="1.75" />
-                    {{ createPromptSubmitLabel }}
+                    <Plus class="h-4 w-4" :stroke-width="2" />
+                    Create and send
                   </button>
+                </div>
+              </div>
+              <div
+                v-if="createSetupVisible"
+                class="mt-3 rounded-lg border border-border-subtle bg-surface-raised/70 p-3 text-left"
+              >
+                <div class="mb-2 flex items-center gap-2 text-[12px] font-semibold text-text-primary">
+                  <Settings2 class="h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
+                  Complete setup before creating
+                </div>
+                <div v-if="createSetupErrorMessage" class="mb-2 text-[12px] text-danger">{{ createSetupErrorMessage }}</div>
+                <div class="grid gap-2">
+                  <div
+                    v-for="item in createSetupItemsForPrompt"
+                    :key="item.id"
+                    class="flex min-h-10 flex-wrap items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface px-3 py-2"
+                  >
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span
+                        class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border"
+                        :class="item.status === 'ready'
+                          ? 'border-success/30 bg-success-subtle text-success'
+                          : item.status === 'checking'
+                            ? 'border-warning/30 bg-warning-subtle text-warning'
+                            : 'border-border-subtle bg-surface-raised text-text-muted'"
+                      >
+                        <Check v-if="item.status === 'ready'" class="h-3.5 w-3.5" :stroke-width="2" />
+                        <Loader2 v-else-if="item.status === 'checking'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                        <GitBranch v-else-if="item.id === 'git'" class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        <Settings2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </span>
+                      <span class="truncate text-[13px] font-medium text-text-primary">{{ item.label }}</span>
+                    </div>
+                    <span v-if="item.status === 'ready'" class="text-[12px] font-medium text-success">Ready</span>
+                    <span v-else-if="item.status === 'checking'" class="text-[12px] font-medium text-warning">Checking</span>
+                    <a
+                      v-else-if="item.action === 'connect-git'"
+                      :href="CODE_CONNECTIONS_URL"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                    >
+                      <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      {{ item.actionLabel }}
+                    </a>
+                    <button
+                      v-else-if="item.action === 'setup-llm'"
+                      type="button"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20"
+                      @click="openSettings"
+                    >
+                      <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      {{ item.actionLabel }}
+                    </button>
+                  </div>
                 </div>
               </div>
             </form>

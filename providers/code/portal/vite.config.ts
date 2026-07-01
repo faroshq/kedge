@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+const portalSrc = new URL('../../../portal/src', import.meta.url).pathname
+
 // The kedge hub serves this provider under /ui/providers/code/. ProviderFrame
 // injects <script src="/ui/providers/code/main.js"> and waits for the
 // <kedge-provider-code> custom element to be defined. So the build must emit
@@ -18,6 +20,12 @@ export default defineConfig({
     __VUE_OPTIONS_API__: 'true',
     __VUE_PROD_DEVTOOLS__: 'false',
     __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false',
+  },
+  resolve: {
+    alias: {
+      '@': portalSrc,
+      '@kedge-portal': portalSrc,
+    },
   },
   base: '/ui/providers/code/',
   build: {

@@ -87,6 +87,9 @@ const (
 	projectToolInfrastructureProvision        = "infrastructure__provision"
 	projectToolInfrastructureListInstances    = "infrastructure__list_instances"
 	projectToolInfrastructureGetInstance      = "infrastructure__get_instance"
+	projectToolDatabricksListTables           = "databricks__list_tables"
+	projectToolDatabricksDescribeTable        = "databricks__describe_table"
+	projectToolDatabricksQueryTable           = "databricks__query_table"
 )
 
 var (
@@ -1673,12 +1676,23 @@ func projectMCPToolsPrompt(tools []chatTool) string {
 	}
 	var b strings.Builder
 	b.WriteString("Available tools in this workspace:\n")
+	hasDatabricksTools := false
 	for _, tool := range tools {
 		desc := strings.TrimSpace(tool.Function.Description)
 		if desc == "" {
 			desc = "(no description)"
 		}
 		b.WriteString("- " + tool.Function.Name + ": " + desc + "\n")
+		switch strings.TrimSpace(tool.Function.Name) {
+		case projectToolDatabricksListTables, projectToolDatabricksDescribeTable, projectToolDatabricksQueryTable:
+			hasDatabricksTools = true
+		}
+	}
+	if hasDatabricksTools {
+		b.WriteString("Databricks guidance: use existing imported kedge Table resources only. ")
+		b.WriteString("Refer to them by tableRef when generating app code, and route runtime data access through provider-databricks. ")
+		b.WriteString("Generated apps should query table data with POST /services/providers/databricks/api/tables/{tableRef}/query using JSON fields columns, filters, orderBy, and limit. ")
+		b.WriteString("Do not create or import Databricks tables from App Studio, and do not embed Databricks credentials or raw warehouse auth config in generated code.\n")
 	}
 	return b.String()
 }
@@ -1758,6 +1772,10 @@ func projectAssistantMCPToolSpec(tool projectMCPTool) (projectAssistantToolSpec,
 		projectToolInfrastructureGetInstance:
 	case projectToolInfrastructureProvision:
 		risk = projectAssistantToolRiskRuntime
+	case projectToolDatabricksListTables,
+		projectToolDatabricksDescribeTable,
+		projectToolDatabricksQueryTable:
+		risk = projectAssistantToolRiskRead
 	default:
 		return projectAssistantToolSpec{}, false
 	}

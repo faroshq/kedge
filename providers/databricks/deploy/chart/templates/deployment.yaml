@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "databricks.fullname" . }}
+  labels:
+    {{- include "databricks.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "databricks.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "databricks.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "databricks.serviceAccountName" . }}
+      {{- if .Values.catalogEntry.enabled }}
+      initContainers:
+        - name: init
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          env:
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: KEDGE_SCHEMAS_DIR
+              value: /etc/kedge/schemas
+            - name: KEDGE_CATALOGENTRY_FILE
+              value: /etc/kedge/catalogentry/catalogentry.yaml
+          volumeMounts:
+            - name: provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+            - name: catalogentry
+              mountPath: /etc/kedge/catalogentry
+              readOnly: true
+      {{- end }}
+      containers:
+        - name: provider
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+            - name: KEDGE_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: KEDGE_HUB_URL
+              value: {{ .Values.hub.url | quote }}
+            - name: KEDGE_PROVIDER_NAME
+              value: databricks
+            - name: KEDGE_HUB_INSECURE
+              value: {{ .Values.hub.insecure | quote }}
+            {{- if .Values.hub.tokenSecretRef.name }}
+            - name: KEDGE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.tokenSecretRef.name }}
+                  key: {{ .Values.hub.tokenSecretRef.key }}
+                  optional: true
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: provider-kubeconfig
+              mountPath: /var/run/secrets/kedge
+              readOnly: true
+      volumes:
+        - name: provider-kubeconfig
+          secret:
+            secretName: {{ .Values.providerKubeconfig.secretName }}
+            optional: true
+            items:
+              - key: kubeconfig
+                path: kedge-provider-kubeconfig
+        {{- if .Values.catalogEntry.enabled }}
+        - name: catalogentry
+          configMap:
+            name: {{ include "databricks.fullname" . }}-catalogentry
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": ".test-dist",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/pagination.ts",
+    "src/pagination.test.ts",
+    "src/tableRefs.ts",
+    "src/tableRefs.test.ts"
+  ]
+}

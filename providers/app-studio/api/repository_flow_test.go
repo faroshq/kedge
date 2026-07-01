@@ -124,6 +124,9 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"infrastructure__list_instances",
 		"infrastructure__get_instance",
 		"infrastructure__provision",
+		projectToolDatabricksListTables,
+		projectToolDatabricksDescribeTable,
+		projectToolDatabricksQueryTable,
 	} {
 		if !projectMCPToolAllowed(name) {
 			t.Fatalf("%s should be allowed from the aggregate MCP infrastructure provider", name)
@@ -131,6 +134,9 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 	}
 	if projectMCPToolAllowed("infrastructure__delete_instance") {
 		t.Fatal("infrastructure__delete_instance should not be allowed from App Studio")
+	}
+	if projectMCPToolAllowed("databricks__import_table") {
+		t.Fatal("databricks__import_table should not be allowed from App Studio")
 	}
 }
 
@@ -193,7 +199,7 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 			t.Fatalf("method = %q, want tools/list", envelope.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}},{"name":"infrastructure__list_templates","description":"List templates","inputSchema":{"type":"object","properties":{"cloud":{"type":"string"}}}},{"name":"infrastructure__describe_template","description":"Describe template","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision template","inputSchema":{"type":"object","required":["template","name"],"properties":{"template":{"type":"string"},"name":{"type":"string"},"values":{"type":"object"}}}},{"name":"infrastructure__delete_instance","description":"Delete instance","inputSchema":{"type":"object"}}]}}`)
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}},{"name":"infrastructure__list_templates","description":"List templates","inputSchema":{"type":"object","properties":{"cloud":{"type":"string"}}}},{"name":"infrastructure__describe_template","description":"Describe template","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision template","inputSchema":{"type":"object","required":["template","name"],"properties":{"template":{"type":"string"},"name":{"type":"string"},"values":{"type":"object"}}}},{"name":"databricks__list_tables","description":"List tables","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import table","inputSchema":{"type":"object"}},{"name":"infrastructure__delete_instance","description":"Delete instance","inputSchema":{"type":"object"}}]}}`)
 	}))
 	defer mcp.Close()
 
@@ -217,6 +223,7 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 		"infrastructure__list_templates",
 		"infrastructure__describe_template",
 		"infrastructure__provision",
+		projectToolDatabricksListTables,
 	} {
 		if !names[want] {
 			t.Fatalf("tool names = %#v, want %s", names, want)
@@ -227,6 +234,9 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 	}
 	if names["infrastructure__delete_instance"] {
 		t.Fatalf("tool names = %#v, should not expose destructive infrastructure tools", names)
+	}
+	if names["databricks__import_table"] {
+		t.Fatalf("tool names = %#v, should not expose table import tools", names)
 	}
 }
 
@@ -290,6 +300,88 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	}
 	if !projectChatToolsInclude(model.Inputs[0].Tools, "tool_search") {
 		t.Fatalf("model tools = %#v, want tool_search for deferred commit bridge", model.Inputs[0].Tools)
+	}
+}
+
+func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuestions(t *testing.T) {
+	mcpCalls := 0
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mcpCalls++
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if envelope.Method != "tools/list" {
+			t.Fatalf("method = %q, want tools/list", envelope.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"databricks__list_tables","description":"List imported tables","inputSchema":{"type":"object"}},{"name":"databricks__describe_table","description":"Describe a table ref","inputSchema":{"type":"object"}},{"name":"databricks__query_table","description":"Query a table ref","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import a table ref","inputSchema":{"type":"object"}}]}}`)
+	}))
+	defer mcp.Close()
+
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "Can you query the sales.orders table and show me its columns?"); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("I can only query existing Databricks table refs.", nil),
+	}}}
+	setProjectAssistantModelForTest(server, model)
+	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
+		return projectAssistantTurnDecision{
+			Profile:              projectAssistantTurnProfileExploration,
+			RequiresCurrentState: true,
+			Confidence:           projectAssistantTurnConfidenceHigh,
+		}, nil
+	}
+
+	reply, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	)
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if reply != "I can only query existing Databricks table refs." {
+		t.Fatalf("reply = %q, want Databricks guidance", reply)
+	}
+	if mcpCalls != 1 {
+		t.Fatalf("MCP tools/list calls = %d, want 1", mcpCalls)
+	}
+	var joined string
+	for _, msg := range model.Inputs[0].Messages {
+		joined += msg.Content + "\n"
+	}
+	for _, want := range []string{projectToolDatabricksListTables, projectToolDatabricksDescribeTable, projectToolDatabricksQueryTable} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("model input missing %s:\n%s", want, joined)
+		}
+	}
+	for _, want := range []string{
+		"existing imported kedge Table resources only",
+		"tableRef",
+		"provider-databricks",
+		"POST /services/providers/databricks/api/tables/{tableRef}/query",
+		"columns, filters, orderBy, and limit",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("model input missing Databricks tableRef guidance %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "databricks__import_table") {
+		t.Fatalf("model input should not include filtered databricks tools:\n%s", joined)
 	}
 }
 

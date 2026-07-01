@@ -1,0 +1,428 @@
+/*
+ * Databricks provider element styles. The provider renders in light DOM so the
+ * portal design tokens and shared component classes cascade into this bundle.
+ */
+
+kedge-provider-databricks {
+  display: block;
+  color: var(--color-text-primary);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+kedge-provider-databricks .app {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+kedge-provider-databricks .tabs {
+  display: flex;
+  gap: 4px;
+}
+
+kedge-provider-databricks .tabs button {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+kedge-provider-databricks .tabs button:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+kedge-provider-databricks .tabs button.active {
+  background: var(--color-accent-subtle);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+kedge-provider-databricks .page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+kedge-provider-databricks .page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+kedge-provider-databricks .page-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+kedge-provider-databricks .page-meta,
+kedge-provider-databricks .muted {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+kedge-provider-databricks .page-meta {
+  max-width: 70ch;
+}
+
+kedge-provider-databricks .panel {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+kedge-provider-databricks .panel-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+kedge-provider-databricks .preview-result-head {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+kedge-provider-databricks .panel-title {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+kedge-provider-databricks .grid-2 {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 960px) {
+  kedge-provider-databricks .grid-2 {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+kedge-provider-databricks .actions,
+kedge-provider-databricks .form-actions,
+kedge-provider-databricks .row-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+kedge-provider-databricks .result-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+kedge-provider-databricks .pager {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+kedge-provider-databricks .page-size {
+  align-items: center;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
+kedge-provider-databricks .page-size select {
+  font-size: 12px;
+  min-height: 30px;
+  padding: 5px 8px;
+  width: 76px;
+}
+
+kedge-provider-databricks .page-count {
+  min-width: 76px;
+  text-align: center;
+}
+
+kedge-provider-databricks button.primary,
+kedge-provider-databricks button.secondary,
+kedge-provider-databricks button.danger,
+kedge-provider-databricks button.icon-button {
+  align-items: center;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  justify-content: center;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+kedge-provider-databricks button.primary {
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent);
+  color: white;
+  min-height: 32px;
+  padding: 6px 14px;
+}
+
+kedge-provider-databricks button.primary:hover {
+  background: var(--color-accent-hover);
+}
+
+kedge-provider-databricks button.secondary {
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+  min-height: 32px;
+  padding: 6px 14px;
+}
+
+kedge-provider-databricks button.secondary:hover,
+kedge-provider-databricks button.icon-button:hover {
+  background: var(--color-surface-hover);
+}
+
+kedge-provider-databricks button.danger {
+  background: transparent;
+  border: 1px solid var(--color-border-default);
+  color: var(--color-danger);
+  min-height: 32px;
+  padding: 6px 14px;
+}
+
+kedge-provider-databricks button.danger:hover {
+  background: var(--color-danger-subtle);
+  border-color: var(--color-danger);
+}
+
+kedge-provider-databricks button.link {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--color-accent);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  gap: 4px;
+  padding: 0;
+}
+
+kedge-provider-databricks button.link:hover {
+  color: var(--color-accent-hover);
+}
+
+kedge-provider-databricks button.link.back {
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+kedge-provider-databricks button.link.back:hover {
+  color: var(--color-accent);
+}
+
+kedge-provider-databricks button.icon-button {
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  height: 30px;
+  padding: 0;
+  width: 30px;
+}
+
+kedge-provider-databricks button.icon-button.danger {
+  color: var(--color-danger);
+}
+
+kedge-provider-databricks button.icon-button.danger:hover {
+  background: var(--color-danger-subtle);
+  border-color: var(--color-danger);
+}
+
+kedge-provider-databricks button:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+kedge-provider-databricks .pager button:disabled {
+  cursor: not-allowed;
+}
+
+kedge-provider-databricks .icon-text {
+  gap: 7px;
+}
+
+kedge-provider-databricks .button-icon {
+  height: 14px;
+  width: 14px;
+}
+
+kedge-provider-databricks .form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 36rem;
+}
+
+kedge-provider-databricks .form-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 780px) {
+  kedge-provider-databricks .form-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+kedge-provider-databricks .form-grid.compact {
+  gap: 10px;
+}
+
+kedge-provider-databricks .span-2 {
+  grid-column: 1 / -1;
+}
+
+kedge-provider-databricks .field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+kedge-provider-databricks .field-label {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+kedge-provider-databricks input,
+kedge-provider-databricks select {
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  min-height: 34px;
+  outline: none;
+  padding: 7px 9px;
+  width: 100%;
+}
+
+kedge-provider-databricks .form input,
+kedge-provider-databricks .form select {
+  border-radius: 6px;
+  font-size: 12px;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
+kedge-provider-databricks input:focus,
+kedge-provider-databricks select:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-subtle);
+}
+
+kedge-provider-databricks input:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+kedge-provider-databricks .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+kedge-provider-databricks .strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+kedge-provider-databricks code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+kedge-provider-databricks .props {
+  display: grid;
+  font-size: 12px;
+  gap: 6px 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 0;
+}
+
+kedge-provider-databricks .props dt {
+  color: var(--color-text-muted);
+}
+
+kedge-provider-databricks .props dd {
+  color: var(--color-text-secondary);
+  margin: 0;
+  min-width: 0;
+  word-break: break-word;
+}
+
+kedge-provider-databricks .truncate-cell {
+  display: inline-block;
+  max-width: min(36vw, 32rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+kedge-provider-databricks .row-message {
+  color: var(--color-text-muted);
+  display: block;
+  font-size: 11px;
+  margin-top: 4px;
+  max-width: 32rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+kedge-provider-databricks .error,
+kedge-provider-databricks .warning {
+  border-radius: 8px;
+  font-size: 12px;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+kedge-provider-databricks .error {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+kedge-provider-databricks .warning {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+kedge-provider-databricks .empty {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  margin: 0;
+}

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260701-0d050b9c.connections.databricks.kedge.faros.sh
+  name: v260701-fa21f11c.connections.databricks.kedge.faros.sh
 spec:
   group: databricks.kedge.faros.sh
   names:
@@ -54,20 +54,10 @@ spec:
         spec:
           properties:
             authType:
-              description: |-
-                AuthType selects the credential model. Query execution currently reads a
-                bearer token from SecretRef; richer federation flows can reconcile this
-                into a token-bearing Secret.
+              description: AuthType selects the credential model. PAT is the only
+                supported model.
               enum:
-              - oauth-token-federation
-              - service-principal-oauth
               - pat
-              type: string
-            defaultCatalog:
-              description: DefaultCatalog is used when imported tables omit a catalog.
-              type: string
-            defaultSchema:
-              description: DefaultSchema is used when imported tables omit a schema.
               type: string
             host:
               description: Host is the Databricks workspace host, e.g. https://dbc-xyz.cloud.databricks.com.

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-import ConditionsPanel from '@kedge-portal/components/ConditionsPanel.vue'
-import StatusBadge from '@kedge-portal/components/StatusBadge.vue'
+import ConditionsPanel from '../components/ConditionsPanel.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 import { confirmDialog } from '../components/confirm'
 import type { Connection, ErrorResponse } from '../types'
 
@@ -34,10 +34,8 @@ const hint = computed(() => {
       return `The credential Secret could not be read. Check that "${c.secretNamespace}/${c.secretName}" contains key "${c.secretKey || 'token'}".`
     case 'ValidationFailed':
       return 'Databricks rejected the credential. The token may be expired, revoked, or missing access to the workspace.'
-    case 'AuthTypeUnsupported':
-      return `The provider currently validates PAT credentials only. This connection is configured as "${c.authType}".`
-    default:
-      return validated.value?.message || c.message || 'The connection is not validated yet.'
+	    default:
+	      return validated.value?.message || c.message || 'The connection is not validated yet.'
   }
 })
 
@@ -117,11 +115,9 @@ onUnmounted(() => window.clearInterval(timer))
             <code>{{ conn.secretName }}</code>
             <span class="muted"> · ns <code>{{ conn.secretNamespace }}</code></span>
             <span class="muted"> · key <code>{{ conn.secretKey }}</code></span>
-          </dd>
-          <dt v-if="conn.workspaceID">Workspace ID</dt><dd v-if="conn.workspaceID"><code>{{ conn.workspaceID }}</code></dd>
-          <dt v-if="conn.defaultCatalog">Default catalog</dt><dd v-if="conn.defaultCatalog"><code>{{ conn.defaultCatalog }}</code></dd>
-          <dt v-if="conn.defaultSchema">Default schema</dt><dd v-if="conn.defaultSchema"><code>{{ conn.defaultSchema }}</code></dd>
-          <dt v-if="conn.creationTimestamp">Created</dt><dd v-if="conn.creationTimestamp">{{ conn.creationTimestamp }}</dd>
+	          </dd>
+	          <dt v-if="conn.workspaceID">Workspace ID</dt><dd v-if="conn.workspaceID"><code>{{ conn.workspaceID }}</code></dd>
+	          <dt v-if="conn.creationTimestamp">Created</dt><dd v-if="conn.creationTimestamp">{{ conn.creationTimestamp }}</dd>
           <dt v-if="conn.observedGeneration !== undefined">Reconciled</dt>
           <dd v-if="conn.observedGeneration !== undefined">
             <span v-if="reconciled" class="muted">up to date (generation {{ conn.generation }})</span>

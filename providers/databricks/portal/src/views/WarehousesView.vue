@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import ResourceTable from '@kedge-portal/components/ResourceTable.vue'
-import StatusBadge from '@kedge-portal/components/StatusBadge.vue'
+import ResourceTable from '../components/ResourceTable.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../components/confirm'
 import type { Connection, ErrorResponse, Warehouse } from '../types'
@@ -24,9 +24,6 @@ const form = reactive({
   name: '',
   connectionRef: '',
   warehouseID: '',
-  httpPath: '',
-  defaultCatalog: '',
-  defaultSchema: '',
 })
 
 function errMessage(e: unknown): string {
@@ -38,9 +35,6 @@ function resetForm() {
   form.name = ''
   form.connectionRef = connections.value[0]?.name ?? ''
   form.warehouseID = ''
-  form.httpPath = ''
-  form.defaultCatalog = ''
-  form.defaultSchema = ''
   formError.value = null
 }
 
@@ -70,14 +64,11 @@ async function submit() {
   }
   submitting.value = true
   try {
-    await api.saveWarehouse({
-      name: form.name,
-      connectionRef: form.connectionRef,
-      warehouseID: form.warehouseID,
-      httpPath: form.httpPath || undefined,
-      defaultCatalog: form.defaultCatalog || undefined,
-      defaultSchema: form.defaultSchema || undefined,
-    })
+	    await api.saveWarehouse({
+	      name: form.name,
+	      connectionRef: form.connectionRef,
+	      warehouseID: form.warehouseID,
+	    })
     resetForm()
     showForm.value = false
     await load()
@@ -136,10 +127,7 @@ onUnmounted(() => window.clearInterval(timer))
         </div>
         <div class="field"><span class="field-label">Object name</span><input v-model="form.name" placeholder="orders-sql" autocomplete="off" /></div>
         <div class="field"><span class="field-label">Warehouse ID</span><input v-model="form.warehouseID" placeholder="abc123def4567890" autocomplete="off" /></div>
-        <div class="field"><span class="field-label">HTTP path</span><input v-model="form.httpPath" placeholder="/sql/1.0/warehouses/..." autocomplete="off" /></div>
-        <div class="field"><span class="field-label">Default catalog</span><input v-model="form.defaultCatalog" placeholder="sales" autocomplete="off" /></div>
-        <div class="field"><span class="field-label">Default schema</span><input v-model="form.defaultSchema" placeholder="gold" autocomplete="off" /></div>
-        <div class="actions">
+	        <div class="actions">
           <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
           <span v-if="formError" class="error">{{ formError }}</span>
         </div>

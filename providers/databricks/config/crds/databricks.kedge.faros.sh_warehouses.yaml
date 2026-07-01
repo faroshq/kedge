@@ -59,14 +59,6 @@ spec:
               connectionRef:
                 minLength: 1
                 type: string
-              defaultCatalog:
-                type: string
-              defaultSchema:
-                type: string
-              httpPath:
-                description: HTTPPath optionally overrides the SQL warehouse HTTP
-                  path.
-                type: string
               warehouseID:
                 minLength: 1
                 type: string

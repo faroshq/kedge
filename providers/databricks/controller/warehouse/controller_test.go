@@ -10,7 +10,6 @@ package warehouse
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -31,6 +30,15 @@ type fakeValidator struct {
 	err    error
 	calls  int
 }
+
+type safeStatusError struct {
+	full string
+	safe string
+}
+
+func (e safeStatusError) Error() string { return e.full }
+
+func (e safeStatusError) SafeStatusMessage() string { return e.safe }
 
 func (v *fakeValidator) ValidateWarehouse(_ context.Context, target backend.WarehouseValidationTarget) (backend.WarehouseValidationResult, error) {
 	v.calls++
@@ -74,8 +82,12 @@ func TestReconcileWarehouseValidatesConnectionSecret(t *testing.T) {
 	}}
 	r := &Reconciler{Validator: validator}
 
-	if _, err := r.reconcileWarehouse(ctx, c, types.NamespacedName{Name: "orders-warehouse"}); err != nil {
+	result, err := r.reconcileWarehouse(ctx, c, types.NamespacedName{Name: "orders-warehouse"})
+	if err != nil {
 		t.Fatalf("reconcileWarehouse returned error: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %s, want no retry after successful validation", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Warehouse
@@ -126,8 +138,12 @@ func TestReconcileWarehouseReportsMissingConnection(t *testing.T) {
 	validator := &fakeValidator{}
 	r := &Reconciler{Validator: validator}
 
-	if _, err := r.reconcileWarehouse(ctx, c, types.NamespacedName{Name: "orders-warehouse"}); err != nil {
+	result, err := r.reconcileWarehouse(ctx, c, types.NamespacedName{Name: "orders-warehouse"})
+	if err != nil {
 		t.Fatalf("reconcileWarehouse returned error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want bounded retry for missing connection", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Warehouse
@@ -173,7 +189,10 @@ func TestReconcileWarehouseReportsValidationFailure(t *testing.T) {
 		WithObjects(conn, secret, wh).
 		WithStatusSubresource(&databricksv1alpha1.Warehouse{}).
 		Build()
-	r := &Reconciler{Validator: &fakeValidator{err: fmt.Errorf("warehouse not found")}}
+	r := &Reconciler{Validator: &fakeValidator{err: safeStatusError{
+		full: "databricks warehouse request failed: 404 Not Found: {\"warehouse_id\":\"bad-warehouse\",\"details\":\"upstream body\"}",
+		safe: "databricks warehouse validation failed: 404 Not Found",
+	}}}
 
 	if _, err := r.reconcileWarehouse(ctx, c, types.NamespacedName{Name: "orders-warehouse"}); err != nil {
 		t.Fatalf("reconcileWarehouse returned error: %v", err)
@@ -187,7 +206,10 @@ func TestReconcileWarehouseReportsValidationFailure(t *testing.T) {
 	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != ReasonValidationFailed {
 		t.Fatalf("Ready condition = %#v, want False/%s", ready, ReasonValidationFailed)
 	}
-	if !strings.Contains(ready.Message, "warehouse not found") {
-		t.Fatalf("Ready message = %q, want validator error", ready.Message)
+	if !strings.Contains(ready.Message, "databricks warehouse validation failed: 404 Not Found") {
+		t.Fatalf("Ready message = %q, want sanitized validator error", ready.Message)
+	}
+	if strings.Contains(ready.Message, "bad-warehouse") || strings.Contains(ready.Message, "upstream body") {
+		t.Fatalf("Ready message = %q, want upstream body details omitted", ready.Message)
 	}
 }

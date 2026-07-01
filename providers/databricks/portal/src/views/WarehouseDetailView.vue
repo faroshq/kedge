@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-import ConditionsPanel from '@kedge-portal/components/ConditionsPanel.vue'
-import StatusBadge from '@kedge-portal/components/StatusBadge.vue'
+import ConditionsPanel from '../components/ConditionsPanel.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 import { confirmDialog } from '../components/confirm'
 import type { ErrorResponse, Warehouse } from '../types'
 
@@ -36,10 +36,8 @@ const hint = computed(() => {
       return `The credential for connection "${wh.connectionRef}" could not be read. Check the connection's Secret.`
     case 'ValidationFailed':
       return 'Databricks rejected the warehouse lookup. The warehouse ID may be wrong, deleted, or not visible to this token.'
-    case 'AuthTypeUnsupported':
-      return `The provider currently validates PAT credentials only. The referenced connection uses an unsupported auth type.`
-    default:
-      return ready.value?.message || wh.message || 'The warehouse is not ready yet.'
+	    default:
+	      return ready.value?.message || wh.message || 'The warehouse is not ready yet.'
   }
 })
 
@@ -112,13 +110,10 @@ onUnmounted(() => window.clearInterval(timer))
       <div class="panel">
         <h3 class="panel-title">Overview</h3>
         <dl class="props">
-          <dt>Connection</dt><dd><code>{{ warehouse.connectionRef }}</code></dd>
-          <dt>Warehouse ID</dt><dd><code>{{ warehouse.warehouseID }}</code></dd>
-          <dt v-if="warehouse.httpPath">HTTP path</dt><dd v-if="warehouse.httpPath"><code>{{ warehouse.httpPath }}</code></dd>
-          <dt>State</dt><dd>{{ warehouse.state || '—' }}</dd>
-          <dt v-if="warehouse.defaultCatalog">Default catalog</dt><dd v-if="warehouse.defaultCatalog"><code>{{ warehouse.defaultCatalog }}</code></dd>
-          <dt v-if="warehouse.defaultSchema">Default schema</dt><dd v-if="warehouse.defaultSchema"><code>{{ warehouse.defaultSchema }}</code></dd>
-          <dt v-if="warehouse.creationTimestamp">Created</dt><dd v-if="warehouse.creationTimestamp">{{ warehouse.creationTimestamp }}</dd>
+	          <dt>Connection</dt><dd><code>{{ warehouse.connectionRef }}</code></dd>
+	          <dt>Warehouse ID</dt><dd><code>{{ warehouse.warehouseID }}</code></dd>
+	          <dt>State</dt><dd>{{ warehouse.state || '—' }}</dd>
+	          <dt v-if="warehouse.creationTimestamp">Created</dt><dd v-if="warehouse.creationTimestamp">{{ warehouse.creationTimestamp }}</dd>
           <dt v-if="warehouse.observedGeneration !== undefined">Reconciled</dt>
           <dd v-if="warehouse.observedGeneration !== undefined">
             <span v-if="reconciled" class="muted">up to date (generation {{ warehouse.generation }})</span>

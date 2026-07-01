@@ -122,7 +122,6 @@ func projectAssistantTurnPolicyCanUseMCP(policy projectAssistantTurnPolicy, req 
 		projectToolInfrastructureProvision,
 		projectToolDatabricksListTables,
 		projectToolDatabricksDescribeTable,
-		projectToolDatabricksQueryTable,
 	} {
 		spec, ok := projectAssistantMCPToolSpec(projectMCPTool{Name: name})
 		if ok && policy.AllowsTool(spec) {
@@ -138,11 +137,16 @@ func projectAssistantTurnNeedsInfrastructureMCP(history []store.Message) bool {
 			continue
 		}
 		content := strings.ToLower(strings.TrimSpace(history[i].Content))
-		return containsProjectAssistantTurnKeyword(content, []string{
+		if containsProjectAssistantTurnKeyword(content, []string{
 			"infrastructure", "infra", "template", "templates", "provision",
 			"instance", "instances", "database", "postgres", "redis",
 			"supporting resource", "provider", "platform", "mcp",
-			"table", "tables", "databricks", "table ref", "table refs",
+			"databricks", "table ref", "table refs", "table data", "imported table",
+		}) {
+			return true
+		}
+		return strings.Contains(content, "table") && containsProjectAssistantTurnKeyword(content, []string{
+			"query", "queries", "sample", "samples", "column", "columns", "schema", "metadata",
 		})
 	}
 	return false

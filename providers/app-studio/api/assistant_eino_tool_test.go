@@ -37,8 +37,9 @@ func TestProjectAssistantTurnNeedsInfrastructureMCP(t *testing.T) {
 		{"platform vocabulary", "what platform resources do I have?", true},
 		{"mcp mention", "call mcp to enumerate things", true},
 		{"templates", "what templates are available?", true},
-		{"tables", "can you query the imported table metadata and sample rows?", true},
+		{"databricks tables", "can you query my Databricks table metadata?", true},
 		{"data prompt", "I need to inspect table data for this project", true},
+		{"generic UI table", "render a table of todos in app.js", false},
 		{"unrelated", "fix the button styling in app.js", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,6 +69,11 @@ func TestProjectAssistantTurnPolicyCanUseDatabricksMCP(t *testing.T) {
 	req.History[0].Content = "fix the button styling"
 	if projectAssistantTurnPolicyCanUseMCP(policy, req) {
 		t.Fatal("expected unrelated turn to skip MCP discovery")
+	}
+
+	req.History[0].Content = "render a table of todos in app.js"
+	if projectAssistantTurnPolicyCanUseMCP(policy, req) {
+		t.Fatal("expected generic UI table request to skip MCP discovery")
 	}
 }
 

@@ -22,7 +22,12 @@ import (
 	"github.com/faroshq/provider-databricks/queryapi"
 )
 
-const defaultStatementWaitTimeout = "10s"
+const (
+	defaultStatementWaitTimeout     = "10s"
+	statementOnWaitTimeoutCancel    = "CANCEL"
+	statementStatusSucceeded        = "SUCCEEDED"
+	statementHTTPFailureSafeMessage = "databricks statement failed"
+)
 
 type StatementClient struct {
 	HTTPClient                   *http.Client
@@ -57,12 +62,13 @@ func (c StatementClient) ExecuteQuery(ctx context.Context, target queryapi.Table
 		return queryapi.QueryResult{}, err
 	}
 	body := statementRequest{
-		Statement:   sql,
-		WarehouseID: target.Warehouse.WarehouseID,
-		WaitTimeout: c.waitTimeout(),
-		Disposition: "INLINE",
-		Format:      "JSON_ARRAY",
-		Parameters:  statementParameters(args),
+		Statement:     sql,
+		WarehouseID:   target.Warehouse.WarehouseID,
+		WaitTimeout:   c.waitTimeout(),
+		OnWaitTimeout: statementOnWaitTimeoutCancel,
+		Disposition:   "INLINE",
+		Format:        "JSON_ARRAY",
+		Parameters:    statementParameters(args),
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -86,17 +92,17 @@ func (c StatementClient) ExecuteQuery(ctx context.Context, target queryapi.Table
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return queryapi.QueryResult{}, fmt.Errorf("databricks statement failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return queryapi.QueryResult{}, statementHTTPError{
+			status: resp.Status,
+			body:   strings.TrimSpace(string(body)),
+		}
 	}
 	var out statementResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return queryapi.QueryResult{}, fmt.Errorf("decode statement response: %w", err)
 	}
-	if state := strings.ToUpper(strings.TrimSpace(out.Status.State)); state != "" && state != "SUCCEEDED" {
-		if out.Status.Error.Message != "" {
-			return queryapi.QueryResult{}, fmt.Errorf("databricks statement %s: %s", state, out.Status.Error.Message)
-		}
-		return queryapi.QueryResult{}, fmt.Errorf("databricks statement did not complete: %s", state)
+	if state := strings.ToUpper(strings.TrimSpace(out.Status.State)); state != "" && state != statementStatusSucceeded {
+		return queryapi.QueryResult{}, statementStateError{state: state, message: out.Status.Error.Message}
 	}
 	return queryResultFromStatement(out), nil
 }
@@ -109,12 +115,13 @@ func (c StatementClient) waitTimeout() string {
 }
 
 type statementRequest struct {
-	Statement   string               `json:"statement"`
-	WarehouseID string               `json:"warehouse_id"`
-	WaitTimeout string               `json:"wait_timeout"`
-	Disposition string               `json:"disposition"`
-	Format      string               `json:"format"`
-	Parameters  []statementParameter `json:"parameters,omitempty"`
+	Statement     string               `json:"statement"`
+	WarehouseID   string               `json:"warehouse_id"`
+	WaitTimeout   string               `json:"wait_timeout"`
+	OnWaitTimeout string               `json:"on_wait_timeout,omitempty"`
+	Disposition   string               `json:"disposition"`
+	Format        string               `json:"format"`
+	Parameters    []statementParameter `json:"parameters,omitempty"`
 }
 
 type statementParameter struct {
@@ -190,6 +197,41 @@ func queryResultFromStatement(resp statementResponse) queryapi.QueryResult {
 		Rows:      rows,
 		Truncated: resp.Manifest.Truncated || resp.Result.Truncated,
 	}
+}
+
+type statementHTTPError struct {
+	status string
+	body   string
+}
+
+func (e statementHTTPError) Error() string {
+	if e.body == "" {
+		return statementHTTPFailureSafeMessage + ": " + e.status
+	}
+	return fmt.Sprintf("%s: %s: %s", statementHTTPFailureSafeMessage, e.status, e.body)
+}
+
+func (e statementHTTPError) SafeStatusMessage() string {
+	return statementHTTPFailureSafeMessage + ": " + e.status
+}
+
+type statementStateError struct {
+	state   string
+	message string
+}
+
+func (e statementStateError) Error() string {
+	if e.message == "" {
+		return "databricks statement did not complete: " + e.state
+	}
+	return fmt.Sprintf("databricks statement %s: %s", e.state, e.message)
+}
+
+func (e statementStateError) SafeStatusMessage() string {
+	if e.state == "" {
+		return "databricks statement did not complete"
+	}
+	return "databricks statement did not complete: " + e.state
 }
 
 // Stub is a local-development backend used only when DATABRICKS_DEV_STATIC_TABLES

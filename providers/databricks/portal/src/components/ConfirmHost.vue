@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import PortalConfirmDialog from '@kedge-portal/components/ConfirmDialog.vue'
+import PortalConfirmDialog from './ConfirmDialog.vue'
 import { confirmState, resolveConfirm } from './confirm'
 </script>
 

@@ -13,6 +13,7 @@ package connection
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,7 +79,7 @@ func (r *Reconciler) reconcileConnection(ctx context.Context, c client.Client, k
 	}
 	token, err := shared.ResolveBearerToken(ctx, c, &conn)
 	if err != nil {
-		return r.fail(ctx, c, &conn, ReasonCredentialUnavailable, err.Error())
+		return r.failAfter(ctx, c, &conn, ReasonCredentialUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if r.Validator == nil {
 		return r.fail(ctx, c, &conn, ReasonValidatorUnavailable, "databricks credential validator is not configured")
@@ -89,7 +90,7 @@ func (r *Reconciler) reconcileConnection(ctx context.Context, c client.Client, k
 		BearerToken: token,
 	})
 	if err != nil {
-		return r.fail(ctx, c, &conn, ReasonValidationFailed, err.Error())
+		return r.fail(ctx, c, &conn, ReasonValidationFailed, backend.SafeStatusMessage(err))
 	}
 
 	conn.Status.ObservedGeneration = conn.Generation
@@ -107,6 +108,10 @@ func (r *Reconciler) reconcileConnection(ctx context.Context, c client.Client, k
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, conn *databricksv1alpha1.Connection, reason, msg string) (ctrl.Result, error) {
+	return r.failAfter(ctx, c, conn, reason, msg, 0)
+}
+
+func (r *Reconciler) failAfter(ctx context.Context, c client.Client, conn *databricksv1alpha1.Connection, reason, msg string, requeueAfter time.Duration) (ctrl.Result, error) {
 	conn.Status.ObservedGeneration = conn.Generation
 	conn.Status.WorkspaceID = ""
 	shared.SetCondition(&conn.Status.Conditions, databricksv1alpha1.ConditionValidated, metav1.ConditionFalse, reason, msg, conn.Generation)
@@ -114,5 +119,5 @@ func (r *Reconciler) fail(ctx context.Context, c client.Client, conn *databricks
 	if err := c.Status().Update(ctx, conn); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }

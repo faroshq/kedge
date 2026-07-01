@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import ResourceTable from '@kedge-portal/components/ResourceTable.vue'
-import StatusBadge from '@kedge-portal/components/StatusBadge.vue'
+import ResourceTable from '../components/ResourceTable.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../components/confirm'
-import type { AuthType, Connection, ErrorResponse } from '../types'
+import type { Connection, ErrorResponse } from '../types'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
 
@@ -17,7 +17,6 @@ const rows = computed<Array<Record<string, unknown>>>(() => connections.value.ma
 const showForm = ref(false)
 const name = ref('')
 const host = ref('')
-const authType = ref<AuthType>('pat')
 const token = ref('')
 const submitting = ref(false)
 const formError = ref<string | null>(null)
@@ -31,7 +30,6 @@ function errMessage(e: unknown): string {
 function resetForm() {
   name.value = ''
   host.value = ''
-  authType.value = 'pat'
   token.value = ''
   formError.value = null
 }
@@ -62,12 +60,11 @@ async function submit() {
   }
   submitting.value = true
   try {
-    await api.saveConnection({
-      name: name.value,
-      host: host.value,
-      authType: authType.value,
-      token: token.value,
-    })
+	    await api.saveConnection({
+	      name: name.value,
+	      host: host.value,
+	      token: token.value,
+	    })
     resetForm()
     showForm.value = false
     await load()
@@ -120,13 +117,7 @@ onUnmounted(() => window.clearInterval(timer))
       <form class="form" @submit.prevent="submit">
         <div class="field"><span class="field-label">Name</span><input v-model="name" autocomplete="off" placeholder="orders-prod" /></div>
         <div class="field"><span class="field-label">Workspace host</span><input v-model="host" autocomplete="off" placeholder="https://dbc-example.cloud.databricks.com" /></div>
-        <div class="field">
-          <span class="field-label">Auth type</span>
-          <select v-model="authType" disabled title="Only PAT authentication is supported today.">
-            <option value="pat">PAT</option>
-          </select>
-        </div>
-        <div class="field"><span class="field-label">Token</span><input v-model="token" type="password" autocomplete="off" placeholder="Paste token" /></div>
+	        <div class="field"><span class="field-label">Token</span><input v-model="token" type="password" autocomplete="off" placeholder="Paste token" /></div>
         <div class="actions">
           <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting...' : 'Create' }}</button>
           <button class="secondary" type="button" @click="() => { resetForm(); showForm = false }">Cancel</button>

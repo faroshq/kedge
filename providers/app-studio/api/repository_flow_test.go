@@ -126,7 +126,6 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"infrastructure__provision",
 		projectToolDatabricksListTables,
 		projectToolDatabricksDescribeTable,
-		projectToolDatabricksQueryTable,
 	} {
 		if !projectMCPToolAllowed(name) {
 			t.Fatalf("%s should be allowed from the aggregate MCP infrastructure provider", name)
@@ -137,6 +136,9 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 	}
 	if projectMCPToolAllowed("databricks__import_table") {
 		t.Fatal("databricks__import_table should not be allowed from App Studio")
+	}
+	if projectMCPToolAllowed("databricks__query_table") {
+		t.Fatal("databricks__query_table should not be auto-allowed from App Studio")
 	}
 }
 
@@ -364,7 +366,7 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 	for _, msg := range model.Inputs[0].Messages {
 		joined += msg.Content + "\n"
 	}
-	for _, want := range []string{projectToolDatabricksListTables, projectToolDatabricksDescribeTable, projectToolDatabricksQueryTable} {
+	for _, want := range []string{projectToolDatabricksListTables, projectToolDatabricksDescribeTable} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("model input missing %s:\n%s", want, joined)
 		}
@@ -373,14 +375,67 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		"existing imported kedge Table resources only",
 		"tableRef",
 		"provider-databricks",
-		"POST /services/providers/databricks/api/tables/{tableRef}/query",
-		"columns, filters, orderBy, and limit",
+		"Do not call provider backend URLs",
+		"do not embed Databricks credentials",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("model input missing Databricks tableRef guidance %q:\n%s", want, joined)
 		}
 	}
-	if strings.Contains(joined, "databricks__import_table") {
+	for _, forbidden := range []string{
+		"databricks__import_table",
+		"databricks__query_table",
+		"/services/providers/databricks",
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("model input should not include filtered Databricks capability %q:\n%s", forbidden, joined)
+		}
+	}
+}
+
+func TestGenerateProjectAssistantStreamSkipsDatabricksDiscoveryForGenericTables(t *testing.T) {
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected MCP request for generic table prompt: %s %s", r.Method, r.URL.Path)
+	}))
+	defer mcp.Close()
+
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "Render a table of todos in the app."); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("I will update the UI table.", nil),
+	}}}
+	setProjectAssistantModelForTest(server, model)
+	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
+		return projectAssistantTurnDecision{
+			Profile:              projectAssistantTurnProfileExploration,
+			RequiresCurrentState: true,
+			Confidence:           projectAssistantTurnConfidenceHigh,
+		}, nil
+	}
+
+	if _, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	); err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	var joined string
+	for _, msg := range model.Inputs[0].Messages {
+		joined += msg.Content + "\n"
+	}
+	if strings.Contains(joined, projectToolDatabricksListTables) || strings.Contains(joined, "Databricks guidance") {
 		t.Fatalf("model input should not include filtered databricks tools:\n%s", joined)
 	}
 }

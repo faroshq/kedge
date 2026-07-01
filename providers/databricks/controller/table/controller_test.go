@@ -10,7 +10,6 @@ package table
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -32,6 +31,15 @@ type fakeValidator struct {
 	err    error
 	calls  int
 }
+
+type safeStatusError struct {
+	full string
+	safe string
+}
+
+func (e safeStatusError) Error() string { return e.full }
+
+func (e safeStatusError) SafeStatusMessage() string { return e.safe }
 
 func (v *fakeValidator) ValidateTable(_ context.Context, target backend.TableValidationTarget) (backend.TableValidationResult, error) {
 	v.calls++
@@ -76,8 +84,12 @@ func TestReconcileTableCachesSchema(t *testing.T) {
 	}}
 	r := &Reconciler{Validator: validator}
 
-	if _, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"}); err != nil {
+	result, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"})
+	if err != nil {
 		t.Fatalf("reconcileTable returned error: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %s, want no retry after successful validation", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Table
@@ -134,8 +146,12 @@ func TestReconcileTableReportsMissingWarehouse(t *testing.T) {
 	validator := &fakeValidator{}
 	r := &Reconciler{Validator: validator}
 
-	if _, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"}); err != nil {
+	result, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"})
+	if err != nil {
 		t.Fatalf("reconcileTable returned error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want bounded retry for missing warehouse", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Table
@@ -220,7 +236,10 @@ func TestReconcileTableReportsValidationFailure(t *testing.T) {
 		WithObjects(conn, secret, wh, tbl).
 		WithStatusSubresource(&databricksv1alpha1.Table{}).
 		Build()
-	r := &Reconciler{Validator: &fakeValidator{err: fmt.Errorf("table not found")}}
+	r := &Reconciler{Validator: &fakeValidator{err: safeStatusError{
+		full: "databricks statement failed: TABLE_OR_VIEW_NOT_FOUND: {\"table\":\"missing_table\",\"details\":\"upstream body\"}",
+		safe: "databricks table validation failed: TABLE_OR_VIEW_NOT_FOUND",
+	}}}
 
 	if _, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"}); err != nil {
 		t.Fatalf("reconcileTable returned error: %v", err)
@@ -236,6 +255,12 @@ func TestReconcileTableReportsValidationFailure(t *testing.T) {
 	ready := apimeta.FindStatusCondition(got.Status.Conditions, databricksv1alpha1.ConditionReady)
 	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != ReasonValidationFailed {
 		t.Fatalf("Ready condition = %#v, want False/%s", ready, ReasonValidationFailed)
+	}
+	if !strings.Contains(ready.Message, "databricks table validation failed: TABLE_OR_VIEW_NOT_FOUND") {
+		t.Fatalf("Ready message = %q, want sanitized validator error", ready.Message)
+	}
+	if strings.Contains(ready.Message, "missing_table") || strings.Contains(ready.Message, "upstream body") {
+		t.Fatalf("Ready message = %q, want upstream body details omitted", ready.Message)
 	}
 }
 

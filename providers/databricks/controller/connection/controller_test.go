@@ -31,6 +31,15 @@ type fakeValidator struct {
 	calls  int
 }
 
+type safeStatusError struct {
+	full string
+	safe string
+}
+
+func (e safeStatusError) Error() string { return e.full }
+
+func (e safeStatusError) SafeStatusMessage() string { return e.safe }
+
 func (v *fakeValidator) ValidateConnection(_ context.Context, target backend.ConnectionValidationTarget) (backend.ConnectionValidationResult, error) {
 	v.calls++
 	v.target = target
@@ -66,8 +75,12 @@ func TestReconcileConnectionValidatesPATSecret(t *testing.T) {
 	}}
 	r := &Reconciler{Validator: validator}
 
-	if _, err := r.reconcileConnection(ctx, c, types.NamespacedName{Name: "orders"}); err != nil {
+	result, err := r.reconcileConnection(ctx, c, types.NamespacedName{Name: "orders"})
+	if err != nil {
 		t.Fatalf("reconcileConnection returned error: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %s, want no retry after successful validation", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Connection
@@ -127,8 +140,12 @@ func TestReconcileConnectionReportsMissingSecret(t *testing.T) {
 	validator := &fakeValidator{}
 	r := &Reconciler{Validator: validator}
 
-	if _, err := r.reconcileConnection(ctx, c, types.NamespacedName{Name: "orders"}); err != nil {
+	result, err := r.reconcileConnection(ctx, c, types.NamespacedName{Name: "orders"})
+	if err != nil {
 		t.Fatalf("reconcileConnection returned error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want bounded retry for missing credential", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Connection
@@ -148,13 +165,62 @@ func TestReconcileConnectionReportsMissingSecret(t *testing.T) {
 	}
 }
 
+func TestReconcileConnectionReportsSanitizedValidationFailure(t *testing.T) {
+	ctx := context.Background()
+	conn := &databricksv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "orders", Generation: 2},
+		Spec: databricksv1alpha1.ConnectionSpec{
+			Host:     "https://dbc.example.com",
+			AuthType: databricksv1alpha1.ConnectionAuthPAT,
+			SecretRef: databricksv1alpha1.LocalSecretReference{
+				Name:      "orders-token",
+				Namespace: "default",
+				Key:       "token",
+			},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "orders-token", Namespace: "default"},
+		Data:       map[string][]byte{"token": []byte("pat-secret")},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(databricksscheme.NewScheme()).
+		WithObjects(conn, secret).
+		WithStatusSubresource(&databricksv1alpha1.Connection{}).
+		Build()
+	validator := &fakeValidator{err: safeStatusError{
+		full: "databricks current-user request failed: 401 Unauthorized: {\"access_token\":\"pat-secret\",\"details\":\"upstream body\"}",
+		safe: "databricks credential validation failed: 401 Unauthorized",
+	}}
+	r := &Reconciler{Validator: validator}
+
+	if _, err := r.reconcileConnection(ctx, c, types.NamespacedName{Name: "orders"}); err != nil {
+		t.Fatalf("reconcileConnection returned error: %v", err)
+	}
+
+	var got databricksv1alpha1.Connection
+	if err := c.Get(ctx, types.NamespacedName{Name: "orders"}, &got); err != nil {
+		t.Fatalf("get connection: %v", err)
+	}
+	validated := apimeta.FindStatusCondition(got.Status.Conditions, databricksv1alpha1.ConditionValidated)
+	if validated == nil || validated.Status != metav1.ConditionFalse || validated.Reason != ReasonValidationFailed {
+		t.Fatalf("Validated condition = %#v, want False/%s", validated, ReasonValidationFailed)
+	}
+	if !strings.Contains(validated.Message, "databricks credential validation failed: 401 Unauthorized") {
+		t.Fatalf("Validated message = %q, want sanitized status message", validated.Message)
+	}
+	if strings.Contains(validated.Message, "pat-secret") || strings.Contains(validated.Message, "upstream body") {
+		t.Fatalf("Validated message = %q, want upstream body details omitted", validated.Message)
+	}
+}
+
 func TestReconcileConnectionRejectsUnsupportedAuthType(t *testing.T) {
 	ctx := context.Background()
 	conn := &databricksv1alpha1.Connection{
 		ObjectMeta: metav1.ObjectMeta{Name: "orders", Generation: 1},
 		Spec: databricksv1alpha1.ConnectionSpec{
 			Host:     "https://dbc.example.com",
-			AuthType: databricksv1alpha1.ConnectionAuthServicePrincipal,
+			AuthType: databricksv1alpha1.ConnectionAuthType("service-principal-oauth"),
 			SecretRef: databricksv1alpha1.LocalSecretReference{
 				Name:      "orders-token",
 				Namespace: "default",

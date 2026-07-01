@@ -6,7 +6,6 @@
 kedge-provider-databricks {
   display: block;
   color: var(--color-text-primary);
-  font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
 kedge-provider-databricks .app {
@@ -180,7 +179,7 @@ kedge-provider-databricks button.icon-button {
 kedge-provider-databricks button.primary {
   background: var(--color-accent);
   border: 1px solid var(--color-accent);
-  color: white;
+  color: var(--color-on-accent, var(--color-surface));
   min-height: 32px;
   padding: 6px 14px;
 }

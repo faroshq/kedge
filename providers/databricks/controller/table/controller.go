@@ -13,6 +13,7 @@ package table
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,21 +82,21 @@ func (r *Reconciler) reconcileTable(ctx context.Context, c client.Client, key ty
 
 	wh, err := shared.ResolveWarehouse(ctx, c, tbl.Spec.WarehouseRef)
 	if err != nil {
-		return r.fail(ctx, c, &tbl, ReasonWarehouseUnavailable, err.Error())
+		return r.failAfter(ctx, c, &tbl, ReasonWarehouseUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if wh.Spec.ConnectionRef != tbl.Spec.ConnectionRef {
 		return r.fail(ctx, c, &tbl, ReasonWarehouseConnectionMismatch, fmt.Sprintf("table connectionRef %q does not match warehouse connectionRef %q", tbl.Spec.ConnectionRef, wh.Spec.ConnectionRef))
 	}
 	conn, err := shared.ResolveConnection(ctx, c, tbl.Spec.ConnectionRef)
 	if err != nil {
-		return r.fail(ctx, c, &tbl, ReasonConnectionUnavailable, err.Error())
+		return r.failAfter(ctx, c, &tbl, ReasonConnectionUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if conn.Spec.AuthType != databricksv1alpha1.ConnectionAuthPAT {
 		return r.fail(ctx, c, &tbl, ReasonAuthTypeUnsupported, fmt.Sprintf("connection authType %q is declared, but this provider currently validates PAT credentials only", conn.Spec.AuthType))
 	}
 	token, err := shared.ResolveBearerToken(ctx, c, conn)
 	if err != nil {
-		return r.fail(ctx, c, &tbl, ReasonCredentialUnavailable, err.Error())
+		return r.failAfter(ctx, c, &tbl, ReasonCredentialUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if r.Validator == nil {
 		return r.fail(ctx, c, &tbl, ReasonValidatorUnavailable, "databricks table validator is not configured")
@@ -118,7 +119,7 @@ func (r *Reconciler) reconcileTable(ctx context.Context, c client.Client, key ty
 		Credential: queryapi.Credential{BearerToken: token},
 	})
 	if err != nil {
-		return r.fail(ctx, c, &tbl, ReasonValidationFailed, err.Error())
+		return r.fail(ctx, c, &tbl, ReasonValidationFailed, backend.SafeStatusMessage(err))
 	}
 
 	now := metav1.Now()
@@ -133,6 +134,10 @@ func (r *Reconciler) reconcileTable(ctx context.Context, c client.Client, key ty
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, tbl *databricksv1alpha1.Table, reason, msg string) (ctrl.Result, error) {
+	return r.failAfter(ctx, c, tbl, reason, msg, 0)
+}
+
+func (r *Reconciler) failAfter(ctx context.Context, c client.Client, tbl *databricksv1alpha1.Table, reason, msg string, requeueAfter time.Duration) (ctrl.Result, error) {
 	tbl.Status.ObservedGeneration = tbl.Generation
 	tbl.Status.RefreshedAt = nil
 	tbl.Status.Columns = nil
@@ -140,5 +145,5 @@ func (r *Reconciler) fail(ctx context.Context, c client.Client, tbl *databricksv
 	if err := c.Status().Update(ctx, tbl); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }

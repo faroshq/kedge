@@ -89,7 +89,6 @@ const (
 	projectToolInfrastructureGetInstance      = "infrastructure__get_instance"
 	projectToolDatabricksListTables           = "databricks__list_tables"
 	projectToolDatabricksDescribeTable        = "databricks__describe_table"
-	projectToolDatabricksQueryTable           = "databricks__query_table"
 )
 
 var (
@@ -1684,14 +1683,14 @@ func projectMCPToolsPrompt(tools []chatTool) string {
 		}
 		b.WriteString("- " + tool.Function.Name + ": " + desc + "\n")
 		switch strings.TrimSpace(tool.Function.Name) {
-		case projectToolDatabricksListTables, projectToolDatabricksDescribeTable, projectToolDatabricksQueryTable:
+		case projectToolDatabricksListTables, projectToolDatabricksDescribeTable:
 			hasDatabricksTools = true
 		}
 	}
 	if hasDatabricksTools {
 		b.WriteString("Databricks guidance: use existing imported kedge Table resources only. ")
-		b.WriteString("Refer to them by tableRef when generating app code, and route runtime data access through provider-databricks. ")
-		b.WriteString("Generated apps should query table data with POST /services/providers/databricks/api/tables/{tableRef}/query using JSON fields columns, filters, orderBy, and limit. ")
+		b.WriteString("Refer to them by tableRef when designing app data models or asking the user which imported table to use through provider-databricks. ")
+		b.WriteString("Do not call provider backend URLs from generated code. ")
 		b.WriteString("Do not create or import Databricks tables from App Studio, and do not embed Databricks credentials or raw warehouse auth config in generated code.\n")
 	}
 	return b.String()
@@ -1773,8 +1772,7 @@ func projectAssistantMCPToolSpec(tool projectMCPTool) (projectAssistantToolSpec,
 	case projectToolInfrastructureProvision:
 		risk = projectAssistantToolRiskRuntime
 	case projectToolDatabricksListTables,
-		projectToolDatabricksDescribeTable,
-		projectToolDatabricksQueryTable:
+		projectToolDatabricksDescribeTable:
 		risk = projectAssistantToolRiskRead
 	default:
 		return projectAssistantToolSpec{}, false

@@ -13,6 +13,7 @@ package warehouse
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,14 +79,14 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 
 	conn, err := shared.ResolveConnection(ctx, c, wh.Spec.ConnectionRef)
 	if err != nil {
-		return r.fail(ctx, c, &wh, ReasonConnectionUnavailable, err.Error())
+		return r.failAfter(ctx, c, &wh, ReasonConnectionUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if conn.Spec.AuthType != databricksv1alpha1.ConnectionAuthPAT {
 		return r.fail(ctx, c, &wh, ReasonAuthTypeUnsupported, fmt.Sprintf("connection authType %q is declared, but this provider currently validates PAT credentials only", conn.Spec.AuthType))
 	}
 	token, err := shared.ResolveBearerToken(ctx, c, conn)
 	if err != nil {
-		return r.fail(ctx, c, &wh, ReasonCredentialUnavailable, err.Error())
+		return r.failAfter(ctx, c, &wh, ReasonCredentialUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if r.Validator == nil {
 		return r.fail(ctx, c, &wh, ReasonValidatorUnavailable, "databricks warehouse validator is not configured")
@@ -96,7 +97,7 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 		BearerToken: token,
 	})
 	if err != nil {
-		return r.fail(ctx, c, &wh, ReasonValidationFailed, err.Error())
+		return r.fail(ctx, c, &wh, ReasonValidationFailed, backend.SafeStatusMessage(err))
 	}
 
 	wh.Status.ObservedGeneration = wh.Generation
@@ -116,11 +117,15 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, wh *databricksv1alpha1.Warehouse, reason, msg string) (ctrl.Result, error) {
+	return r.failAfter(ctx, c, wh, reason, msg, 0)
+}
+
+func (r *Reconciler) failAfter(ctx context.Context, c client.Client, wh *databricksv1alpha1.Warehouse, reason, msg string, requeueAfter time.Duration) (ctrl.Result, error) {
 	wh.Status.ObservedGeneration = wh.Generation
 	wh.Status.State = ""
 	shared.SetCondition(&wh.Status.Conditions, databricksv1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg, wh.Generation)
 	if err := c.Status().Update(ctx, wh); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }

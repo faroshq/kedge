@@ -22,11 +22,19 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "databricks.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.catalogEntry.enabled }}
       initContainers:
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           args: ["init"]
           env:
             - name: KEDGE_PROVIDER_KUBECONFIG
@@ -47,6 +55,10 @@ spec:
         - name: provider
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
@@ -88,7 +100,7 @@ spec:
         - name: provider-kubeconfig
           secret:
             secretName: {{ .Values.providerKubeconfig.secretName }}
-            optional: true
+            optional: {{ not .Values.catalogEntry.enabled }}
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig

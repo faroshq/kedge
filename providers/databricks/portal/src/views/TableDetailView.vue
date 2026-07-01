@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import ResourceTable from '@kedge-portal/components/ResourceTable.vue'
-import StatusBadge from '@kedge-portal/components/StatusBadge.vue'
+import ResourceTable from '../components/ResourceTable.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
-import ConditionsPanel from '@kedge-portal/components/ConditionsPanel.vue'
+import ConditionsPanel from '../components/ConditionsPanel.vue'
 import { confirmDialog } from '../components/confirm'
 import type { ErrorResponse, Table } from '../types'
 
@@ -42,11 +42,9 @@ const hint = computed(() => {
       return `Connection "${tbl.connectionRef}" could not be read. Check that it still exists in this workspace.`
     case 'CredentialUnavailable':
       return `The credential for connection "${tbl.connectionRef}" could not be read. Check the connection's Secret.`
-    case 'ValidationFailed':
-      return 'Databricks rejected the table describe request. The catalog, schema, or table may be wrong, or the token may not have access.'
-    case 'AuthTypeUnsupported':
-      return 'The provider currently validates PAT credentials only. The referenced connection uses an unsupported auth type.'
-    default:
+	    case 'ValidationFailed':
+	      return 'Databricks rejected the table describe request. The catalog, schema, or table may be wrong, or the token may not have access.'
+	    default:
       return ready.value?.message || tbl.message || 'The table is not ready yet.'
   }
 })

@@ -26,13 +26,11 @@ type LocalSecretReference struct {
 	Key string `json:"key,omitempty"`
 }
 
-// +kubebuilder:validation:Enum=oauth-token-federation;service-principal-oauth;pat
+// +kubebuilder:validation:Enum=pat
 type ConnectionAuthType string
 
 const (
-	ConnectionAuthOAuthTokenFederation ConnectionAuthType = "oauth-token-federation"
-	ConnectionAuthServicePrincipal     ConnectionAuthType = "service-principal-oauth"
-	ConnectionAuthPAT                  ConnectionAuthType = "pat"
+	ConnectionAuthPAT ConnectionAuthType = "pat"
 )
 
 // Connection configures a Databricks workspace for one kedge tenant. It points
@@ -72,23 +70,13 @@ type ConnectionSpec struct {
 	// +kubebuilder:validation:Pattern=`^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$`
 	Host string `json:"host"`
 
-	// AuthType selects the credential model. Query execution currently reads a
-	// bearer token from SecretRef; richer federation flows can reconcile this
-	// into a token-bearing Secret.
+	// AuthType selects the credential model. PAT is the only supported model.
 	// +required
 	AuthType ConnectionAuthType `json:"authType"`
 
 	// SecretRef points at tenant workspace credential/federation config.
 	// +required
 	SecretRef LocalSecretReference `json:"secretRef"`
-
-	// DefaultCatalog is used when imported tables omit a catalog.
-	// +optional
-	DefaultCatalog string `json:"defaultCatalog,omitempty"`
-
-	// DefaultSchema is used when imported tables omit a schema.
-	// +optional
-	DefaultSchema string `json:"defaultSchema,omitempty"`
 }
 
 type ConnectionStatus struct {
@@ -137,13 +125,6 @@ type WarehouseSpec struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	WarehouseID string `json:"warehouseID"`
-	// HTTPPath optionally overrides the SQL warehouse HTTP path.
-	// +optional
-	HTTPPath string `json:"httpPath,omitempty"`
-	// +optional
-	DefaultCatalog string `json:"defaultCatalog,omitempty"`
-	// +optional
-	DefaultSchema string `json:"defaultSchema,omitempty"`
 }
 
 type WarehouseStatus struct {

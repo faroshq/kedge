@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ChevronLeft, ChevronRight, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
-import ResourceTable from '@kedge-portal/components/ResourceTable.vue'
-import StatusBadge from '@kedge-portal/components/StatusBadge.vue'
+import ResourceTable from '../components/ResourceTable.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../components/confirm'
 import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS, paginateRows } from '../pagination'

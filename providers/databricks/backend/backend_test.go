@@ -56,6 +56,9 @@ func TestStatementClientPostsStatementExecutionRequest(t *testing.T) {
 	if gotReq.WarehouseID != "wh-123" || gotReq.Statement == "" || gotReq.Format != "JSON_ARRAY" || gotReq.Disposition != "INLINE" {
 		t.Fatalf("request = %#v", gotReq)
 	}
+	if gotReq.OnWaitTimeout != "CANCEL" {
+		t.Fatalf("on_wait_timeout = %q, want CANCEL", gotReq.OnWaitTimeout)
+	}
 	if len(gotReq.Parameters) != 1 || gotReq.Parameters[0].Name != "p0" || gotReq.Parameters[0].Value != "shipped" {
 		t.Fatalf("parameters = %#v", gotReq.Parameters)
 	}

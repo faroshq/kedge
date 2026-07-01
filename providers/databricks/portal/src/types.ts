@@ -22,7 +22,7 @@ export interface ConditionInfo {
   lastTransitionTime?: string
 }
 
-export type AuthType = 'pat' | 'service-principal-oauth' | 'oauth-token-federation'
+export type AuthType = 'pat'
 
 export interface Connection {
   name: string
@@ -31,8 +31,6 @@ export interface Connection {
   secretName: string
   secretNamespace: string
   secretKey: string
-  defaultCatalog?: string
-  defaultSchema?: string
   workspaceID?: string
   generation?: number
   observedGeneration?: number
@@ -46,9 +44,6 @@ export interface Warehouse {
   name: string
   connectionRef: string
   warehouseID: string
-  httpPath?: string
-  defaultCatalog?: string
-  defaultSchema?: string
   state?: string
   generation?: number
   observedGeneration?: number

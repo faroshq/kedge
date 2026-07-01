@@ -6,7 +6,7 @@ spec:
   resources:
   - group: databricks.kedge.faros.sh
     name: connections
-    schema: v260701-0d050b9c.connections.databricks.kedge.faros.sh
+    schema: v260701-fa21f11c.connections.databricks.kedge.faros.sh
     storage:
       crd: {}
   - group: databricks.kedge.faros.sh
@@ -16,7 +16,7 @@ spec:
       crd: {}
   - group: databricks.kedge.faros.sh
     name: warehouses
-    schema: v260630-0d050b9c.warehouses.databricks.kedge.faros.sh
+    schema: v260701-fa21f11c.warehouses.databricks.kedge.faros.sh
     storage:
       crd: {}
 status: {}

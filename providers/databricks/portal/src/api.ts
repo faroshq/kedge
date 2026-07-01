@@ -147,8 +147,6 @@ function connectionFromCR(cr: RawCR): Connection {
     secretName: secret.name,
     secretNamespace: secret.namespace,
     secretKey: secret.key,
-    defaultCatalog: stringField(spec, 'defaultCatalog'),
-    defaultSchema: stringField(spec, 'defaultSchema'),
     workspaceID: stringField(status, 'workspaceID'),
     generation: typeof cr.metadata.generation === 'number' ? cr.metadata.generation : undefined,
     observedGeneration: typeof status.observedGeneration === 'number' ? status.observedGeneration : undefined,
@@ -167,9 +165,6 @@ function warehouseFromCR(cr: RawCR): Warehouse {
     name: cr.metadata.name,
     connectionRef: String(spec.connectionRef ?? ''),
     warehouseID: String(spec.warehouseID ?? ''),
-    httpPath: stringField(spec, 'httpPath'),
-    defaultCatalog: stringField(spec, 'defaultCatalog'),
-    defaultSchema: stringField(spec, 'defaultSchema'),
     state: stringField(status, 'state'),
     generation: typeof cr.metadata.generation === 'number' ? cr.metadata.generation : undefined,
     observedGeneration: typeof status.observedGeneration === 'number' ? status.observedGeneration : undefined,
@@ -231,8 +226,8 @@ async function deleteSecret(name: string, namespace: string): Promise<void> {
 
 const GQL_META = 'metadata { name uid resourceVersion generation creationTimestamp }'
 const GQL_COND = 'conditions { type status reason message lastTransitionTime }'
-const F_CONNECTION = `${GQL_META} spec { host authType secretRef { name namespace key } defaultCatalog defaultSchema } status { workspaceID observedGeneration ${GQL_COND} }`
-const F_WAREHOUSE = `${GQL_META} spec { connectionRef warehouseID httpPath defaultCatalog defaultSchema } status { state observedGeneration ${GQL_COND} }`
+const F_CONNECTION = `${GQL_META} spec { host authType secretRef { name namespace key } } status { workspaceID observedGeneration ${GQL_COND} }`
+const F_WAREHOUSE = `${GQL_META} spec { connectionRef warehouseID } status { state observedGeneration ${GQL_COND} }`
 const F_TABLE = `${GQL_META} spec { connectionRef warehouseRef catalog schema table } status { refreshedAt columns { name type nullable comment } observedGeneration ${GQL_COND} }`
 
 async function gqlList(kind: string, fields: string): Promise<RawCR[]> {
@@ -303,28 +298,33 @@ export const api = {
   async saveConnection(input: {
     name: string
     host: string
-    authType: AuthType
     secretName?: string
     secretNamespace?: string
     secretKey?: string
     token?: string
-    defaultCatalog?: string
-    defaultSchema?: string
   }): Promise<Connection> {
     const name = dns1123(input.name)
     const secretName = dns1123(input.secretName || `${name}-token`)
     const secretNamespace = input.secretNamespace || DEFAULT_SECRET_NAMESPACE
     const secretKey = input.secretKey || DEFAULT_SECRET_KEY
+    if (input.token) {
+      await applyTokenSecret({
+        ownerKind: 'Connection',
+        ownerName: name,
+        name: secretName,
+        namespace: secretNamespace,
+        key: secretKey,
+        token: input.token,
+      })
+    }
     const conn = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Connection',
       metadata: { name },
       spec: cleanSpec({
         host: input.host,
-        authType: input.authType,
+        authType: 'pat',
         secretRef: { name: secretName, namespace: secretNamespace, key: secretKey },
-        defaultCatalog: input.defaultCatalog,
-        defaultSchema: input.defaultSchema,
       }),
     })
     if (input.token) {
@@ -364,9 +364,6 @@ export const api = {
     name: string
     connectionRef: string
     warehouseID: string
-    httpPath?: string
-    defaultCatalog?: string
-    defaultSchema?: string
   }): Promise<Warehouse> {
     const created = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
@@ -375,9 +372,6 @@ export const api = {
       spec: cleanSpec({
         connectionRef: input.connectionRef,
         warehouseID: input.warehouseID,
-        httpPath: input.httpPath,
-        defaultCatalog: input.defaultCatalog,
-        defaultSchema: input.defaultSchema,
       }),
     })
     return warehouseFromCR(created)

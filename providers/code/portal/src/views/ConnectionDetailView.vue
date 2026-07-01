@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { ConnectionDetail, ErrorResponse } from '../types'
-import ConditionsPanel from '@kedge-portal/components/ConditionsPanel.vue'
+import ConditionsPanel from '../components/ConditionsPanel.vue'
 import { confirmDialog } from '../components/confirm'
 
 const props = defineProps<{ name: string }>()

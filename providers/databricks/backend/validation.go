@@ -11,6 +11,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -90,8 +91,25 @@ type TableValidationResult struct {
 	Columns []databricksv1alpha1.Column
 }
 
+type statusSafeError interface {
+	SafeStatusMessage() string
+}
+
 var _ Validator = StatementClient{}
 var _ Validator = Stub{}
+
+func SafeStatusMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var safe statusSafeError
+	if errors.As(err, &safe) {
+		if msg := strings.TrimSpace(safe.SafeStatusMessage()); msg != "" {
+			return msg
+		}
+	}
+	return err.Error()
+}
 
 // ValidateConnection performs the lightest useful PAT check: call Databricks'
 // current-user endpoint with the token. Warehouse/table authorization is
@@ -393,6 +411,10 @@ func (e currentUserHTTPError) Error() string {
 	return fmt.Sprintf("databricks credential validation failed: %s: %s", e.status, e.body)
 }
 
+func (e currentUserHTTPError) SafeStatusMessage() string {
+	return "databricks credential validation failed: " + e.status
+}
+
 type warehouseHTTPError struct {
 	status string
 	body   string
@@ -405,9 +427,13 @@ func (e warehouseHTTPError) Error() string {
 	return fmt.Sprintf("databricks warehouse validation failed: %s: %s", e.status, e.body)
 }
 
+func (e warehouseHTTPError) SafeStatusMessage() string {
+	return "databricks warehouse validation failed: " + e.status
+}
+
 func isEndpointNotFound(err error) bool {
-	httpErr, ok := err.(currentUserHTTPError)
-	return ok && httpErr.statusCode == http.StatusNotFound
+	var httpErr currentUserHTTPError
+	return errors.As(err, &httpErr) && httpErr.statusCode == http.StatusNotFound
 }
 
 func firstString(values map[string]any, keys ...string) string {

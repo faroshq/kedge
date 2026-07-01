@@ -15,11 +15,7 @@
     "noEmit": true,
     "jsx": "preserve",
     "types": ["vite/client"],
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["../../../portal/src/*"],
-      "@kedge-portal/*": ["../../../portal/src/*"]
-    }
+    "baseUrl": "."
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts"]
 }

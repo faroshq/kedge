@@ -266,14 +266,15 @@ func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) fu
 		}
 		env, rejected, blockers := normalizeProjectAssistantRuntimeEnv(args)
 		if len(blockers) > 0 {
+			nextSteps := []string{"Set only non-secret configuration through set_runtime_env."}
+			if len(rejected) > 0 {
+				nextSteps = append(nextSteps, "Configure secrets such as "+strings.Join(rejected, ", ")+" through the runtime secret settings instead.")
+			}
 			return &projectAssistantRuntimeWorkflowResult{
-				Status:   "blocked",
-				Summary:  "Runtime environment update was rejected.",
-				Blockers: blockers,
-				NextSteps: []string{
-					"Set only non-secret configuration through set_runtime_env.",
-					"Configure secrets such as " + strings.Join(rejected, ", ") + " through the runtime secret settings instead.",
-				},
+				Status:    "blocked",
+				Summary:   "Runtime environment update was rejected.",
+				Blockers:  blockers,
+				NextSteps: nextSteps,
 			}, nil
 		}
 		server, id, runner, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)

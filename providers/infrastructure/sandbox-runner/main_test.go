@@ -300,7 +300,7 @@ func TestEnvSetsChildEnvironmentAndRestarts(t *testing.T) {
 		ControlToken: "test-token",
 	})
 	resp := postJSON(t, s, "/env", envRequest{
-		Env:     map[string]string{"APP_MODE": "dev", "SANDBOX_HACK": "nope"},
+		Env:     map[string]string{"APP_MODE": "dev", "FEATURE_FLAG": "on"},
 		Restart: true,
 	})
 	if resp.Code != http.StatusOK {
@@ -313,28 +313,43 @@ func TestEnvSetsChildEnvironmentAndRestarts(t *testing.T) {
 	if !decoded.Restarted {
 		t.Fatalf("expected restart, got %+v", decoded)
 	}
-	if len(decoded.Applied) != 1 || decoded.Applied[0] != "APP_MODE" {
-		t.Fatalf("applied = %v, want only APP_MODE (SANDBOX_ dropped)", decoded.Applied)
+	if strings.Join(decoded.Applied, ",") != "APP_MODE,FEATURE_FLAG" {
+		t.Fatalf("applied = %v, want [APP_MODE FEATURE_FLAG] sorted", decoded.Applied)
 	}
 	defer func() { _ = s.supervisor.stop() }()
 
 	envPath := filepath.Join(root, "child.env")
 	deadline := time.Now().Add(3 * time.Second)
+	var child string
 	for {
-		if _, err := os.Stat(envPath); err == nil {
-			break
+		if raw, err := os.ReadFile(envPath); err == nil {
+			child = string(raw)
+			if strings.Contains(child, "APP_MODE=dev") && strings.Contains(child, "FEATURE_FLAG=on") {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("child env file was not written after restart")
+			t.Fatalf("child process did not receive the runtime env:\n%s", child)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	child := readFile(t, root, "child.env")
-	if !strings.Contains(child, "APP_MODE=dev") {
-		t.Fatalf("child process did not receive APP_MODE=dev:\n%s", child)
+}
+
+func TestEnvRejectsInvalidReservedAndSecretNames(t *testing.T) {
+	s := newRunnerServer(&runnerConfig{WorkDir: t.TempDir(), ControlToken: "test-token"})
+	cases := map[string]envRequest{
+		"empty":           {Env: map[string]string{}},
+		"invalid name":    {Env: map[string]string{"BAD NAME": "x"}},
+		"invalid equals":  {Env: map[string]string{"A=B": "x"}},
+		"reserved prefix": {Env: map[string]string{"SANDBOX_PORT": "9999"}},
+		"secret-like":     {Env: map[string]string{"SHARED_SECRET": "dev-setup"}},
+		"token-like":      {Env: map[string]string{"API_TOKEN": "abc"}},
 	}
-	if strings.Contains(child, "SANDBOX_HACK") {
-		t.Fatalf("child process must not receive SANDBOX_ custom env:\n%s", child)
+	for name, req := range cases {
+		resp := postJSON(t, s, "/env", req)
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400; body=%s", name, resp.Code, resp.Body.String())
+		}
 	}
 }
 

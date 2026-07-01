@@ -403,10 +403,35 @@ type supervisor struct {
 	customEnv map[string]string
 }
 
+// maxRuntimeEnvKeys bounds how many variables a single /env call may set.
+const maxRuntimeEnvKeys = 32
+
 // setEnv records non-secret runtime environment variables to apply on the next
-// dev-process (re)start, returning the applied names sorted. SANDBOX_* control
-// variables are ignored so a caller cannot influence the runner itself.
+// dev-process (re)start, returning the applied names sorted. It enforces the
+// non-secret contract at the runner layer (defense-in-depth: /env is reachable
+// with the control token independently of the assistant-side guard): the request
+// must be non-empty and bounded, every name must be a valid POSIX env name, and
+// SANDBOX_* control and secret-looking names are rejected. Validation is
+// all-or-nothing so a bad request never partially mutates the environment.
 func (s *supervisor) setEnv(env map[string]string) ([]string, error) {
+	if len(env) == 0 {
+		return nil, fmt.Errorf("at least one environment variable is required")
+	}
+	if len(env) > maxRuntimeEnvKeys {
+		return nil, fmt.Errorf("at most %d environment variables may be set in one call", maxRuntimeEnvKeys)
+	}
+	for key := range env {
+		name := strings.TrimSpace(key)
+		if !isValidRuntimeEnvName(name) {
+			return nil, fmt.Errorf("invalid environment variable name %q; use letters, digits, and underscores", key)
+		}
+		if strings.HasPrefix(name, "SANDBOX_") {
+			return nil, fmt.Errorf("environment variable %q is reserved for the sandbox runner", name)
+		}
+		if isSecretLikeRuntimeEnvName(name) {
+			return nil, fmt.Errorf("secret-looking environment variable %q cannot be set through /env", name)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.customEnv == nil {
@@ -415,14 +440,42 @@ func (s *supervisor) setEnv(env map[string]string) ([]string, error) {
 	applied := make([]string, 0, len(env))
 	for key, value := range env {
 		name := strings.TrimSpace(key)
-		if name == "" || strings.HasPrefix(name, "SANDBOX_") {
-			continue
-		}
 		s.customEnv[name] = value
 		applied = append(applied, name)
 	}
 	sort.Strings(applied)
 	return applied, nil
+}
+
+// isValidRuntimeEnvName reports whether name is a valid POSIX environment
+// variable name: a non-empty run of letters, digits, and underscores that does
+// not start with a digit.
+func isValidRuntimeEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isSecretLikeRuntimeEnvName rejects names that look like they carry secret
+// material, mirroring the assistant-side guard so a direct /env caller cannot
+// bypass it. Secrets are configured out of band, not through this path.
+func isSecretLikeRuntimeEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range []string{"SECRET", "TOKEN", "PASSWORD", "PASSWD", "APIKEY", "API_KEY", "PRIVATE_KEY", "CREDENTIAL", "ACCESS_KEY"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return upper == "KEY" || strings.HasSuffix(upper, "_KEY")
 }
 
 func newSupervisor(ctx context.Context, cfg *runnerConfig, logs *ringLog) *supervisor {

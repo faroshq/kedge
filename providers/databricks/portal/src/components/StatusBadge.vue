@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { AlertTriangle, CheckCircle, Circle, Clock, XCircle } from 'lucide-vue-next'
 
 type Tone = 'success' | 'warning' | 'danger' | 'muted'
+type ToneConfig = { toneClass: string; dotClass: string; pulseClass: string }
 
 const props = withDefaults(
   defineProps<{
@@ -13,16 +14,16 @@ const props = withDefaults(
   { connected: null, tone: null },
 )
 
-const toneConfig: Record<Tone, { bg: string; text: string; dot: string; glow: string }> = {
-  success: { bg: 'bg-success-subtle', text: 'text-success', dot: 'bg-success', glow: 'text-success' },
-  warning: { bg: 'bg-warning-subtle', text: 'text-warning', dot: 'bg-warning', glow: 'text-warning' },
-  danger: { bg: 'bg-danger-subtle', text: 'text-danger', dot: 'bg-danger', glow: 'text-danger' },
-  muted: { bg: 'bg-surface-overlay', text: 'text-text-muted', dot: 'bg-text-muted', glow: 'text-text-muted' },
+const toneConfig: Record<Tone, ToneConfig> = {
+  success: { toneClass: 'tone-success', dotClass: 'dot-success', pulseClass: 'pulse-success' },
+  warning: { toneClass: 'tone-warning', dotClass: 'dot-warning', pulseClass: 'pulse-warning' },
+  danger: { toneClass: 'tone-danger', dotClass: 'dot-danger', pulseClass: 'pulse-danger' },
+  muted: { toneClass: 'tone-muted', dotClass: 'dot-muted', pulseClass: 'pulse-muted' },
 }
 
 const config = computed(() => {
   if (props.connected === false)
-    return { bg: 'bg-danger-subtle', text: 'text-danger', icon: XCircle, dot: 'bg-danger', glow: 'text-danger' }
+    return { ...toneConfig.danger, icon: XCircle }
 
   if (props.tone) {
     const tone = toneConfig[props.tone]
@@ -33,39 +34,39 @@ const config = computed(() => {
     case 'ready':
     case 'succeeded':
     case 'committed':
-      return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle, dot: 'bg-success', glow: 'text-success' }
+      return { ...toneConfig.success, icon: CheckCircle }
     case 'scheduling':
     case 'pending':
     case 'provisioning':
     case 'running':
     case 'status unavailable':
-      return { bg: 'bg-warning-subtle', text: 'text-warning', icon: Clock, dot: 'bg-warning', glow: 'text-warning' }
+      return { ...toneConfig.warning, icon: Clock }
     case 'active':
-      return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle, dot: 'bg-success', glow: 'text-success' }
+      return { ...toneConfig.success, icon: CheckCircle }
     case 'terminating':
     case 'failed':
     case 'error':
     case 'repository missing':
     case 'connection missing':
-      return { bg: 'bg-danger-subtle', text: 'text-danger', icon: AlertTriangle, dot: 'bg-danger', glow: 'text-danger' }
+      return { ...toneConfig.danger, icon: AlertTriangle }
     default:
-      return { bg: 'bg-surface-overlay', text: 'text-text-muted', icon: Circle, dot: 'bg-text-muted', glow: 'text-text-muted' }
+      return { ...toneConfig.muted, icon: Circle }
   }
 })
 </script>
 
 <template>
   <span
-    class="inline-flex items-center gap-1.5 rounded-full border border-current/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors duration-150"
-    :class="[config.bg, config.text]"
+    class="status-badge"
+    :class="config.toneClass"
   >
-    <span class="relative flex h-1.5 w-1.5">
+    <span class="status-badge-dot-wrap">
       <span
         v-if="status?.toLowerCase() === 'ready' && connected !== false"
-        class="live-dot absolute inline-flex h-full w-full rounded-full"
-        :class="config.glow"
+        class="live-dot status-badge-pulse"
+        :class="config.pulseClass"
       />
-      <span class="relative inline-flex h-1.5 w-1.5 rounded-full" :class="config.dot" />
+      <span class="status-badge-dot" :class="config.dotClass" />
     </span>
     {{ status }}
   </span>

@@ -11,11 +11,14 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/faroshq/provider-databricks/queryapi"
 )
 
 func TestHandlerAllowsHubFederationHostHeaderWhenConfigured(t *testing.T) {
@@ -50,4 +53,48 @@ func TestHandlerAllowsHubFederationHostHeaderWhenConfigured(t *testing.T) {
 	if strings.Contains(string(body), "databricks__list_tables") {
 		t.Fatalf("provider-local tools should not be provider-prefixed: %s", string(body))
 	}
+}
+
+func TestQueryTableDoesNotExposeBackendErrorBodies(t *testing.T) {
+	srv := httptest.NewServer(NewHandler(Deps{
+		DisableLocalhostMCPProtection: true,
+		TableResolver: queryapi.StaticTableResolver{
+			"order-history": {Catalog: "sales", Schema: "gold", Table: "order_history"},
+		},
+		Backend: failingQueryBackend{},
+	}))
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		srv.URL,
+		bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_table","arguments":{"tableRef":"order-history","query":{}}}}`),
+	)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = "host.docker.internal:8086"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST tools/call: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+	if strings.Contains(text, "pat-secret") || strings.Contains(text, "upstream body") {
+		t.Fatalf("MCP query_table leaked backend error body: %s", text)
+	}
+	if !strings.Contains(text, "databricks query failed") {
+		t.Fatalf("MCP query_table response = %s, want safe query failure", text)
+	}
+}
+
+type failingQueryBackend struct{}
+
+func (failingQueryBackend) ExecuteQuery(context.Context, queryapi.TableTarget, string, []any) (queryapi.QueryResult, error) {
+	return queryapi.QueryResult{}, errors.New(`databricks statement failed: 403 Forbidden: {"access_token":"pat-secret","details":"upstream body"}`)
 }

@@ -82,7 +82,7 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 		return r.failAfter(ctx, c, &wh, ReasonConnectionUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if conn.Spec.AuthType != databricksv1alpha1.ConnectionAuthPAT {
-		return r.fail(ctx, c, &wh, ReasonAuthTypeUnsupported, fmt.Sprintf("connection authType %q is declared, but this provider currently validates PAT credentials only", conn.Spec.AuthType))
+		return r.failAfter(ctx, c, &wh, ReasonAuthTypeUnsupported, fmt.Sprintf("connection authType %q is declared, but this provider currently validates PAT credentials only", conn.Spec.AuthType), shared.ValidationRefreshAfter)
 	}
 	token, err := shared.ResolveBearerToken(ctx, c, conn)
 	if err != nil {
@@ -97,7 +97,7 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 		BearerToken: token,
 	})
 	if err != nil {
-		return r.fail(ctx, c, &wh, ReasonValidationFailed, backend.SafeStatusMessage(err))
+		return r.failAfter(ctx, c, &wh, ReasonValidationFailed, backend.SafeStatusMessage(err), shared.ValidationRefreshAfter)
 	}
 
 	wh.Status.ObservedGeneration = wh.Generation
@@ -113,7 +113,7 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 	if err := c.Status().Update(ctx, &wh); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: shared.ValidationRefreshAfter}, nil
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, wh *databricksv1alpha1.Warehouse, reason, msg string) (ctrl.Result, error) {

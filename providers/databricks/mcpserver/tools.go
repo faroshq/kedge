@@ -100,7 +100,7 @@ func registerTools(srv *mcp.Server, deps Deps, resolver queryapi.TableResolver) 
 			}
 			result, err := deps.Backend.ExecuteQuery(ctx, target, sql, args)
 			if err != nil {
-				return nil, queryapi.QueryResult{}, err
+				return nil, queryapi.QueryResult{}, fmt.Errorf("databricks query failed")
 			}
 			return nil, result, nil
 		})

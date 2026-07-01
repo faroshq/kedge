@@ -86,8 +86,8 @@ func TestReconcileWarehouseValidatesConnectionSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileWarehouse returned error: %v", err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Fatalf("RequeueAfter = %s, want no retry after successful validation", result.RequeueAfter)
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want periodic refresh after successful validation", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Warehouse
@@ -194,8 +194,12 @@ func TestReconcileWarehouseReportsValidationFailure(t *testing.T) {
 		safe: "databricks warehouse validation failed: 404 Not Found",
 	}}}
 
-	if _, err := r.reconcileWarehouse(ctx, c, types.NamespacedName{Name: "orders-warehouse"}); err != nil {
+	result, err := r.reconcileWarehouse(ctx, c, types.NamespacedName{Name: "orders-warehouse"})
+	if err != nil {
 		t.Fatalf("reconcileWarehouse returned error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want periodic refresh after validation failure", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Warehouse

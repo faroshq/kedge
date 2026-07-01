@@ -26,7 +26,6 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.catalogEntry.enabled }}
       initContainers:
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -41,16 +40,19 @@ spec:
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
             - name: KEDGE_SCHEMAS_DIR
               value: /etc/kedge/schemas
+            {{- if .Values.catalogEntry.enabled }}
             - name: KEDGE_CATALOGENTRY_FILE
               value: /etc/kedge/catalogentry/catalogentry.yaml
+            {{- end }}
           volumeMounts:
             - name: provider-kubeconfig
               mountPath: /var/run/secrets/kedge
               readOnly: true
+            {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
               mountPath: /etc/kedge/catalogentry
               readOnly: true
-      {{- end }}
+            {{- end }}
       containers:
         - name: provider
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -80,7 +82,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
                   key: {{ .Values.hub.tokenSecretRef.key }}
-                  optional: true
             {{- end }}
           livenessProbe:
             httpGet:
@@ -100,7 +101,6 @@ spec:
         - name: provider-kubeconfig
           secret:
             secretName: {{ .Values.providerKubeconfig.secretName }}
-            optional: {{ not .Values.catalogEntry.enabled }}
             items:
               - key: kubeconfig
                 path: kedge-provider-kubeconfig

@@ -23,30 +23,30 @@ function onRowClick(row: Record<string, unknown>) {
 </script>
 
 <template>
-  <div class="overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised/80 backdrop-blur">
-    <div v-if="error" class="flex items-center gap-2 p-4 text-[13px] text-danger">
-      <AlertCircle class="h-4 w-4 shrink-0" :stroke-width="1.75" />
+  <div class="resource-table">
+    <div v-if="error" class="resource-table-error">
+      <AlertCircle class="resource-table-error-icon" :stroke-width="1.75" />
       {{ error }}
     </div>
 
-    <div v-else-if="loading" class="space-y-0">
-      <div class="border-b border-border-subtle px-5 py-3">
-        <div class="shimmer h-3 w-24 rounded" />
+    <div v-else-if="loading">
+      <div class="resource-table-loading-head">
+        <div class="shimmer resource-table-skeleton resource-table-skeleton-short" />
       </div>
-      <div v-for="i in 5" :key="i" class="flex items-center gap-6 border-b border-border-subtle px-5 py-3.5 last:border-b-0">
-        <div class="shimmer h-3 w-32 rounded" />
-        <div class="shimmer h-3 w-20 rounded" />
-        <div class="shimmer h-3 w-16 rounded" />
+      <div v-for="i in 5" :key="i" class="resource-table-loading-row">
+        <div class="shimmer resource-table-skeleton resource-table-skeleton-wide" />
+        <div class="shimmer resource-table-skeleton resource-table-skeleton-mid" />
+        <div class="shimmer resource-table-skeleton resource-table-skeleton-small" />
       </div>
     </div>
 
-    <table v-else class="min-w-full">
+    <table v-else class="resource-table-table">
       <thead>
-        <tr class="border-b border-border-subtle">
+        <tr class="resource-table-head-row">
           <th
             v-for="col in columns"
             :key="col.key"
-            class="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted"
+            class="resource-table-heading"
           >
             {{ col.label }}
           </th>
@@ -56,16 +56,15 @@ function onRowClick(row: Record<string, unknown>) {
         <tr
           v-for="(row, i) in rows"
           :key="i"
-          class="stagger-item group border-b border-border-subtle transition-all duration-150 last:border-b-0"
-          :class="interactive ? 'cursor-pointer hover:bg-accent/[0.03]' : ''"
+          class="stagger-item resource-table-row"
+          :class="{ 'is-interactive': interactive }"
           :style="{ animationDelay: `${i * 35}ms` }"
           @click="onRowClick(row)"
         >
           <td
             v-for="col in columns"
             :key="col.key"
-            class="whitespace-nowrap px-5 py-3 text-[13px] text-text-secondary transition-colors duration-100"
-            :class="interactive ? 'group-hover:text-text-primary' : ''"
+            class="resource-table-cell"
           >
             <slot :name="col.key" :value="row[col.key]" :row="row">
               {{ row[col.key] }}
@@ -73,9 +72,9 @@ function onRowClick(row: Record<string, unknown>) {
           </td>
         </tr>
         <tr v-if="rows.length === 0">
-          <td :colspan="columns.length" class="py-16 text-center">
-            <Inbox class="mx-auto h-8 w-8 text-text-muted/20" :stroke-width="1.25" />
-            <p class="mt-2 text-[12px] text-text-muted">{{ emptyText }}</p>
+          <td :colspan="columns.length" class="resource-table-empty-cell">
+            <Inbox class="resource-table-empty-icon" :stroke-width="1.25" />
+            <p class="resource-table-empty-label">{{ emptyText }}</p>
           </td>
         </tr>
       </tbody>

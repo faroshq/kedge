@@ -1689,8 +1689,9 @@ func projectMCPToolsPrompt(tools []chatTool) string {
 	}
 	if hasDatabricksTools {
 		b.WriteString("Databricks guidance: use existing imported kedge Table resources only. ")
-		b.WriteString("Refer to them by tableRef when designing app data models or asking the user which imported table to use through provider-databricks. ")
+		b.WriteString("Refer to them by tableRef when designing app data models, inspecting cached table metadata, or asking the user which imported table to use through provider-databricks. ")
 		b.WriteString("Do not call provider backend URLs from generated code. ")
+		b.WriteString("Do not generate application code that queries Databricks tableRefs yet; no App Studio runtime data-access bridge is available in this workspace. ")
 		b.WriteString("Do not create or import Databricks tables from App Studio, and do not embed Databricks credentials or raw warehouse auth config in generated code.\n")
 	}
 	return b.String()

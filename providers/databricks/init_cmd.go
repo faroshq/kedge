@@ -40,7 +40,7 @@ func runInitCmd(ctx context.Context) error {
 		WorkspacePath: workspacePath,
 		SchemasDir:    schemasDir,
 		Claims: []sdkinstall.PermissionClaim{
-			{Resource: "secrets", Verbs: []string{"get", "list", "watch"}},
+			{Resource: "secrets", Verbs: []string{"get"}},
 		},
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {

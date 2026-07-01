@@ -30,6 +30,7 @@ const (
 	DefaultCredentialsNamespace = "default"
 	DefaultTokenKey             = "token"
 	DependencyRetryAfter        = 15 * time.Second
+	ValidationRefreshAfter      = 5 * time.Minute
 )
 
 func ClusterClient(ctx context.Context, mgr mcmanager.Manager, clusterName multicluster.ClusterName) (client.Client, error) {

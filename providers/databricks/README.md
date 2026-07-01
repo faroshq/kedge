@@ -1,10 +1,10 @@
 # Databricks provider
 
-A kedge provider that exposes imported Databricks SQL Warehouse tables to App
-Studio and generated apps. The provider owns Databricks `Connection`,
-`Warehouse`, and `Table` resources in the tenant workspace. App Studio consumes
-existing `Table` resources by `tableRef`; it does not import tables or handle
-Databricks credentials.
+A kedge provider that exposes imported Databricks SQL Warehouse tables to kedge
+workspaces. The provider owns Databricks `Connection`, `Warehouse`, and `Table`
+resources in the tenant workspace. App Studio can inspect existing `Table`
+resources by `tableRef` for design-time guidance; generated apps do not yet have
+a sanctioned runtime data-access bridge to Databricks.
 
 ## What works today
 
@@ -17,17 +17,17 @@ Databricks credentials.
   - `databricks__describe_table`
   - `databricks__query_table`
 - Read-only structured query execution through Databricks SQL Statement
-  Execution. Generated apps send `tableRef` plus a bounded structured query;
-  they never receive Databricks credentials or raw warehouse auth config.
+  Execution for the provider portal and hub-federated Databricks MCP tool.
 - Portal UX for creating and updating `Connection`, `Warehouse`, and `Table`
-  handles, plus a read-only table preview that exercises the same provider query
-  endpoint generated apps use.
+  handles, plus a read-only table preview.
 - Multicluster controllers validate PAT credentials against the Databricks
   current-user API, validate SQL warehouse handles, refresh table schema status,
   and write `Validated` / `Ready` conditions.
-- Tenant scoping follows the provider-code/provider-infrastructure pattern:
-  the provider kubeconfig supplies host/TLS only, and every tenant resource read
-  uses the caller bearer token and `X-Kedge-Cluster`.
+- Tenant scoping deliberately splits authority: the caller token authorizes the
+  requested `Table`, then the provider's accepted APIExport permission claims
+  resolve referenced `Warehouse`, `Connection`, and credential `Secret`
+  resources. Databricks credentials are never returned to App Studio, generated
+  apps, or browser clients.
 
 ## Current import path
 
@@ -77,12 +77,13 @@ spec:
   table: order_history
 ```
 
-App Studio can then discover and use `order-history` as the `tableRef`.
+App Studio can then discover `order-history` as a `tableRef` for design-time
+metadata and user-facing planning.
 
 ## Runtime query contract
 
-The hub-federated `databricks__query_table` tool and
-`POST /api/tables/{tableRef}/query` accept a structured request:
+The provider portal, backend, and hub-federated `databricks__query_table` tool
+accept a structured request:
 
 ```json
 {
@@ -94,8 +95,9 @@ The hub-federated `databricks__query_table` tool and
 ```
 
 The provider validates identifiers, caps `limit` at 1000, converts filters to
-Databricks named parameters, resolves the table target as the caller, and posts
-to `/api/2.0/sql/statements` with inline `JSON_ARRAY` results.
+Databricks named parameters, authorizes the table reference as the caller,
+resolves credentials through the provider's accepted permission claims, and
+posts to `/api/2.0/sql/statements` with inline `JSON_ARRAY` results.
 
 Connection hosts must be Databricks workspace root URLs over HTTPS. The backend
 allows the standard Databricks workspace domains by default; set
@@ -119,5 +121,7 @@ closed if tenant table lookup or Databricks credentials are unavailable.
 
 - Catalog/schema discovery is not implemented yet; the first UX imports a known
   table by reference.
+- Generated-app runtime access is not implemented yet. Do not hardcode provider
+  backend URLs or Databricks credentials into App Studio-generated source.
 - OAuth federation and service-principal token exchange should be reconciled
   into token-bearing Secrets before query execution.

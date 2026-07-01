@@ -88,8 +88,8 @@ func TestReconcileTableCachesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileTable returned error: %v", err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Fatalf("RequeueAfter = %s, want no retry after successful validation", result.RequeueAfter)
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want periodic refresh after successful validation", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Table
@@ -193,8 +193,12 @@ func TestReconcileTableReportsWarehouseConnectionMismatch(t *testing.T) {
 		Build()
 	r := &Reconciler{Validator: &fakeValidator{}}
 
-	if _, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"}); err != nil {
+	result, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"})
+	if err != nil {
 		t.Fatalf("reconcileTable returned error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want periodic refresh after warehouse connection mismatch", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Table
@@ -241,8 +245,12 @@ func TestReconcileTableReportsValidationFailure(t *testing.T) {
 		safe: "databricks table validation failed: TABLE_OR_VIEW_NOT_FOUND",
 	}}}
 
-	if _, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"}); err != nil {
+	result, err := r.reconcileTable(ctx, c, types.NamespacedName{Name: "order-history"})
+	if err != nil {
 		t.Fatalf("reconcileTable returned error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want periodic refresh after validation failure", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Table

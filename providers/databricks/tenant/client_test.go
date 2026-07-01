@@ -44,9 +44,14 @@ func TestTableResolverBuildsRuntimeTargetFromTenantResources(t *testing.T) {
 		}),
 		secret("data-creds", "sales-token", "access_token", "pat-token"),
 	)
-	factory := &ClientFactory{hot: map[string]dynamic.Interface{
-		"cluster-a:" + hashToken("caller-token"): dyn,
-	}}
+	factory := &ClientFactory{
+		hot: map[string]dynamic.Interface{
+			"cluster-a:" + hashToken("caller-token"): dyn,
+		},
+		providerHot: map[string]dynamic.Interface{
+			"cluster-a": dyn,
+		},
+	}
 	resolver := tableResolver{
 		factory: factory,
 		identity: identity{
@@ -77,6 +82,64 @@ func TestTableResolverBuildsRuntimeTargetFromTenantResources(t *testing.T) {
 	}
 }
 
+func TestTableResolverAuthorizesTableAsCallerButResolvesCredentialAsProvider(t *testing.T) {
+	callerDyn := fakeTenantClient(
+		obj(tablesGVR.Group, tablesGVR.Version, "Table", "", "order-history", map[string]any{
+			"connectionRef": "sales-workspace",
+			"warehouseRef":  "sales-warehouse",
+			"catalog":       "sales",
+			"schema":        "gold",
+			"table":         "order_history",
+		}),
+	)
+	providerDyn := fakeTenantClient(
+		obj(warehousesGVR.Group, warehousesGVR.Version, "Warehouse", "", "sales-warehouse", map[string]any{
+			"connectionRef": "sales-workspace",
+			"warehouseID":   "wh-123",
+		}),
+		obj(connectionsGVR.Group, connectionsGVR.Version, "Connection", "", "sales-workspace", map[string]any{
+			"host":     "https://dbc.example.com",
+			"authType": "pat",
+			"secretRef": map[string]any{
+				"name":      "sales-token",
+				"namespace": "data-creds",
+				"key":       "access_token",
+			},
+		}),
+		secret("data-creds", "sales-token", "access_token", "pat-token"),
+	)
+	factory := &ClientFactory{
+		hot: map[string]dynamic.Interface{
+			"cluster-a:" + hashToken("caller-token"): callerDyn,
+		},
+		providerHot: map[string]dynamic.Interface{
+			"cluster-a": providerDyn,
+		},
+	}
+	resolver := tableResolver{
+		factory: factory,
+		identity: identity{
+			tenantPath: "root:org:workspace",
+			clusterID:  "cluster-a",
+			token:      "caller-token",
+		},
+	}
+
+	target, ok, err := resolver.GetTableTarget(context.Background(), "order-history")
+	if err != nil {
+		t.Fatalf("GetTableTarget returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetTableTarget returned ok=false")
+	}
+	if target.Credential.BearerToken != "pat-token" {
+		t.Fatalf("credential token = %q", target.Credential.BearerToken)
+	}
+	if target.Connection.Host != "https://dbc.example.com" {
+		t.Fatalf("connection host = %q", target.Connection.Host)
+	}
+}
+
 func TestTableResolverRejectsMismatchedWarehouseConnection(t *testing.T) {
 	dyn := fakeTenantClient(
 		obj(tablesGVR.Group, tablesGVR.Version, "Table", "", "order-history", map[string]any{
@@ -91,9 +154,14 @@ func TestTableResolverRejectsMismatchedWarehouseConnection(t *testing.T) {
 			"warehouseID":   "wh-123",
 		}),
 	)
-	factory := &ClientFactory{hot: map[string]dynamic.Interface{
-		"cluster-a:" + hashToken("caller-token"): dyn,
-	}}
+	factory := &ClientFactory{
+		hot: map[string]dynamic.Interface{
+			"cluster-a:" + hashToken("caller-token"): dyn,
+		},
+		providerHot: map[string]dynamic.Interface{
+			"cluster-a": dyn,
+		},
+	}
 	resolver := tableResolver{
 		factory: factory,
 		identity: identity{

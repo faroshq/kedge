@@ -376,6 +376,7 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		"tableRef",
 		"provider-databricks",
 		"Do not call provider backend URLs",
+		"Do not generate application code that queries Databricks tableRefs",
 		"do not embed Databricks credentials",
 	} {
 		if !strings.Contains(joined, want) {
@@ -390,6 +391,77 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("model input should not include filtered Databricks capability %q:\n%s", forbidden, joined)
 		}
+	}
+}
+
+func TestGenerateProjectAssistantStreamFiltersDatabricksToolsOnUnrelatedImplementationTurn(t *testing.T) {
+	mcpCalls := 0
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mcpCalls++
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		if envelope.Method != "tools/list" {
+			t.Fatalf("method = %q, want tools/list", envelope.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"databricks__list_tables","description":"List imported tables","inputSchema":{"type":"object"}},{"name":"databricks__describe_table","description":"Describe a table ref","inputSchema":{"type":"object"}}]}}`)
+	}))
+	defer mcp.Close()
+
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo"
+	id := identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
+	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if err := appendProjectUserMessage(context.Background(), messages, messageScope, "Fix the button styling and commit it."); err != nil {
+		t.Fatalf("appendProjectUserMessage returned error: %v", err)
+	}
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: einoschema.AssistantMessage("I will update the styling.", nil),
+	}}}
+	setProjectAssistantModelForTest(server, model)
+	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
+		return projectAssistantTurnDecision{
+			Profile:          projectAssistantTurnProfileImplementation,
+			RequestsMutation: true,
+			Confidence:       projectAssistantTurnConfidenceHigh,
+		}, nil
+	}
+
+	if _, err := server.generateProjectAssistantStream(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		id,
+		client,
+		project,
+		projectAssistantStreamCallbacks{},
+	); err != nil {
+		t.Fatalf("generateProjectAssistantStream returned error: %v", err)
+	}
+	if mcpCalls != 1 {
+		t.Fatalf("MCP tools/list calls = %d, want 1 for commit bridge discovery", mcpCalls)
+	}
+	var joined string
+	for _, msg := range model.Inputs[0].Messages {
+		joined += msg.Content + "\n"
+	}
+	if !strings.Contains(joined, projectToolCommitProjectFiles) {
+		t.Fatalf("model input missing commit bridge guidance:\n%s", joined)
+	}
+	if strings.Contains(joined, projectToolDatabricksListTables) ||
+		strings.Contains(joined, projectToolDatabricksDescribeTable) ||
+		strings.Contains(joined, "Databricks guidance") {
+		t.Fatalf("model input should not include Databricks tools for unrelated implementation turn:\n%s", joined)
+	}
+	if projectChatToolsInclude(model.Inputs[0].Tools, projectToolDatabricksListTables) ||
+		projectChatToolsInclude(model.Inputs[0].Tools, projectToolDatabricksDescribeTable) {
+		t.Fatalf("model tools should not include Databricks tools: %#v", model.Inputs[0].Tools)
 	}
 }
 

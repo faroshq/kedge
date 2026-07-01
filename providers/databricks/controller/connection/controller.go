@@ -90,21 +90,18 @@ func (r *Reconciler) reconcileConnection(ctx context.Context, c client.Client, k
 		BearerToken: token,
 	})
 	if err != nil {
-		return r.fail(ctx, c, &conn, ReasonValidationFailed, backend.SafeStatusMessage(err))
+		return r.failAfter(ctx, c, &conn, ReasonValidationFailed, backend.SafeStatusMessage(err), shared.ValidationRefreshAfter)
 	}
 
 	conn.Status.ObservedGeneration = conn.Generation
 	conn.Status.WorkspaceID = result.WorkspaceID
 	msg := "credential authenticated"
-	if result.Principal != "" {
-		msg += " as " + result.Principal
-	}
 	shared.SetCondition(&conn.Status.Conditions, databricksv1alpha1.ConditionValidated, metav1.ConditionTrue, ReasonReady, msg, conn.Generation)
 	shared.SetCondition(&conn.Status.Conditions, databricksv1alpha1.ConditionReady, metav1.ConditionTrue, ReasonReady, msg, conn.Generation)
 	if err := c.Status().Update(ctx, &conn); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: shared.ValidationRefreshAfter}, nil
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, conn *databricksv1alpha1.Connection, reason, msg string) (ctrl.Result, error) {

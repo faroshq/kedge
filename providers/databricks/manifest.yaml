@@ -32,5 +32,5 @@ spec:
     name: "databricks.providers.kedge.faros.sh"
     permissionClaims:
       - resource: secrets
-        verbs: [get, list, watch]
+        verbs: [get]
         tenantScoped: true

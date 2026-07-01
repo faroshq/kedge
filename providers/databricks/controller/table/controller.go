@@ -85,14 +85,14 @@ func (r *Reconciler) reconcileTable(ctx context.Context, c client.Client, key ty
 		return r.failAfter(ctx, c, &tbl, ReasonWarehouseUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if wh.Spec.ConnectionRef != tbl.Spec.ConnectionRef {
-		return r.fail(ctx, c, &tbl, ReasonWarehouseConnectionMismatch, fmt.Sprintf("table connectionRef %q does not match warehouse connectionRef %q", tbl.Spec.ConnectionRef, wh.Spec.ConnectionRef))
+		return r.failAfter(ctx, c, &tbl, ReasonWarehouseConnectionMismatch, fmt.Sprintf("table connectionRef %q does not match warehouse connectionRef %q", tbl.Spec.ConnectionRef, wh.Spec.ConnectionRef), shared.ValidationRefreshAfter)
 	}
 	conn, err := shared.ResolveConnection(ctx, c, tbl.Spec.ConnectionRef)
 	if err != nil {
 		return r.failAfter(ctx, c, &tbl, ReasonConnectionUnavailable, err.Error(), shared.DependencyRetryAfter)
 	}
 	if conn.Spec.AuthType != databricksv1alpha1.ConnectionAuthPAT {
-		return r.fail(ctx, c, &tbl, ReasonAuthTypeUnsupported, fmt.Sprintf("connection authType %q is declared, but this provider currently validates PAT credentials only", conn.Spec.AuthType))
+		return r.failAfter(ctx, c, &tbl, ReasonAuthTypeUnsupported, fmt.Sprintf("connection authType %q is declared, but this provider currently validates PAT credentials only", conn.Spec.AuthType), shared.ValidationRefreshAfter)
 	}
 	token, err := shared.ResolveBearerToken(ctx, c, conn)
 	if err != nil {
@@ -119,7 +119,7 @@ func (r *Reconciler) reconcileTable(ctx context.Context, c client.Client, key ty
 		Credential: queryapi.Credential{BearerToken: token},
 	})
 	if err != nil {
-		return r.fail(ctx, c, &tbl, ReasonValidationFailed, backend.SafeStatusMessage(err))
+		return r.failAfter(ctx, c, &tbl, ReasonValidationFailed, backend.SafeStatusMessage(err), shared.ValidationRefreshAfter)
 	}
 
 	now := metav1.Now()
@@ -130,7 +130,7 @@ func (r *Reconciler) reconcileTable(ctx context.Context, c client.Client, key ty
 	if err := c.Status().Update(ctx, &tbl); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: shared.ValidationRefreshAfter}, nil
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, tbl *databricksv1alpha1.Table, reason, msg string) (ctrl.Result, error) {

@@ -79,8 +79,8 @@ func TestReconcileConnectionValidatesPATSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileConnection returned error: %v", err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Fatalf("RequeueAfter = %s, want no retry after successful validation", result.RequeueAfter)
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want periodic refresh after successful validation", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Connection
@@ -109,8 +109,11 @@ func TestReconcileConnectionValidatesPATSecret(t *testing.T) {
 	if validated == nil || validated.Status != metav1.ConditionTrue {
 		t.Fatalf("Validated condition = %#v, want True", validated)
 	}
-	if !strings.Contains(validated.Message, "owner@example.com") {
-		t.Fatalf("Validated message = %q, want principal", validated.Message)
+	if !strings.Contains(validated.Message, "credential authenticated") {
+		t.Fatalf("Validated message = %q, want credential authenticated", validated.Message)
+	}
+	if strings.Contains(validated.Message, "owner@example.com") {
+		t.Fatalf("Validated message = %q, want principal omitted", validated.Message)
 	}
 	ready := apimeta.FindStatusCondition(got.Status.Conditions, databricksv1alpha1.ConditionReady)
 	if ready == nil || ready.Status != metav1.ConditionTrue {
@@ -194,8 +197,12 @@ func TestReconcileConnectionReportsSanitizedValidationFailure(t *testing.T) {
 	}}
 	r := &Reconciler{Validator: validator}
 
-	if _, err := r.reconcileConnection(ctx, c, types.NamespacedName{Name: "orders"}); err != nil {
+	result, err := r.reconcileConnection(ctx, c, types.NamespacedName{Name: "orders"})
+	if err != nil {
 		t.Fatalf("reconcileConnection returned error: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %s, want periodic refresh after validation failure", result.RequeueAfter)
 	}
 
 	var got databricksv1alpha1.Connection

@@ -45,11 +45,13 @@ const (
 )
 
 type ClientFactory struct {
-	baseHost string
-	baseTLS  rest.TLSClientConfig
+	baseHost       string
+	baseTLS        rest.TLSClientConfig
+	providerConfig *rest.Config
 
-	mu  sync.RWMutex
-	hot map[string]dynamic.Interface
+	mu          sync.RWMutex
+	hot         map[string]dynamic.Interface
+	providerHot map[string]dynamic.Interface
 }
 
 func NewClientFactory(base *rest.Config) *ClientFactory {
@@ -60,12 +62,21 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 	if err != nil {
 		baseHost = strings.TrimRight(base.Host, "/")
 	}
+	providerConfig := rest.CopyConfig(base)
+	providerConfig.Host = baseHost
+
 	tls := base.TLSClientConfig
 	tls.CertData = nil
 	tls.CertFile = ""
 	tls.KeyData = nil
 	tls.KeyFile = ""
-	return &ClientFactory{baseHost: baseHost, baseTLS: tls, hot: make(map[string]dynamic.Interface)}
+	return &ClientFactory{
+		baseHost:       baseHost,
+		baseTLS:        tls,
+		providerConfig: providerConfig,
+		hot:            make(map[string]dynamic.Interface),
+		providerHot:    make(map[string]dynamic.Interface),
+	}
 }
 
 func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) {
@@ -96,7 +107,44 @@ func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) 
 	if existing, ok := f.hot[key]; ok {
 		return existing, nil
 	}
+	if f.hot == nil {
+		f.hot = make(map[string]dynamic.Interface)
+	}
 	f.hot[key] = dyn
+	return dyn, nil
+}
+
+func (f *ClientFactory) ProviderFor(clusterID string) (dynamic.Interface, error) {
+	if strings.TrimSpace(clusterID) == "" {
+		return nil, errors.New("no workspace cluster on this request (X-Kedge-Cluster missing)")
+	}
+
+	f.mu.RLock()
+	dyn, ok := f.providerHot[clusterID]
+	f.mu.RUnlock()
+	if ok {
+		return dyn, nil
+	}
+	if f.providerConfig == nil {
+		return nil, errors.New("provider tenant client unavailable (provider kubeconfig not set)")
+	}
+
+	cfg := rest.CopyConfig(f.providerConfig)
+	cfg.Host = f.baseHost + "/clusters/" + clusterID
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("provider dynamic client for cluster %q: %w", clusterID, err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if existing, ok := f.providerHot[clusterID]; ok {
+		return existing, nil
+	}
+	if f.providerHot == nil {
+		f.providerHot = make(map[string]dynamic.Interface)
+	}
+	f.providerHot[clusterID] = dyn
 	return dyn, nil
 }
 
@@ -163,26 +211,41 @@ func (r tableResolver) ListTables(ctx context.Context) (map[string]queryapi.Tabl
 }
 
 func (r tableResolver) GetTable(ctx context.Context, name string) (queryapi.TableRef, bool, error) {
-	target, ok, err := r.GetTableTarget(ctx, name)
-	if err != nil || !ok {
-		return queryapi.TableRef{}, ok, err
+	dyn, err := r.dynamicClient()
+	if err != nil {
+		return queryapi.TableRef{}, false, err
 	}
-	return target.Table, true, nil
+	item, err := dyn.Resource(tablesGVR).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return queryapi.TableRef{}, false, nil
+	}
+	if err != nil {
+		return queryapi.TableRef{}, false, err
+	}
+	ref, ok := tableRefFromObject(*item)
+	if !ok {
+		return queryapi.TableRef{}, false, nil
+	}
+	return ref, true, nil
 }
 
 func (r tableResolver) GetTableTarget(ctx context.Context, name string) (queryapi.TableTarget, bool, error) {
-	dyn, err := r.dynamicClient()
+	callerDyn, err := r.dynamicClient()
 	if err != nil {
 		return queryapi.TableTarget{}, false, err
 	}
-	item, err := dyn.Resource(tablesGVR).Get(ctx, name, metav1.GetOptions{})
+	item, err := callerDyn.Resource(tablesGVR).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return queryapi.TableTarget{}, false, nil
 	}
 	if err != nil {
 		return queryapi.TableTarget{}, false, err
 	}
-	target, ok, err := tableTargetFromObject(ctx, dyn, *item)
+	providerDyn, err := r.providerDynamicClient()
+	if err != nil {
+		return queryapi.TableTarget{}, false, err
+	}
+	target, ok, err := tableTargetFromObject(ctx, providerDyn, *item)
 	return target, ok, err
 }
 
@@ -197,6 +260,16 @@ func (r tableResolver) dynamicClient() (dynamic.Interface, error) {
 		return nil, errors.New("tenant client unavailable (provider kubeconfig not set)")
 	}
 	return r.factory.For(r.identity.clusterID, r.identity.token)
+}
+
+func (r tableResolver) providerDynamicClient() (dynamic.Interface, error) {
+	if r.identity.tenantPath == "" {
+		return nil, errors.New("no tenant identity on this request; bearer token did not resolve to a workspace")
+	}
+	if r.factory == nil {
+		return nil, errors.New("tenant client unavailable (provider kubeconfig not set)")
+	}
+	return r.factory.ProviderFor(r.identity.clusterID)
 }
 
 func tableRefFromObject(item unstructured.Unstructured) (queryapi.TableRef, bool) {

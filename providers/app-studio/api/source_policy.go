@@ -20,45 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/faroshq/provider-app-studio/workspace"
 )
-
-const projectDatabricksRuntimeBridgeError = "App Studio cannot write generated app source that calls Databricks provider query endpoints; Databricks tableRefs are design-time metadata until an App Studio runtime data-access bridge exists"
-
-func validateProjectGeneratedSourceContent(filePath, content string) error {
-	clean, err := workspace.CleanProjectPath(filePath)
-	if err != nil {
-		return err
-	}
-	if !projectGeneratedSourcePath(clean) || !projectContentCallsDatabricksProviderQuery(content) {
-		return nil
-	}
-	return fmt.Errorf("%s. Remove the Databricks provider backend call from %q", projectDatabricksRuntimeBridgeError, clean)
-}
-
-func projectGeneratedSourcePath(filePath string) bool {
-	if strings.HasPrefix(filePath, "src/") || strings.HasPrefix(filePath, "app/") || strings.HasPrefix(filePath, "pages/") {
-		return true
-	}
-	switch strings.ToLower(path.Ext(filePath)) {
-	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".html":
-		return true
-	default:
-		return false
-	}
-}
-
-func projectContentCallsDatabricksProviderQuery(content string) bool {
-	lower := strings.ToLower(content)
-	if strings.Contains(lower, "/services/providers/databricks") || strings.Contains(lower, "databricks__query_table") {
-		return true
-	}
-	return strings.Contains(lower, "/api/tables/") && strings.Contains(lower, "/query")
-}
 
 func previewProjectWorkspacePatch(ctx context.Context, store *workspace.FileStore, scope workspace.Scope, opts workspace.PatchOptions) (string, string, error) {
 	if strings.TrimSpace(opts.OldText) == "" {

@@ -26,6 +26,7 @@ export type AuthType = 'pat'
 
 export interface Connection {
   name: string
+  uid?: string
   host: string
   authType: AuthType
   secretName: string
@@ -76,28 +77,4 @@ export interface Table {
   status: string
   message?: string
   conditions: ConditionInfo[]
-}
-
-export interface QueryFilter {
-  column: string
-  operator: string
-  value: string
-}
-
-export interface QueryOrderBy {
-  column: string
-  direction?: string
-}
-
-export interface TableQueryRequest {
-  columns?: string[]
-  filters?: QueryFilter[]
-  orderBy?: QueryOrderBy[]
-  limit?: number
-}
-
-export interface QueryResult {
-  columns: string[]
-  rows: Array<Record<string, unknown>>
-  truncated?: boolean
 }

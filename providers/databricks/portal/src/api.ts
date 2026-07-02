@@ -3,10 +3,8 @@ import type {
   ConditionInfo,
   Connection,
   ErrorResponse,
-  QueryResult,
   Table,
   TableColumn,
-  TableQueryRequest,
   Warehouse,
 } from './types'
 
@@ -28,6 +26,14 @@ interface KCPMetadata {
   resourceVersion?: string
   generation?: number
   creationTimestamp?: string
+  ownerReferences?: KCPOwnerReference[]
+}
+
+interface KCPOwnerReference {
+  apiVersion?: string
+  kind?: string
+  name?: string
+  uid?: string
 }
 
 interface KCPCondition {
@@ -142,6 +148,7 @@ function connectionFromCR(cr: RawCR): Connection {
   const state = statusFromCondition(cr, 'Validated')
   return {
     name: cr.metadata.name,
+    uid: cr.metadata.uid,
     host: String(spec.host ?? ''),
     authType: String(spec.authType ?? 'pat') as AuthType,
     secretName: secret.name,
@@ -217,10 +224,33 @@ async function deleteCR(kind: string, name: string): Promise<void> {
   )
 }
 
+async function getSecret(name: string, namespace: string): Promise<RawCR | null> {
+  const data = await graphqlQuery<{ v1?: { Secret?: RawCR | null } }>(
+    'query($n: String!, $ns: String!) { v1 { Secret(name: $n, namespace: $ns) { metadata { name uid ownerReferences { apiVersion kind name uid } } } } }',
+    { n: name, ns: namespace },
+  )
+  return data.v1?.Secret ?? null
+}
+
 async function deleteSecret(name: string, namespace: string): Promise<void> {
   await graphqlQuery(
     'mutation($n: String!, $ns: String!) { v1 { deleteSecret(name: $n, namespace: $ns) } }',
     { n: name, ns: namespace },
+  )
+}
+
+function isNotFoundError(e: unknown): boolean {
+  const err = e as Partial<ErrorResponse>
+  return err.reason === 'NotFound' || /not\s*found/i.test(err.message ?? '')
+}
+
+function secretOwnedByConnection(secret: RawCR | null, conn: Connection): boolean {
+  if (!secret || !conn.uid) return false
+  return (secret.metadata.ownerReferences ?? []).some(ref =>
+    ref.apiVersion === `${GROUP}/${VERSION}` &&
+    ref.kind === 'Connection' &&
+    ref.name === conn.name &&
+    ref.uid === conn.uid,
   )
 }
 
@@ -307,16 +337,6 @@ export const api = {
     const secretName = dns1123(input.secretName || `${name}-token`)
     const secretNamespace = input.secretNamespace || DEFAULT_SECRET_NAMESPACE
     const secretKey = input.secretKey || DEFAULT_SECRET_KEY
-    if (input.token) {
-      await applyTokenSecret({
-        ownerKind: 'Connection',
-        ownerName: name,
-        name: secretName,
-        namespace: secretNamespace,
-        key: secretKey,
-        token: input.token,
-      })
-    }
     const conn = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Connection',
@@ -342,12 +362,22 @@ export const api = {
   },
 
   async deleteConnection(conn: Connection): Promise<void> {
-    await deleteCR('Connection', conn.name)
-    if (conn.secretName) {
+    const secretName = conn.secretName
+    const secretNamespace = conn.secretNamespace || DEFAULT_SECRET_NAMESPACE
+    let deleteOwnedSecret = false
+    if (secretName) {
       try {
-        await deleteSecret(conn.secretName, conn.secretNamespace || DEFAULT_SECRET_NAMESPACE)
+        deleteOwnedSecret = secretOwnedByConnection(await getSecret(secretName, secretNamespace), conn)
       } catch (e) {
-        if (!/not\s*found/i.test((e as ErrorResponse).message ?? '')) throw e
+        if (!isNotFoundError(e)) deleteOwnedSecret = false
+      }
+    }
+    await deleteCR('Connection', conn.name)
+    if (deleteOwnedSecret) {
+      try {
+        await deleteSecret(secretName, secretNamespace)
+      } catch (e) {
+        if (!isNotFoundError(e)) throw e
       }
     }
   },
@@ -414,19 +444,5 @@ export const api = {
 
   async getTable(name: string): Promise<Table> {
     return tableFromCR(await gqlGet('Table', name, F_TABLE))
-  },
-
-  async queryTable(tableRef: string, query: TableQueryRequest): Promise<QueryResult> {
-    const res = await fetch(`${serviceBasePath}/api/tables/${encodeURIComponent(tableRef)}/query`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: serviceHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(query),
-    })
-    const text = await res.text()
-    if (!res.ok) {
-      throw <ErrorResponse>{ reason: 'HTTPError', message: text || res.statusText }
-    }
-    return (text ? JSON.parse(text) : { columns: [], rows: [] }) as QueryResult
   },
 }

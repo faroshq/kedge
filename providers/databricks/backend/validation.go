@@ -56,7 +56,7 @@ type TableValidator interface {
 }
 
 // Validator is the provider's Databricks validation surface used by
-// controllers. It is intentionally narrower than query execution.
+// controllers. It is intentionally narrower than general statement execution.
 type Validator interface {
 	ConnectionValidator
 	WarehouseValidator
@@ -113,7 +113,7 @@ func SafeStatusMessage(err error) string {
 
 // ValidateConnection performs the lightest useful PAT check: call Databricks'
 // current-user endpoint with the token. Warehouse/table authorization is
-// validated by their own resources and the query path.
+// validated by their own resources.
 func (c StatementClient) ValidateConnection(ctx context.Context, target ConnectionValidationTarget) (ConnectionValidationResult, error) {
 	if target.AuthType != databricksv1alpha1.ConnectionAuthPAT {
 		return ConnectionValidationResult{}, fmt.Errorf("unsupported authType %q", target.AuthType)
@@ -236,11 +236,11 @@ func (c StatementClient) ValidateTable(ctx context.Context, target TableValidati
 	if err != nil {
 		return TableValidationResult{}, err
 	}
-	result, err := c.ExecuteQuery(ctx, target, sql, nil)
+	result, err := c.executeStatement(ctx, target, sql)
 	if err != nil {
 		return TableValidationResult{}, err
 	}
-	columns := columnsFromDescribeRows(result.Rows)
+	columns := columnsFromDescribeRows(rowsFromStatement(result))
 	if len(columns) == 0 {
 		return TableValidationResult{}, fmt.Errorf("databricks table describe returned no columns")
 	}

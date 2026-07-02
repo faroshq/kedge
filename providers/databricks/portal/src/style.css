@@ -92,11 +92,6 @@ kedge-provider-databricks .panel-head {
   justify-content: space-between;
 }
 
-kedge-provider-databricks .preview-result-head {
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-
 kedge-provider-databricks .panel-title {
   color: var(--color-text-secondary);
   font-size: 11px;
@@ -106,59 +101,12 @@ kedge-provider-databricks .panel-title {
   text-transform: uppercase;
 }
 
-kedge-provider-databricks .grid-2 {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: 1fr;
-}
-
-@media (min-width: 960px) {
-  kedge-provider-databricks .grid-2 {
-    align-items: start;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-}
-
 kedge-provider-databricks .actions,
 kedge-provider-databricks .form-actions,
 kedge-provider-databricks .row-actions {
   align-items: center;
   display: flex;
   gap: 8px;
-}
-
-kedge-provider-databricks .result-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-kedge-provider-databricks .pager {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-kedge-provider-databricks .page-size {
-  align-items: center;
-  color: var(--color-text-secondary);
-  display: inline-flex;
-  font-size: 12px;
-  gap: 6px;
-}
-
-kedge-provider-databricks .page-size select {
-  font-size: 12px;
-  min-height: 30px;
-  padding: 5px 8px;
-  width: 76px;
-}
-
-kedge-provider-databricks .page-count {
-  min-width: 76px;
-  text-align: center;
 }
 
 kedge-provider-databricks button.primary,
@@ -261,10 +209,6 @@ kedge-provider-databricks button.icon-button.danger:hover {
 kedge-provider-databricks button:disabled {
   cursor: progress;
   opacity: 0.55;
-}
-
-kedge-provider-databricks .pager button:disabled {
-  cursor: not-allowed;
 }
 
 kedge-provider-databricks .icon-text {

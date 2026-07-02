@@ -63,7 +63,7 @@ async function remove() {
   if (!warehouse.value) return
   const ok = await confirmDialog({
     title: `Delete warehouse "${warehouse.value.name}"?`,
-    message: 'Tables that reference this warehouse will stop querying.',
+    message: 'Tables that reference this warehouse will stop refreshing schema metadata.',
     confirmLabel: 'Delete',
   })
   if (!ok) return

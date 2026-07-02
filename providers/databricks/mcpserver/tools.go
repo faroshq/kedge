@@ -33,12 +33,7 @@ type describeTableInput struct {
 	TableRef string `json:"tableRef" jsonschema:"Imported kedge Table resource name, e.g. order-history"`
 }
 
-type queryTableInput struct {
-	TableRef string                     `json:"tableRef" jsonschema:"Imported kedge Table resource name, e.g. order-history"`
-	Query    queryapi.TableQueryRequest `json:"query" jsonschema:"Structured read request: columns, filters, orderBy, limit. Do not pass raw SQL."`
-}
-
-func registerTools(srv *mcp.Server, deps Deps, resolver queryapi.TableResolver) {
+func registerTools(srv *mcp.Server, resolver queryapi.TableResolver) {
 	safeRegister("list_tables", func() {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "list_tables",
@@ -74,35 +69,6 @@ func registerTools(srv *mcp.Server, deps Deps, resolver queryapi.TableResolver) 
 				return nil, tableSummary{}, fmt.Errorf("tableRef %q not found", in.TableRef)
 			}
 			return nil, tableSummary{Name: in.TableRef, Catalog: ref.Catalog, Schema: ref.Schema, Table: ref.Table}, nil
-		})
-	})
-
-	safeRegister("query_table", func() {
-		mcp.AddTool(srv, &mcp.Tool{
-			Name:        "query_table",
-			Title:       "Query an imported Databricks table",
-			Description: "Run a bounded structured read against an imported kedge Databricks Table resource. Use tableRef; do not send raw SQL or credentials.",
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-		}, func(ctx context.Context, _ *mcp.CallToolRequest, in queryTableInput) (*mcp.CallToolResult, queryapi.QueryResult, error) {
-			target, ok, err := resolver.GetTableTarget(ctx, in.TableRef)
-			if err != nil {
-				return nil, queryapi.QueryResult{}, err
-			}
-			if !ok {
-				return nil, queryapi.QueryResult{}, fmt.Errorf("tableRef %q not found", in.TableRef)
-			}
-			if deps.Backend == nil {
-				return nil, queryapi.QueryResult{}, fmt.Errorf("databricks backend is not configured")
-			}
-			sql, args, err := queryapi.BuildSelectSQL(target.Table, in.Query)
-			if err != nil {
-				return nil, queryapi.QueryResult{}, err
-			}
-			result, err := deps.Backend.ExecuteQuery(ctx, target, sql, args)
-			if err != nil {
-				return nil, queryapi.QueryResult{}, fmt.Errorf("databricks query failed")
-			}
-			return nil, result, nil
 		})
 	})
 }

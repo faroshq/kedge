@@ -15,19 +15,15 @@ a sanctioned runtime data-access bridge to Databricks.
 - MCP tools at `/mcp` and `/mcp/sse`, federated through the hub as:
   - `databricks__list_tables`
   - `databricks__describe_table`
-  - `databricks__query_table`
-- Read-only structured query execution through Databricks SQL Statement
-  Execution for the provider portal and hub-federated Databricks MCP tool.
 - Portal UX for creating and updating `Connection`, `Warehouse`, and `Table`
-  handles, plus a read-only table preview.
+  handles, plus cached schema inspection.
 - Multicluster controllers validate PAT credentials against the Databricks
   current-user API, validate SQL warehouse handles, refresh table schema status,
   and write `Validated` / `Ready` conditions.
-- Tenant scoping deliberately splits authority: the caller token authorizes the
-  requested `Table`, then the provider's accepted APIExport permission claims
-  resolve referenced `Warehouse`, `Connection`, and credential `Secret`
-  resources. Databricks credentials are never returned to App Studio, generated
-  apps, or browser clients.
+- Provider controllers use the provider's accepted APIExport permission claims
+  to resolve referenced credential `Secret` resources for validation only.
+  Databricks credentials are never returned to App Studio, generated apps, or
+  browser clients.
 
 ## Current import path
 
@@ -78,26 +74,17 @@ spec:
 ```
 
 App Studio can then discover `order-history` as a `tableRef` for design-time
-metadata and user-facing planning.
+metadata, schema inspection, and user-facing planning.
 
-## Runtime query contract
+## Runtime data access
 
-The provider portal, backend, and hub-federated `databricks__query_table` tool
-accept a structured request:
+Runtime row access is intentionally not exposed by this provider yet. App Studio
+and generated apps should treat Databricks `Table` resources as metadata until a
+provider action contract and App Studio runtime data-access bridge exist.
 
-```json
-{
-  "columns": ["order_id", "total_amount"],
-  "filters": [{ "column": "status", "operator": "=", "value": "shipped" }],
-  "orderBy": [{ "column": "order_date", "direction": "desc" }],
-  "limit": 100
-}
-```
-
-The provider validates identifiers, caps `limit` at 1000, converts filters to
-Databricks named parameters, authorizes the table reference as the caller,
-resolves credentials through the provider's accepted permission claims, and
-posts to `/api/2.0/sql/statements` with inline `JSON_ARRAY` results.
+The provider still posts `DESCRIBE TABLE` statements to
+`/api/2.0/sql/statements` from its controllers to validate imported tables and
+cache schema metadata on `Table.status`.
 
 Connection hosts must be Databricks workspace root URLs over HTTPS. The backend
 allows the standard Databricks workspace domains by default; set
@@ -114,7 +101,7 @@ make run-provider-databricks
 ```
 
 For a no-kcp smoke test only, set `DATABRICKS_DEV_STATIC_TABLES=true`. That mode
-uses a seeded `order-history` table and a stub backend; normal serve mode fails
+uses a seeded `order-history` table and a stub validator; normal serve mode fails
 closed if tenant table lookup or Databricks credentials are unavailable.
 
 ## Gaps
@@ -124,4 +111,4 @@ closed if tenant table lookup or Databricks credentials are unavailable.
 - Generated-app runtime access is not implemented yet. Do not hardcode provider
   backend URLs or Databricks credentials into App Studio-generated source.
 - OAuth federation and service-principal token exchange should be reconciled
-  into token-bearing Secrets before query execution.
+  into token-bearing Secrets before validation or future provider actions.

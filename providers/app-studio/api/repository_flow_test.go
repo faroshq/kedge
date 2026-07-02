@@ -819,56 +819,6 @@ func TestSummarizeProjectToolArgumentsWorkspaceReadTools(t *testing.T) {
 	}
 }
 
-func TestProjectWorkspaceMutationsRejectDatabricksProviderBackendURLs(t *testing.T) {
-	workspaces := workspace.NewFileStore(t.TempDir())
-	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
-
-	writeTool, ok := server.projectAssistantToolRegistry().Get(projectToolWriteFile)
-	if !ok {
-		t.Fatal("write_file tool missing")
-	}
-	_, err := writeTool.Call(context.Background(), projectAssistantToolCallRequest{
-		WorkspaceScope: scope,
-		Arguments: map[string]any{
-			"path":    "src/App.jsx",
-			"content": `fetch('/services/providers/databricks/api/tables/sales-franchises/query')`,
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "Databricks tableRefs are design-time metadata") {
-		t.Fatalf("write_file error = %v, want Databricks runtime bridge rejection", err)
-	}
-	if _, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/App.jsx"}); err == nil {
-		t.Fatal("write_file wrote forbidden Databricks provider URL")
-	}
-
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{Path: "src/App.jsx", Content: "export default function App() { return null }\n"}}); err != nil {
-		t.Fatalf("seed app file: %v", err)
-	}
-	patchTool, ok := server.projectAssistantToolRegistry().Get(projectToolApplyPatch)
-	if !ok {
-		t.Fatal("apply_patch tool missing")
-	}
-	_, err = patchTool.Call(context.Background(), projectAssistantToolCallRequest{
-		WorkspaceScope: scope,
-		Arguments: map[string]any{
-			"path":    "src/App.jsx",
-			"oldText": "return null",
-			"newText": "return fetch('/api/tables/dbacademy.default.silver_bike_events/query')",
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "Databricks tableRefs are design-time metadata") {
-		t.Fatalf("apply_patch error = %v, want Databricks runtime bridge rejection", err)
-	}
-	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/App.jsx"})
-	if err != nil {
-		t.Fatalf("read app file: %v", err)
-	}
-	if strings.Contains(read.Content, "/api/tables/dbacademy.default.silver_bike_events/query") {
-		t.Fatalf("apply_patch wrote forbidden Databricks table query endpoint: %q", read.Content)
-	}
-}
-
 func TestSummarizeProjectToolResultWorkspaceReadTools(t *testing.T) {
 	readResult := `{"path":"src/App.tsx","size":2048,"content":"secret-ish file body","truncated":true,"binary":false}`
 	got := summarizeProjectToolResult("read_project_file", readResult)
@@ -3033,40 +2983,6 @@ func TestCommitProjectWorkspaceFilesRejectsRepositoryMismatch(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "does not match this Project") {
 		t.Fatalf("commitProjectWorkspaceFiles error = %v, want deterministic repository mismatch failure", err)
-	}
-}
-
-func TestCommitProjectWorkspaceFilesRejectsDatabricksProviderBackendURLs(t *testing.T) {
-	var sawCommit bool
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawCommit = true
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer mcp.Close()
-
-	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
-	if err := workspaces.ApplyFiles(context.Background(), scope, []workspace.File{{
-		Path:    "src/App.jsx",
-		Content: "export async function load() { return fetch('/services/providers/databricks/api/tables/sales-franchises/query') }\n",
-	}}); err != nil {
-		t.Fatalf("ApplyFiles returned error: %v", err)
-	}
-	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)
-	_, err := server.commitProjectWorkspaceFiles(
-		context.Background(),
-		identity{tenantPath: "root:org-a:ws-1", clusterID: "cluster-ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
-		scope,
-		"demo-repo",
-		mcp.URL,
-		httptest.NewRequest(http.MethodPost, "/", nil),
-		map[string]any{"repositoryRef": "demo-repo", "paths": []any{"src/App.jsx"}, "message": "Update app"},
-	)
-	if sawCommit {
-		t.Fatal("commit_project_files reached provider-code with forbidden Databricks provider URL")
-	}
-	if err == nil || !strings.Contains(err.Error(), "Databricks tableRefs are design-time metadata") {
-		t.Fatalf("commitProjectWorkspaceFiles error = %v, want Databricks runtime bridge rejection", err)
 	}
 }
 

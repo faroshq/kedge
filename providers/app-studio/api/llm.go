@@ -532,9 +532,6 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		if read.Truncated {
 			return "", fmt.Errorf("file %q is too large to commit through commit_project_files", read.Path)
 		}
-		if err := validateProjectGeneratedSourceContent(read.Path, read.Content); err != nil {
-			return "", err
-		}
 		totalBytes += int64(len([]byte(read.Content)))
 		if totalBytes > projectCommitProjectFilesMaxSize {
 			return "", fmt.Errorf("commit_project_files payload is too large: %d > %d bytes", totalBytes, projectCommitProjectFilesMaxSize)

@@ -229,9 +229,6 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					return "", err
 				}
 				content, _ := projectToolRawString(req.Arguments["content"])
-				if err := validateProjectGeneratedSourceContent(projectToolString(req.Arguments["path"]), content); err != nil {
-					return "", err
-				}
 				return projectAssistantToolJSONResult(s.workspaces.WriteFile(ctx, req.WorkspaceScope, workspace.WriteOptions{
 					Path:    projectToolString(req.Arguments["path"]),
 					Content: content,
@@ -258,11 +255,8 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					NewText:    newText,
 					ReplaceAll: projectToolBool(req.Arguments["replaceAll"]),
 				}
-				path, next, err := previewProjectWorkspacePatch(ctx, s.workspaces, req.WorkspaceScope, opts)
+				_, _, err = previewProjectWorkspacePatch(ctx, s.workspaces, req.WorkspaceScope, opts)
 				if err != nil {
-					return "", err
-				}
-				if err := validateProjectGeneratedSourceContent(path, next); err != nil {
 					return "", err
 				}
 				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, opts))

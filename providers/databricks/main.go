@@ -7,8 +7,8 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // databricks-provider is the native kedge provider for imported Databricks
-// Table resources. V1 exposes existing Table handles to App Studio and generated
-// apps; table import/pinning is owned by this provider's UX/API, not App Studio.
+// Table resources. V1 exposes existing Table handles to App Studio as metadata;
+// table import/pinning is owned by this provider's UX/API, not App Studio.
 package main
 
 import (
@@ -69,76 +69,19 @@ func runServe() {
 	tables := seedTablesFromEnv()
 	devStaticTables := os.Getenv("DATABRICKS_DEV_STATIC_TABLES") == "true"
 	statementClient := backend.NewStatementClient(nil)
-	var dbx queryapi.Backend = statementClient
 	var validator backend.Validator = statementClient
 	if devStaticTables {
-		stub := backend.Stub{}
-		dbx = stub
-		validator = stub
+		validator = backend.Stub{}
 	}
 	kcpConfig, kcpErr := loadControllerConfig()
 	if kcpErr != nil {
 		log.Printf("kcp config unavailable (%v); tenant Table lookup and controllers disabled", kcpErr)
 	}
 	tenantFactory := tenant.NewClientFactory(kcpConfig)
-	resolverFromRequest := func(r *http.Request) queryapi.TableResolver {
-		if devStaticTables {
-			return queryapi.StaticTableResolver(tables)
-		}
-		return tenantFactory.TableResolverForRequest(r)
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
-		resp := statusResponse{
-			Message:    "databricks provider ready",
-			Provider:   "databricks",
-			ServedAt:   time.Now().UTC(),
-			UserHeader: r.Header.Get("X-Kedge-User"),
-		}
-		if devStaticTables {
-			resp.Tables = len(tables)
-		}
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			resp.TokenLength = len(auth)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	queryHandler := queryapi.Handler{Tables: tables, ResolverFromRequest: resolverFromRequest, Backend: dbx}
-	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tables:                        tables,
-		ResolverFromRequest:           resolverFromRequest,
-		Backend:                       dbx,
-		DisableLocalhostMCPProtection: os.Getenv("DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION") == "true",
-	})
-	mux.Handle("/api/tables/", queryHandler)
-	mux.Handle("/mcp", mcpHandler)
-	mux.Handle("/mcp/sse", mcpHandler)
-
-	fileServer, distFS, err := portalHandler()
+	mux, err := newServeMux(tables, devStaticTables, tenantFactory)
 	if err != nil {
-		log.Fatalf("portal embed: %v", err)
+		log.Fatalf("server mux: %v", err)
 	}
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		clean := strings.TrimPrefix(r.URL.Path, "/")
-		if clean != "" {
-			if servePortalAsset(w, r, distFS, clean) {
-				return
-			}
-		}
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/"
-		fileServer.ServeHTTP(w, r2)
-	})
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -169,6 +112,66 @@ func runServe() {
 	if err := srv.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+}
+
+func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tenantFactory *tenant.ClientFactory) (*http.ServeMux, error) {
+	resolverFromRequest := func(r *http.Request) queryapi.TableResolver {
+		if devStaticTables {
+			return queryapi.StaticTableResolver(tables)
+		}
+		return tenantFactory.TableResolverForRequest(r)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		resp := statusResponse{
+			Message:    "databricks provider ready",
+			Provider:   "databricks",
+			ServedAt:   time.Now().UTC(),
+			UserHeader: r.Header.Get("X-Kedge-User"),
+		}
+		if devStaticTables {
+			resp.Tables = len(tables)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			resp.TokenLength = len(auth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
+		Tables:                        tables,
+		ResolverFromRequest:           resolverFromRequest,
+		DisableLocalhostMCPProtection: os.Getenv("DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION") == "true",
+	})
+	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp/sse", mcpHandler)
+
+	fileServer, distFS, err := portalHandler()
+	if err != nil {
+		return nil, fmt.Errorf("portal embed: %w", err)
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		clean := strings.TrimPrefix(r.URL.Path, "/")
+		if clean != "" {
+			if servePortalAsset(w, r, distFS, clean) {
+				return
+			}
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/"
+		fileServer.ServeHTTP(w, r2)
+	})
+
+	return mux, nil
 }
 
 func envOr(key, def string) string {

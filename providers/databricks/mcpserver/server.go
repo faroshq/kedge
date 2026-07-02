@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package mcpserver exposes Databricks table discovery/query tools to App Studio.
+// Package mcpserver exposes Databricks table discovery tools to App Studio.
 package mcpserver
 
 import (
@@ -23,7 +23,6 @@ type Deps struct {
 	Tables                        map[string]queryapi.TableRef
 	TableResolver                 queryapi.TableResolver
 	ResolverFromRequest           func(*http.Request) queryapi.TableResolver
-	Backend                       queryapi.Backend
 	DisableLocalhostMCPProtection bool
 }
 
@@ -47,11 +46,11 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	}, &mcp.ServerOptions{
 		Instructions: "Use these tools only with Databricks tables already imported " +
 			"as kedge Table resources. Do not import tables from App Studio. " +
-			"Use tableRef only for design-time metadata, schema inspection, and MCP " +
-			"queries. Do not generate application code that calls provider-databricks, " +
+			"Use tableRef only for design-time metadata and schema inspection. " +
+			"Do not generate application code that calls provider-databricks, " +
 			"and do not embed Databricks credentials or direct warehouse auth config.",
 	})
-	registerTools(srv, deps, resolverForRequest(deps, r))
+	registerTools(srv, resolverForRequest(deps, r))
 	return srv
 }
 

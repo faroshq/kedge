@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package backend isolates Databricks execution behind a small interface.
+// Package backend isolates Databricks validation behind a small interface.
 package backend
 
 import (
@@ -47,19 +47,19 @@ func NewStatementClient(httpClient *http.Client) StatementClient {
 	}
 }
 
-func (c StatementClient) ExecuteQuery(ctx context.Context, target queryapi.TableTarget, sql string, args []any) (queryapi.QueryResult, error) {
+func (c StatementClient) executeStatement(ctx context.Context, target queryapi.TableTarget, sql string) (statementResponse, error) {
 	if strings.TrimSpace(target.Connection.Host) == "" {
-		return queryapi.QueryResult{}, fmt.Errorf("databricks connection host is required")
+		return statementResponse{}, fmt.Errorf("databricks connection host is required")
 	}
 	if strings.TrimSpace(target.Warehouse.WarehouseID) == "" {
-		return queryapi.QueryResult{}, fmt.Errorf("databricks warehouse_id is required")
+		return statementResponse{}, fmt.Errorf("databricks warehouse_id is required")
 	}
 	if strings.TrimSpace(target.Credential.BearerToken) == "" {
-		return queryapi.QueryResult{}, fmt.Errorf("databricks bearer token is required")
+		return statementResponse{}, fmt.Errorf("databricks bearer token is required")
 	}
 	endpoint, err := c.statementExecutionURL(target.Connection.Host)
 	if err != nil {
-		return queryapi.QueryResult{}, err
+		return statementResponse{}, err
 	}
 	body := statementRequest{
 		Statement:     sql,
@@ -68,15 +68,14 @@ func (c StatementClient) ExecuteQuery(ctx context.Context, target queryapi.Table
 		OnWaitTimeout: statementOnWaitTimeoutCancel,
 		Disposition:   "INLINE",
 		Format:        "JSON_ARRAY",
-		Parameters:    statementParameters(args),
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return queryapi.QueryResult{}, fmt.Errorf("encode statement request: %w", err)
+		return statementResponse{}, fmt.Errorf("encode statement request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return queryapi.QueryResult{}, fmt.Errorf("build statement request: %w", err)
+		return statementResponse{}, fmt.Errorf("build statement request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+target.Credential.BearerToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -87,24 +86,24 @@ func (c StatementClient) ExecuteQuery(ctx context.Context, target queryapi.Table
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return queryapi.QueryResult{}, fmt.Errorf("execute statement: %w", err)
+		return statementResponse{}, fmt.Errorf("execute statement: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return queryapi.QueryResult{}, statementHTTPError{
+		return statementResponse{}, statementHTTPError{
 			status: resp.Status,
 			body:   strings.TrimSpace(string(body)),
 		}
 	}
 	var out statementResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return queryapi.QueryResult{}, fmt.Errorf("decode statement response: %w", err)
+		return statementResponse{}, fmt.Errorf("decode statement response: %w", err)
 	}
 	if state := strings.ToUpper(strings.TrimSpace(out.Status.State)); state != "" && state != statementStatusSucceeded {
-		return queryapi.QueryResult{}, statementStateError{state: state, message: out.Status.Error.Message}
+		return statementResponse{}, statementStateError{state: state, message: out.Status.Error.Message}
 	}
-	return queryResultFromStatement(out), nil
+	return out, nil
 }
 
 func (c StatementClient) waitTimeout() string {
@@ -115,18 +114,12 @@ func (c StatementClient) waitTimeout() string {
 }
 
 type statementRequest struct {
-	Statement     string               `json:"statement"`
-	WarehouseID   string               `json:"warehouse_id"`
-	WaitTimeout   string               `json:"wait_timeout"`
-	OnWaitTimeout string               `json:"on_wait_timeout,omitempty"`
-	Disposition   string               `json:"disposition"`
-	Format        string               `json:"format"`
-	Parameters    []statementParameter `json:"parameters,omitempty"`
-}
-
-type statementParameter struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Statement     string `json:"statement"`
+	WarehouseID   string `json:"warehouse_id"`
+	WaitTimeout   string `json:"wait_timeout"`
+	OnWaitTimeout string `json:"on_wait_timeout,omitempty"`
+	Disposition   string `json:"disposition"`
+	Format        string `json:"format"`
 }
 
 type statementResponse struct {
@@ -163,21 +156,7 @@ func (c StatementClient) statementExecutionURL(host string) (string, error) {
 	return u.String(), nil
 }
 
-func statementParameters(args []any) []statementParameter {
-	if len(args) == 0 {
-		return nil
-	}
-	out := make([]statementParameter, 0, len(args))
-	for i, arg := range args {
-		out = append(out, statementParameter{
-			Name:  fmt.Sprintf("p%d", i),
-			Value: fmt.Sprint(arg),
-		})
-	}
-	return out
-}
-
-func queryResultFromStatement(resp statementResponse) queryapi.QueryResult {
+func rowsFromStatement(resp statementResponse) []map[string]any {
 	columns := make([]string, 0, len(resp.Manifest.Schema.Columns))
 	for _, column := range resp.Manifest.Schema.Columns {
 		columns = append(columns, column.Name)
@@ -192,11 +171,7 @@ func queryResultFromStatement(resp statementResponse) queryapi.QueryResult {
 		}
 		rows = append(rows, row)
 	}
-	return queryapi.QueryResult{
-		Columns:   columns,
-		Rows:      rows,
-		Truncated: resp.Manifest.Truncated || resp.Result.Truncated,
-	}
+	return rows
 }
 
 type statementHTTPError struct {
@@ -234,23 +209,6 @@ func (e statementStateError) SafeStatusMessage() string {
 	return "databricks statement did not complete: " + e.state
 }
 
-// Stub is a local-development backend used only when DATABRICKS_DEV_STATIC_TABLES
+// Stub is a local-development validator used only when DATABRICKS_DEV_STATIC_TABLES
 // is explicitly enabled.
 type Stub struct{}
-
-func (Stub) ExecuteQuery(_ context.Context, _ queryapi.TableTarget, sql string, _ []any) (queryapi.QueryResult, error) {
-	columns := []string{"sql"}
-	if strings.Contains(sql, `"order_id"`) {
-		columns = []string{"order_id", "total_amount"}
-		return queryapi.QueryResult{
-			Columns: columns,
-			Rows: []map[string]any{
-				{"order_id": "example-order", "total_amount": float64(42)},
-			},
-		}, nil
-	}
-	return queryapi.QueryResult{
-		Columns: columns,
-		Rows:    []map[string]any{{"sql": sql}},
-	}, nil
-}

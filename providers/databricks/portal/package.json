@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "test:pagination": "tsc -p tsconfig.test.json && node .test-dist/pagination.test.js && node .test-dist/tableRefs.test.js",
+    "test:tableRefs": "tsc -p tsconfig.test.json && node .test-dist/tableRefs.test.js",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

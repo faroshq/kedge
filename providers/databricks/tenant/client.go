@@ -11,20 +11,17 @@ package tenant
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
@@ -32,26 +29,14 @@ import (
 	"github.com/faroshq/provider-databricks/queryapi"
 )
 
-var (
-	tablesGVR      = databricksv1alpha1.SchemeGroupVersion.WithResource("tables")
-	warehousesGVR  = databricksv1alpha1.SchemeGroupVersion.WithResource("warehouses")
-	connectionsGVR = databricksv1alpha1.SchemeGroupVersion.WithResource("connections")
-	secretsGVR     = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-)
-
-const (
-	defaultSecretNamespace = "default"
-	defaultPATTokenKey     = "token"
-)
+var tablesGVR = databricksv1alpha1.SchemeGroupVersion.WithResource("tables")
 
 type ClientFactory struct {
-	baseHost       string
-	baseTLS        rest.TLSClientConfig
-	providerConfig *rest.Config
+	baseHost string
+	baseTLS  rest.TLSClientConfig
 
-	mu          sync.RWMutex
-	hot         map[string]dynamic.Interface
-	providerHot map[string]dynamic.Interface
+	mu  sync.RWMutex
+	hot map[string]dynamic.Interface
 }
 
 func NewClientFactory(base *rest.Config) *ClientFactory {
@@ -62,20 +47,15 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 	if err != nil {
 		baseHost = strings.TrimRight(base.Host, "/")
 	}
-	providerConfig := rest.CopyConfig(base)
-	providerConfig.Host = baseHost
-
 	tls := base.TLSClientConfig
 	tls.CertData = nil
 	tls.CertFile = ""
 	tls.KeyData = nil
 	tls.KeyFile = ""
 	return &ClientFactory{
-		baseHost:       baseHost,
-		baseTLS:        tls,
-		providerConfig: providerConfig,
-		hot:            make(map[string]dynamic.Interface),
-		providerHot:    make(map[string]dynamic.Interface),
+		baseHost: baseHost,
+		baseTLS:  tls,
+		hot:      make(map[string]dynamic.Interface),
 	}
 }
 
@@ -114,40 +94,6 @@ func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) 
 	return dyn, nil
 }
 
-func (f *ClientFactory) ProviderFor(clusterID string) (dynamic.Interface, error) {
-	if strings.TrimSpace(clusterID) == "" {
-		return nil, errors.New("no workspace cluster on this request (X-Kedge-Cluster missing)")
-	}
-
-	f.mu.RLock()
-	dyn, ok := f.providerHot[clusterID]
-	f.mu.RUnlock()
-	if ok {
-		return dyn, nil
-	}
-	if f.providerConfig == nil {
-		return nil, errors.New("provider tenant client unavailable (provider kubeconfig not set)")
-	}
-
-	cfg := rest.CopyConfig(f.providerConfig)
-	cfg.Host = f.baseHost + "/clusters/" + clusterID
-	dyn, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("provider dynamic client for cluster %q: %w", clusterID, err)
-	}
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if existing, ok := f.providerHot[clusterID]; ok {
-		return existing, nil
-	}
-	if f.providerHot == nil {
-		f.providerHot = make(map[string]dynamic.Interface)
-	}
-	f.providerHot[clusterID] = dyn
-	return dyn, nil
-}
-
 func (f *ClientFactory) TableResolverForRequest(r *http.Request) queryapi.TableResolver {
 	if f == nil {
 		return queryapi.UnavailableResolver{Message: "tenant client unavailable (provider kubeconfig not set)"}
@@ -163,20 +109,11 @@ type identity struct {
 }
 
 func identityFromRequest(r *http.Request) identity {
-	id := identity{
+	return identity{
 		tenantPath: r.Header.Get("X-Kedge-Tenant"),
 		clusterID:  r.Header.Get("X-Kedge-Cluster"),
 		token:      bearerToken(r),
 	}
-	if os.Getenv("KEDGE_DEV_ALLOW_TENANT_QUERY") == "true" {
-		if id.tenantPath == "" {
-			id.tenantPath = r.URL.Query().Get("tenant")
-		}
-		if id.clusterID == "" {
-			id.clusterID = r.URL.Query().Get("cluster")
-		}
-	}
-	return id
 }
 
 func bearerToken(r *http.Request) string {
@@ -229,26 +166,6 @@ func (r tableResolver) GetTable(ctx context.Context, name string) (queryapi.Tabl
 	return ref, true, nil
 }
 
-func (r tableResolver) GetTableTarget(ctx context.Context, name string) (queryapi.TableTarget, bool, error) {
-	callerDyn, err := r.dynamicClient()
-	if err != nil {
-		return queryapi.TableTarget{}, false, err
-	}
-	item, err := callerDyn.Resource(tablesGVR).Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return queryapi.TableTarget{}, false, nil
-	}
-	if err != nil {
-		return queryapi.TableTarget{}, false, err
-	}
-	providerDyn, err := r.providerDynamicClient()
-	if err != nil {
-		return queryapi.TableTarget{}, false, err
-	}
-	target, ok, err := tableTargetFromObject(ctx, providerDyn, *item)
-	return target, ok, err
-}
-
 func (r tableResolver) dynamicClient() (dynamic.Interface, error) {
 	if r.identity.tenantPath == "" {
 		return nil, errors.New("no tenant identity on this request; bearer token did not resolve to a workspace")
@@ -262,16 +179,6 @@ func (r tableResolver) dynamicClient() (dynamic.Interface, error) {
 	return r.factory.For(r.identity.clusterID, r.identity.token)
 }
 
-func (r tableResolver) providerDynamicClient() (dynamic.Interface, error) {
-	if r.identity.tenantPath == "" {
-		return nil, errors.New("no tenant identity on this request; bearer token did not resolve to a workspace")
-	}
-	if r.factory == nil {
-		return nil, errors.New("tenant client unavailable (provider kubeconfig not set)")
-	}
-	return r.factory.ProviderFor(r.identity.clusterID)
-}
-
 func tableRefFromObject(item unstructured.Unstructured) (queryapi.TableRef, bool) {
 	catalog, _, _ := unstructured.NestedString(item.Object, "spec", "catalog")
 	schemaName, _, _ := unstructured.NestedString(item.Object, "spec", "schema")
@@ -280,96 +187,6 @@ func tableRefFromObject(item unstructured.Unstructured) (queryapi.TableRef, bool
 		return queryapi.TableRef{}, false
 	}
 	return queryapi.TableRef{Catalog: catalog, Schema: schemaName, Table: table}, true
-}
-
-func tableTargetFromObject(ctx context.Context, dyn dynamic.Interface, item unstructured.Unstructured) (queryapi.TableTarget, bool, error) {
-	tableRef, ok := tableRefFromObject(item)
-	if !ok {
-		return queryapi.TableTarget{}, false, nil
-	}
-	connectionRef, _, _ := unstructured.NestedString(item.Object, "spec", "connectionRef")
-	warehouseRef, _, _ := unstructured.NestedString(item.Object, "spec", "warehouseRef")
-	if strings.TrimSpace(connectionRef) == "" || strings.TrimSpace(warehouseRef) == "" {
-		return queryapi.TableTarget{}, false, fmt.Errorf("table %q is missing connectionRef or warehouseRef", item.GetName())
-	}
-
-	warehouse, err := dyn.Resource(warehousesGVR).Get(ctx, warehouseRef, metav1.GetOptions{})
-	if err != nil {
-		return queryapi.TableTarget{}, false, fmt.Errorf("get warehouse %q: %w", warehouseRef, err)
-	}
-	warehouseConnectionRef, _, _ := unstructured.NestedString(warehouse.Object, "spec", "connectionRef")
-	if warehouseConnectionRef != "" && warehouseConnectionRef != connectionRef {
-		return queryapi.TableTarget{}, false, fmt.Errorf("table %q connectionRef %q does not match warehouse %q connectionRef %q", item.GetName(), connectionRef, warehouseRef, warehouseConnectionRef)
-	}
-	warehouseID, _, _ := unstructured.NestedString(warehouse.Object, "spec", "warehouseID")
-	if strings.TrimSpace(warehouseID) == "" {
-		return queryapi.TableTarget{}, false, fmt.Errorf("warehouse %q is missing warehouseID", warehouseRef)
-	}
-
-	connection, err := dyn.Resource(connectionsGVR).Get(ctx, connectionRef, metav1.GetOptions{})
-	if err != nil {
-		return queryapi.TableTarget{}, false, fmt.Errorf("get connection %q: %w", connectionRef, err)
-	}
-	host, _, _ := unstructured.NestedString(connection.Object, "spec", "host")
-	authType, _, _ := unstructured.NestedString(connection.Object, "spec", "authType")
-	secretName, _, _ := unstructured.NestedString(connection.Object, "spec", "secretRef", "name")
-	secretNamespace, _, _ := unstructured.NestedString(connection.Object, "spec", "secretRef", "namespace")
-	secretKey, _, _ := unstructured.NestedString(connection.Object, "spec", "secretRef", "key")
-	if strings.TrimSpace(host) == "" || strings.TrimSpace(authType) == "" || strings.TrimSpace(secretName) == "" {
-		return queryapi.TableTarget{}, false, fmt.Errorf("connection %q is missing host, authType, or secretRef.name", connectionRef)
-	}
-	if secretNamespace == "" {
-		secretNamespace = defaultSecretNamespace
-	}
-	if secretKey == "" {
-		secretKey = defaultSecretKey(authType)
-	}
-	token, err := secretValue(ctx, dyn, secretNamespace, secretName, secretKey)
-	if err != nil {
-		return queryapi.TableTarget{}, false, err
-	}
-
-	return queryapi.TableTarget{
-		Table: tableRef,
-		Connection: queryapi.ConnectionRef{
-			Name:     connectionRef,
-			Host:     host,
-			AuthType: authType,
-		},
-		Warehouse: queryapi.WarehouseRef{
-			Name:        warehouseRef,
-			WarehouseID: warehouseID,
-		},
-		Credential: queryapi.Credential{BearerToken: token},
-	}, true, nil
-}
-
-func defaultSecretKey(authType string) string {
-	switch databricksv1alpha1.ConnectionAuthType(authType) {
-	case databricksv1alpha1.ConnectionAuthPAT:
-		return defaultPATTokenKey
-	default:
-		return defaultPATTokenKey
-	}
-}
-
-func secretValue(ctx context.Context, dyn dynamic.Interface, namespace, name, key string) (string, error) {
-	secret, err := dyn.Resource(secretsGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("get credential secret %s/%s: %w", namespace, name, err)
-	}
-	data, found, _ := unstructured.NestedMap(secret.Object, "data")
-	if !found {
-		return "", fmt.Errorf("credential secret %s/%s has no data", namespace, name)
-	}
-	value, ok := data[key].(string)
-	if !ok || strings.TrimSpace(value) == "" {
-		return "", fmt.Errorf("credential secret %s/%s missing key %q", namespace, name, key)
-	}
-	if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
-		return string(decoded), nil
-	}
-	return value, nil
 }
 
 func hashToken(token string) string {

@@ -83,7 +83,7 @@ async function remove(row: Record<string, unknown>) {
   const wh = row as unknown as Warehouse
   const ok = await confirmDialog({
     title: `Delete warehouse "${wh.name}"?`,
-    message: 'Tables that reference this warehouse will stop querying.',
+    message: 'Tables that reference this warehouse will stop refreshing schema metadata.',
     confirmLabel: 'Delete',
   })
   if (!ok) return

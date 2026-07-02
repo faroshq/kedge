@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ChevronLeft, ChevronRight, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import ResourceTable from '../components/ResourceTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../components/confirm'
-import { DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS, paginateRows } from '../pagination'
 import { importPrerequisiteMessage, nextValidWarehouseRef, warehousesForConnection } from '../tableRefs'
-import type { Connection, ErrorResponse, QueryResult, Table, TableQueryRequest, Warehouse } from '../types'
+import type { Connection, ErrorResponse, Table, Warehouse } from '../types'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
 
@@ -21,18 +20,6 @@ const editing = ref<string | null>(null)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
 const selectedTable = ref('')
-const previewColumns = ref('')
-const previewLimit = ref(100)
-const filterColumn = ref('')
-const filterOperator = ref('=')
-const filterValue = ref('')
-const orderColumn = ref('')
-const orderDirection = ref('desc')
-const previewLoading = ref(false)
-const previewError = ref<string | null>(null)
-const previewResult = ref<QueryResult | null>(null)
-const previewPage = ref(1)
-const previewPageSize = ref(DEFAULT_PAGE_SIZE)
 let timer: number | undefined
 
 const form = reactive({
@@ -54,11 +41,6 @@ const rows = computed<Array<Record<string, unknown>>>(() =>
 const selected = computed(() => tables.value.find(t => t.name === selectedTable.value) ?? null)
 const schemaRows = computed<Array<Record<string, unknown>>>(() =>
   (selected.value?.columns ?? []).map(c => ({ ...c, nullableLabel: c.nullable ? 'yes' : 'no' })),
-)
-const previewRows = computed<Array<Record<string, unknown>>>(() => previewResult.value?.rows ?? [])
-const previewPagination = computed(() => paginateRows(previewRows.value, previewPage.value, previewPageSize.value))
-const previewTableColumns = computed(() =>
-  (previewResult.value?.columns ?? []).map(c => ({ key: c, label: c })),
 )
 const tableImportBlocker = computed(() => loading.value ? '' : importPrerequisiteMessage(connections.value, warehouses.value))
 const formWarehouses = computed(() => warehousesForConnection(warehouses.value, form.connectionRef))
@@ -116,6 +98,9 @@ async function load() {
     if (connList.length && !connList.some(c => c.name === form.connectionRef)) form.connectionRef = connList[0].name
     form.warehouseRef = nextValidWarehouseRef(warehouseList, form.connectionRef, form.warehouseRef)
     if (!selectedTable.value && tableList.length) selectedTable.value = tableList[0].name
+    if (selectedTable.value && !tableList.some(table => table.name === selectedTable.value)) {
+      selectedTable.value = tableList[0]?.name ?? ''
+    }
   } catch (e) {
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
@@ -176,53 +161,9 @@ async function remove(row: Record<string, unknown>) {
   }
 }
 
-async function runPreview() {
-  if (!selectedTable.value) return
-  previewLoading.value = true
-  previewError.value = null
-  previewResult.value = null
-  previewPage.value = 1
-  try {
-    const query: TableQueryRequest = {
-      limit: Number(previewLimit.value) || 100,
-    }
-    const columns = previewColumns.value.split(',').map(s => s.trim()).filter(Boolean)
-    if (columns.length) query.columns = columns
-    if (filterColumn.value && filterValue.value) {
-      query.filters = [{ column: filterColumn.value, operator: filterOperator.value, value: filterValue.value }]
-    }
-    if (orderColumn.value) {
-      query.orderBy = [{ column: orderColumn.value, direction: orderDirection.value }]
-    }
-    previewResult.value = await api.queryTable(selectedTable.value, query)
-  } catch (e) {
-    previewError.value = errMessage(e)
-  } finally {
-    previewLoading.value = false
-  }
-}
-
-watch(selectedTable, () => {
-  previewResult.value = null
-  previewError.value = null
-  previewPage.value = 1
-})
-
 watch(() => form.connectionRef, connectionRef => {
   form.warehouseRef = nextValidWarehouseRef(warehouses.value, connectionRef, form.warehouseRef)
 })
-
-watch(previewPageSize, () => {
-  previewPage.value = 1
-})
-
-watch(previewRows, () => {
-  previewPage.value = previewPagination.value.page
-})
-
-function setPreviewPage(page: number) {
-  previewPage.value = paginateRows(previewRows.value, page, previewPageSize.value).page
-}
 
 onMounted(() => {
   load()
@@ -329,136 +270,34 @@ onUnmounted(() => window.clearInterval(timer))
       </template>
     </ResourceTable>
 
-    <div class="grid-2">
-      <section class="panel">
-        <div class="panel-head">
-          <h3 class="panel-title">Preview</h3>
-          <button class="primary icon-text" type="button" :disabled="!selectedTable || previewLoading" @click="runPreview">
-            <Play class="button-icon" :stroke-width="1.75" />
-            {{ previewLoading ? 'Running...' : 'Run' }}
-          </button>
-        </div>
-        <div class="form-grid compact">
-          <label class="field span-2">
-            <span class="field-label">TableRef</span>
-            <select v-model="selectedTable">
-              <option value="" disabled>Select table</option>
-              <option v-for="table in tables" :key="table.name" :value="table.name">{{ table.name }}</option>
-            </select>
-          </label>
-          <label class="field span-2">
-            <span class="field-label">Columns</span>
-            <input v-model="previewColumns" autocomplete="off" placeholder="order_id,total_amount" />
-          </label>
-          <label class="field">
-            <span class="field-label">Filter column</span>
-            <input v-model="filterColumn" autocomplete="off" placeholder="status" />
-          </label>
-          <label class="field">
-            <span class="field-label">Filter value</span>
-            <input v-model="filterValue" autocomplete="off" placeholder="shipped" />
-          </label>
-          <label class="field">
-            <span class="field-label">Operator</span>
-            <select v-model="filterOperator">
-              <option>=</option>
-              <option>!=</option>
-              <option>&lt;</option>
-              <option>&lt;=</option>
-              <option>&gt;</option>
-              <option>&gt;=</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-label">Limit</span>
-            <input v-model.number="previewLimit" type="number" min="1" max="1000" />
-          </label>
-          <label class="field">
-            <span class="field-label">Order by</span>
-            <input v-model="orderColumn" autocomplete="off" placeholder="order_date" />
-          </label>
-          <label class="field">
-            <span class="field-label">Direction</span>
-            <select v-model="orderDirection">
-              <option value="desc">DESC</option>
-              <option value="asc">ASC</option>
-            </select>
-          </label>
-        </div>
-        <p v-if="selected" class="muted">
-          <span class="mono">{{ selected.fullName }}</span>
-        </p>
-        <p v-if="previewResult?.truncated" class="warning">Result truncated by Databricks.</p>
-      </section>
-
-      <section class="panel">
+    <section class="panel">
+      <div class="panel-head">
         <h3 class="panel-title">Schema</h3>
-        <ResourceTable
-          :columns="[
-            { key: 'name', label: 'Column' },
-            { key: 'type', label: 'Type' },
-            { key: 'nullableLabel', label: 'Nullable' },
-            { key: 'comment', label: 'Comment' },
-          ]"
-          :rows="schemaRows"
-          :interactive="false"
-          empty-text="No columns have been reported yet."
-        >
-          <template #name="{ value }"><span class="mono strong">{{ value }}</span></template>
-          <template #type="{ value }"><span class="mono">{{ value }}</span></template>
-        </ResourceTable>
-      </section>
-    </div>
-
-    <section v-if="previewResult || previewLoading || previewError" class="panel">
-      <div class="panel-head preview-result-head">
-        <div class="result-summary">
-          <h3 class="panel-title">Rows</h3>
-          <span class="muted">
-            <template v-if="previewLoading">Running query...</template>
-            <template v-else-if="previewError">Query failed</template>
-            <template v-else-if="previewPagination.total">
-              {{ previewPagination.start }}-{{ previewPagination.end }} of {{ previewPagination.total }} returned
-            </template>
-            <template v-else>0 returned</template>
-          </span>
-        </div>
-        <div v-if="previewPagination.total" class="pager">
-          <label class="page-size">
-            <span>Rows per page</span>
-            <select v-model.number="previewPageSize" aria-label="Rows per page">
-              <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
-            </select>
-          </label>
-          <button
-            class="icon-button"
-            type="button"
-            title="Previous page"
-            :disabled="!previewPagination.hasPrevious"
-            @click="setPreviewPage(previewPagination.page - 1)"
-          >
-            <ChevronLeft class="button-icon" :stroke-width="1.75" />
-          </button>
-          <span class="muted page-count">Page {{ previewPagination.page }} of {{ previewPagination.pageCount }}</span>
-          <button
-            class="icon-button"
-            type="button"
-            title="Next page"
-            :disabled="!previewPagination.hasNext"
-            @click="setPreviewPage(previewPagination.page + 1)"
-          >
-            <ChevronRight class="button-icon" :stroke-width="1.75" />
-          </button>
-        </div>
       </div>
+      <label class="field">
+        <span class="field-label">TableRef</span>
+        <select v-model="selectedTable">
+          <option value="" disabled>Select table</option>
+          <option v-for="table in tables" :key="table.name" :value="table.name">{{ table.name }}</option>
+        </select>
+      </label>
+      <p v-if="selected" class="muted">
+        <span class="mono">{{ selected.fullName }}</span>
+      </p>
       <ResourceTable
-        :columns="previewTableColumns"
-        :rows="previewPagination.rows"
-        :loading="previewLoading"
-        :error="previewError"
+        :columns="[
+          { key: 'name', label: 'Column' },
+          { key: 'type', label: 'Type' },
+          { key: 'nullableLabel', label: 'Nullable' },
+          { key: 'comment', label: 'Comment' },
+        ]"
+        :rows="schemaRows"
         :interactive="false"
-        empty-text="No rows returned."
-      />
+        empty-text="No columns have been reported yet."
+      >
+        <template #name="{ value }"><span class="mono strong">{{ value }}</span></template>
+        <template #type="{ value }"><span class="mono">{{ value }}</span></template>
+      </ResourceTable>
     </section>
   </section>
 </template>

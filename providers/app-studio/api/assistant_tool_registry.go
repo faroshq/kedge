@@ -229,6 +229,9 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					return "", err
 				}
 				content, _ := projectToolRawString(req.Arguments["content"])
+				if err := validateProjectGeneratedSourceContent(projectToolString(req.Arguments["path"]), content); err != nil {
+					return "", err
+				}
 				return projectAssistantToolJSONResult(s.workspaces.WriteFile(ctx, req.WorkspaceScope, workspace.WriteOptions{
 					Path:    projectToolString(req.Arguments["path"]),
 					Content: content,
@@ -249,12 +252,20 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				oldText, _ := projectToolRawString(req.Arguments["oldText"])
 				newText, _ := projectToolRawString(req.Arguments["newText"])
-				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, workspace.PatchOptions{
+				opts := workspace.PatchOptions{
 					Path:       projectToolString(req.Arguments["path"]),
 					OldText:    oldText,
 					NewText:    newText,
 					ReplaceAll: projectToolBool(req.Arguments["replaceAll"]),
-				}))
+				}
+				path, next, err := previewProjectWorkspacePatch(ctx, s.workspaces, req.WorkspaceScope, opts)
+				if err != nil {
+					return "", err
+				}
+				if err := validateProjectGeneratedSourceContent(path, next); err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, opts))
 			},
 		},
 		projectAssistantToolFunc{

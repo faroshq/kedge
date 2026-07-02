@@ -7,8 +7,9 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // Package queryapi exposes the provider-owned structured query contract for
-// imported Databricks Table resources. Generated apps should use this shape
-// instead of embedding Databricks credentials or free-form SQL.
+// imported Databricks Table resources. App Studio can use tableRefs for
+// design-time metadata; generated apps do not call this provider contract until
+// App Studio has a sanctioned runtime data-access bridge.
 package queryapi
 
 import (

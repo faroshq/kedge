@@ -71,7 +71,7 @@ async function remove() {
   if (!table.value) return
   const ok = await confirmDialog({
     title: `Delete table "${table.value.name}"?`,
-    message: 'Generated apps that use this tableRef will no longer be able to query it.',
+    message: 'App Studio guidance and Databricks MCP tools will no longer be able to inspect this tableRef.',
     confirmLabel: 'Delete',
   })
   if (!ok) return

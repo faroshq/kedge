@@ -47,8 +47,9 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	}, &mcp.ServerOptions{
 		Instructions: "Use these tools only with Databricks tables already imported " +
 			"as kedge Table resources. Do not import tables from App Studio. " +
-			"Generated apps should call provider-databricks by tableRef and must not " +
-			"embed Databricks credentials or direct warehouse auth config.",
+			"Use tableRef only for design-time metadata, schema inspection, and MCP " +
+			"queries. Do not generate application code that calls provider-databricks, " +
+			"and do not embed Databricks credentials or direct warehouse auth config.",
 	})
 	registerTools(srv, deps, resolverForRequest(deps, r))
 	return srv

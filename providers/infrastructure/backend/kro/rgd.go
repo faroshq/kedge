@@ -40,15 +40,6 @@ const (
 	// apps.127.0.0.1.sslip.io while previews use preview.localhost. Unset leaves
 	// it empty (REST-only/dev), same as the other value-as-is tokens.
 	sandboxPreviewBaseDomainToken = "${kedge.sandboxPreviewBaseDomain}"
-	// sandboxPreviewGatewayNameToken / sandboxPreviewGatewayNamespaceToken are the
-	// platform Gateway the sandbox preview HTTPRoute attaches to
-	// (KEDGE_SANDBOX_PREVIEW_GATEWAY_NAME / _NAMESPACE). They default to the
-	// general ${kedge.gateway*} tokens, so a deployment where previews and 3-tier
-	// apps share a Gateway (e.g. prod's cloudflare-tunnel) needs no extra config;
-	// locally, previews use a dedicated Gateway (envoy app-studio-preview on
-	// *.preview.localhost) while apps use another, so they are set explicitly.
-	sandboxPreviewGatewayNameToken      = "${kedge.sandboxPreviewGatewayName}"
-	sandboxPreviewGatewayNamespaceToken = "${kedge.sandboxPreviewGatewayNamespace}"
 )
 
 const (
@@ -175,15 +166,6 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 	// Missing → empty (the chart guards prod).
 	if _, ok := resolved[sandboxPreviewBaseDomainToken]; !ok {
 		resolved[sandboxPreviewBaseDomainToken] = ""
-	}
-	// Sandbox preview Gateway defaults to the general platform Gateway when its
-	// dedicated override is unset (the common case where previews and apps share
-	// a Gateway). Resolved after the general gateway defaults above.
-	if resolved[sandboxPreviewGatewayNameToken] == "" {
-		resolved[sandboxPreviewGatewayNameToken] = resolved[gatewayNameToken]
-	}
-	if resolved[sandboxPreviewGatewayNamespaceToken] == "" {
-		resolved[sandboxPreviewGatewayNamespaceToken] = resolved[gatewayNamespaceToken]
 	}
 	for token, value := range resolved {
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

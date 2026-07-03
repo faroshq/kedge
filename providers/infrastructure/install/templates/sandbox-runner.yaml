@@ -434,8 +434,8 @@ spec:
             parentRefs:
               - group: gateway.networking.k8s.io
                 kind: Gateway
-                name: ${kedge.sandboxPreviewGatewayName}
-                namespace: ${kedge.sandboxPreviewGatewayNamespace}
+                name: ${kedge.gatewayName}
+                namespace: ${kedge.gatewayNamespace}
             hostnames:
               - ${schema.spec.name}.${kedge.sandboxPreviewBaseDomain}
             rules:

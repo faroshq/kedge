@@ -100,6 +100,10 @@ func New(runtime dynamic.Interface) *Backend {
 	tokens := map[string]string{
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
+		// Public app base domain used by templates that expose a host on the
+		// platform Gateway (e.g. the sandbox preview HTTPRoute). Value-as-is:
+		// unset leaves an empty domain, which the template/chart guards against.
+		appBaseDomainToken: os.Getenv("KEDGE_APP_BASE_DOMAIN"),
 	}
 	return &Backend{runtime: runtime, tokens: tokens}
 }

@@ -30,6 +30,12 @@ import (
 const (
 	gatewayNameToken      = "${kedge.gatewayName}"
 	gatewayNamespaceToken = "${kedge.gatewayNamespace}"
+	// appBaseDomainToken is the platform app base domain (KEDGE_APP_BASE_DOMAIN,
+	// e.g. "dev-apps.faros.sh"). Templates that expose a public host on the
+	// platform Gateway compose it as ${schema.spec.name}.${kedge.appBaseDomain}
+	// so kro interpolates the per-instance name after this token resolves. Unset
+	// leaves it empty (REST-only/dev), same as the other value-as-is tokens.
+	appBaseDomainToken = "${kedge.appBaseDomain}"
 )
 
 const (
@@ -148,6 +154,13 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 	}
 	if resolved[gatewayNamespaceToken] == "" {
 		resolved[gatewayNamespaceToken] = DefaultGatewayNamespace
+	}
+	// The app base domain has no in-binary default (it is deployment-specific),
+	// but it must still always be substituted — otherwise an unset value would
+	// leave a literal ${kedge.appBaseDomain} in the authored RGD, which kro would
+	// reject as an unknown reference. Missing → empty (the chart guards prod).
+	if _, ok := resolved[appBaseDomainToken]; !ok {
+		resolved[appBaseDomainToken] = ""
 	}
 	for token, value := range resolved {
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

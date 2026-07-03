@@ -168,6 +168,7 @@ func testTokens() map[string]string {
 	return map[string]string{
 		gatewayNameToken:      DefaultGatewayName,
 		gatewayNamespaceToken: DefaultGatewayNamespace,
+		appBaseDomainToken:    "dev-apps.faros.sh",
 	}
 }
 

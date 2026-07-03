@@ -901,8 +901,11 @@ run-provider-infrastructure: build-infrastructure-provider ## Run the infrastruc
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
 	KEDGE_APP_BASE_DOMAIN=$${KEDGE_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
+	KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN=$${KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN:-preview.localhost} \
 	KEDGE_GATEWAY_NAME=$${KEDGE_GATEWAY_NAME:-cloudflare-tunnel} \
 	KEDGE_GATEWAY_NAMESPACE=$${KEDGE_GATEWAY_NAMESPACE:-cfgate-system} \
+	KEDGE_SANDBOX_PREVIEW_GATEWAY_NAME=$${KEDGE_SANDBOX_PREVIEW_GATEWAY_NAME:-app-studio-preview} \
+	KEDGE_SANDBOX_PREVIEW_GATEWAY_NAMESPACE=$${KEDGE_SANDBOX_PREVIEW_GATEWAY_NAMESPACE:-envoy-gateway-system} \
 		$(BINDIR)/infrastructure-provider
 
 run-provider-infrastructure-operator: build-infrastructure-provider ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)

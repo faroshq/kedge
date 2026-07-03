@@ -100,12 +100,28 @@ func New(runtime dynamic.Interface) *Backend {
 	tokens := map[string]string{
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
-		// Public app base domain used by templates that expose a host on the
-		// platform Gateway (e.g. the sandbox preview HTTPRoute). Value-as-is:
-		// unset leaves an empty domain, which the template/chart guards against.
-		appBaseDomainToken: os.Getenv("KEDGE_APP_BASE_DOMAIN"),
+		// Base domain sandbox preview HTTPRoutes are exposed under. Dedicated
+		// knob so previews can use a different domain than 3-tier apps; falls
+		// back to the app base domain when unset (the common case, where they
+		// coincide). Value-as-is: an empty domain is guarded by the template/chart.
+		sandboxPreviewBaseDomainToken: sandboxPreviewBaseDomain(),
+		// Platform Gateway the sandbox preview HTTPRoute attaches to. Empty here
+		// falls back to the general gateway tokens in substituteTokens.
+		sandboxPreviewGatewayNameToken:      os.Getenv("KEDGE_SANDBOX_PREVIEW_GATEWAY_NAME"),
+		sandboxPreviewGatewayNamespaceToken: os.Getenv("KEDGE_SANDBOX_PREVIEW_GATEWAY_NAMESPACE"),
 	}
 	return &Backend{runtime: runtime, tokens: tokens}
+}
+
+// sandboxPreviewBaseDomain resolves the base domain used for sandbox preview
+// HTTPRoute hostnames: KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN when set, else the
+// app base domain KEDGE_APP_BASE_DOMAIN (the common case where previews and
+// apps share a domain, so a deployment need only set one).
+func sandboxPreviewBaseDomain() string {
+	if v := os.Getenv("KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN"); v != "" {
+		return v
+	}
+	return os.Getenv("KEDGE_APP_BASE_DOMAIN")
 }
 
 // Name returns "kro".

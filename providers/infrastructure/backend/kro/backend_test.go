@@ -166,9 +166,9 @@ func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 // exposure-layer Gateway parent), for buildRGD tests.
 func testTokens() map[string]string {
 	return map[string]string{
-		gatewayNameToken:      DefaultGatewayName,
-		gatewayNamespaceToken: DefaultGatewayNamespace,
-		appBaseDomainToken:    "dev-apps.faros.sh",
+		gatewayNameToken:              DefaultGatewayName,
+		gatewayNamespaceToken:         DefaultGatewayNamespace,
+		sandboxPreviewBaseDomainToken: "dev-apps.faros.sh",
 	}
 }
 

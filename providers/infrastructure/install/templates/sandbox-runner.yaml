@@ -419,8 +419,8 @@ spec:
       # ${kedge.gatewayNamespace}, substituted before the RGD is authored) whose
       # backend is the sandbox's OWN preview Service in the SAME namespace, so no
       # cross-namespace ReferenceGrant is needed. The hostname is composed from
-      # the reserved ${kedge.appBaseDomain} token and the runner name (which is
-      # globally unique), giving <runner>.<baseDomain>. cfgate programs the DNS
+      # the reserved ${kedge.sandboxPreviewBaseDomain} token and the runner name
+      # (which is globally unique), giving <runner>.<baseDomain>. cfgate programs the DNS
       # record + Cloudflare tunnel route from this hostname. No TLS config here —
       # TLS terminates at the Gateway edge.
       - id: httpRoute
@@ -434,10 +434,10 @@ spec:
             parentRefs:
               - group: gateway.networking.k8s.io
                 kind: Gateway
-                name: ${kedge.gatewayName}
-                namespace: ${kedge.gatewayNamespace}
+                name: ${kedge.sandboxPreviewGatewayName}
+                namespace: ${kedge.sandboxPreviewGatewayNamespace}
             hostnames:
-              - ${schema.spec.name}.${kedge.appBaseDomain}
+              - ${schema.spec.name}.${kedge.sandboxPreviewBaseDomain}
             rules:
               - matches:
                   - path:

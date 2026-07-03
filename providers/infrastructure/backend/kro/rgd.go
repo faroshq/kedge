@@ -30,12 +30,25 @@ import (
 const (
 	gatewayNameToken      = "${kedge.gatewayName}"
 	gatewayNamespaceToken = "${kedge.gatewayNamespace}"
-	// appBaseDomainToken is the platform app base domain (KEDGE_APP_BASE_DOMAIN,
-	// e.g. "dev-apps.faros.sh"). Templates that expose a public host on the
-	// platform Gateway compose it as ${schema.spec.name}.${kedge.appBaseDomain}
-	// so kro interpolates the per-instance name after this token resolves. Unset
-	// leaves it empty (REST-only/dev), same as the other value-as-is tokens.
-	appBaseDomainToken = "${kedge.appBaseDomain}"
+	// sandboxPreviewBaseDomainToken is the base domain sandbox preview HTTPRoutes
+	// are exposed under (KEDGE_SANDBOX_PREVIEW_BASE_DOMAIN, falling back to
+	// KEDGE_APP_BASE_DOMAIN). The sandbox-runner template composes the preview
+	// host as ${schema.spec.name}.${kedge.sandboxPreviewBaseDomain} so kro
+	// interpolates the per-instance runner name after this token resolves. It is
+	// a dedicated knob (not the app domain) so a deployment can serve sandbox
+	// previews on a different domain than 3-tier apps — e.g. locally apps stay on
+	// apps.127.0.0.1.sslip.io while previews use preview.localhost. Unset leaves
+	// it empty (REST-only/dev), same as the other value-as-is tokens.
+	sandboxPreviewBaseDomainToken = "${kedge.sandboxPreviewBaseDomain}"
+	// sandboxPreviewGatewayNameToken / sandboxPreviewGatewayNamespaceToken are the
+	// platform Gateway the sandbox preview HTTPRoute attaches to
+	// (KEDGE_SANDBOX_PREVIEW_GATEWAY_NAME / _NAMESPACE). They default to the
+	// general ${kedge.gateway*} tokens, so a deployment where previews and 3-tier
+	// apps share a Gateway (e.g. prod's cloudflare-tunnel) needs no extra config;
+	// locally, previews use a dedicated Gateway (envoy app-studio-preview on
+	// *.preview.localhost) while apps use another, so they are set explicitly.
+	sandboxPreviewGatewayNameToken      = "${kedge.sandboxPreviewGatewayName}"
+	sandboxPreviewGatewayNamespaceToken = "${kedge.sandboxPreviewGatewayNamespace}"
 )
 
 const (
@@ -155,12 +168,22 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 	if resolved[gatewayNamespaceToken] == "" {
 		resolved[gatewayNamespaceToken] = DefaultGatewayNamespace
 	}
-	// The app base domain has no in-binary default (it is deployment-specific),
-	// but it must still always be substituted — otherwise an unset value would
-	// leave a literal ${kedge.appBaseDomain} in the authored RGD, which kro would
-	// reject as an unknown reference. Missing → empty (the chart guards prod).
-	if _, ok := resolved[appBaseDomainToken]; !ok {
-		resolved[appBaseDomainToken] = ""
+	// The sandbox preview base domain has no in-binary default (it is
+	// deployment-specific), but it must still always be substituted — otherwise
+	// an unset value would leave a literal ${kedge.sandboxPreviewBaseDomain} in
+	// the authored RGD, which kro would reject as an unknown reference.
+	// Missing → empty (the chart guards prod).
+	if _, ok := resolved[sandboxPreviewBaseDomainToken]; !ok {
+		resolved[sandboxPreviewBaseDomainToken] = ""
+	}
+	// Sandbox preview Gateway defaults to the general platform Gateway when its
+	// dedicated override is unset (the common case where previews and apps share
+	// a Gateway). Resolved after the general gateway defaults above.
+	if resolved[sandboxPreviewGatewayNameToken] == "" {
+		resolved[sandboxPreviewGatewayNameToken] = resolved[gatewayNameToken]
+	}
+	if resolved[sandboxPreviewGatewayNamespaceToken] == "" {
+		resolved[sandboxPreviewGatewayNamespaceToken] = resolved[gatewayNamespaceToken]
 	}
 	for token, value := range resolved {
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

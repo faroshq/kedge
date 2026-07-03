@@ -280,7 +280,7 @@ func TestSandboxRunnerIncludesManagedPreviewHTTPRoute(t *testing.T) {
 
 	hostnames := mustNestedSlice(t, httpRouteTemplate, "spec", "hostnames")
 	if len(hostnames) == 0 || hostnames[0] != "${schema.spec.name}.dev-apps.faros.sh" {
-		t.Fatalf("httpRoute hostnames = %#v, want first element %q", hostnames, "${schema.spec.name}.dev-apps.faros.sh")
+		t.Fatalf("httpRoute hostnames = %#v, want first element %q (sandboxPreviewBaseDomain token substituted)", hostnames, "${schema.spec.name}.dev-apps.faros.sh")
 	}
 
 	rules := mustNestedSlice(t, httpRouteTemplate, "spec", "rules")

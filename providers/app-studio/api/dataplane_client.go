@@ -34,7 +34,6 @@ import (
 // docs/app-studio-template-sandboxes.md §3.
 const (
 	infraDataPlaneProvider = "infrastructure"
-	sandboxRunnersResource = "sandboxrunners"
 
 	dataPlaneVerbLog     = "log"
 	dataPlaneVerbSync    = "sync"
@@ -46,17 +45,12 @@ const (
 )
 
 // dataPlaneRef addresses one data-plane target: an instance of a resource,
-// optionally scoped to one of its components. An empty Resource defaults to
-// the legacy sandbox runner; an empty Component addresses instance-level
-// verbs.
+// optionally scoped to one of its components. An empty Component addresses
+// instance-level verbs.
 type dataPlaneRef struct {
 	Resource  string
 	Name      string
 	Component string
-}
-
-func sandboxDataPlaneRef(runnerName string) dataPlaneRef {
-	return dataPlaneRef{Resource: sandboxRunnersResource, Name: runnerName}
 }
 
 // dataPlaneURL composes the hub URL for a data-plane verb. tail (with leading
@@ -66,13 +60,9 @@ func sandboxDataPlaneRef(runnerName string) dataPlaneRef {
 // request; kcp cluster IDs keep their colons (':' is a valid path character
 // PathEscape leaves alone).
 func (s *Server) dataPlaneURL(clusterID string, ref dataPlaneRef, verb, tail string) string {
-	resource := ref.Resource
-	if resource == "" {
-		resource = sandboxRunnersResource
-	}
 	u := strings.TrimRight(s.hubBase, "/") +
 		fmt.Sprintf("/services/providers/%s/dataplane/clusters/%s/%s/%s",
-			infraDataPlaneProvider, url.PathEscape(clusterID), url.PathEscape(resource), url.PathEscape(ref.Name))
+			infraDataPlaneProvider, url.PathEscape(clusterID), url.PathEscape(ref.Resource), url.PathEscape(ref.Name))
 	if ref.Component != "" {
 		u += "/components/" + url.PathEscape(ref.Component)
 	}
@@ -196,6 +186,10 @@ func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlane
 		}
 	}
 }
+
+// previewReadinessProbeTimeout bounds a preview readiness probe through the
+// open proxy verb.
+const previewReadinessProbeTimeout = 2 * time.Second
 
 // dataPlaneProbe performs a GET against the open proxy verb (path tail) and
 // returns the upstream status + a bounded body, for preview readiness.

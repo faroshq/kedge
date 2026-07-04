@@ -186,17 +186,4 @@ func TestProjectDevelopmentTargetRefs(t *testing.T) {
 	if res.Kind != "Application" || res.GVR.Resource != "applications" {
 		t.Errorf("instanceResource = %+v", res)
 	}
-
-	// Legacy target falls back to the sandbox runner descriptor.
-	legacy := projectDevelopmentSyncTargetInfo{ResourceName: "kedge-sandbox-abc"}
-	res, err = legacy.instanceResource()
-	if err != nil {
-		t.Fatalf("legacy instanceResource: %v", err)
-	}
-	if res.Kind != "SandboxRunner" {
-		t.Errorf("legacy instanceResource = %+v", res)
-	}
-	if ref := legacy.dataPlaneRefFor(""); ref.Resource != sandboxRunnersResource {
-		t.Errorf("legacy ref = %+v", ref)
-	}
 }

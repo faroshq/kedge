@@ -258,9 +258,6 @@ func (s *Server) deleteProjectDevelopmentBindingResources(ctx context.Context, c
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil {
 				continue
 			}
-			if isSandboxPreviewHTTPRouteBinding(binding) {
-				continue
-			}
 			gvr, err := projectProviderResourceGVR(binding.ResourceRef)
 			if err != nil {
 				return err

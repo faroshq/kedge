@@ -84,7 +84,6 @@ const (
 var e2eMinimalSpecs = map[string]map[string]any{
 	"redis-cache":    {"name": "e2e-redis"},
 	"simple-webapp":  {"name": "e2e-web"},
-	"sandbox-runner": {"name": "kedge-sandbox-0000111122223333", "projectRef": "e2e"},
 }
 
 // e2ePlatformStamped are spec fields a platform component normally writes onto an
@@ -269,9 +268,6 @@ func e2eInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *unst
 // dev-mode e2e's production/development pair) would collide on runID[:8], and
 // the second create would silently adopt the first's terminating instance.
 func e2eInstanceName(tmplName string, spec map[string]any, runID string) string {
-	if tmplName == "sandbox-runner" {
-		return "kedge-sandbox-" + runID
-	}
 	base, _ := spec["name"].(string)
 	if base == "" {
 		base = "e2e-" + tmplName

@@ -597,16 +597,16 @@ func projectAssistantRuntimeWorkflowInputFromStatusTool(runCtx projectAssistantW
 }
 
 // resolveProjectSandboxRuntime resolves the project's live development
-// SandboxRunner runtime: readiness plus a signed preview URL. The second return
-// is false when the project has no sandbox runner binding yet — i.e. genuinely
-// nothing is deployed — so callers can report not_configured rather than a
-// transient "getting ready" state.
+// runtime: readiness plus the preview URL. The second return is false when
+// the project has no development template bound yet — i.e. genuinely nothing
+// is deployed — so callers can report not_configured rather than a transient
+// "getting ready" state.
 func (s *Server) resolveProjectSandboxRuntime(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project) (projectSandboxPreviewURLResponse, bool) {
 	if s == nil || c == nil || p == nil {
 		return projectSandboxPreviewURLResponse{}, false
 	}
-	target, ok := projectDevelopmentSyncTarget(p, id)
-	if !ok {
+	target, err := s.projectDevelopmentTarget(ctx, c, p, id)
+	if err != nil {
 		return projectSandboxPreviewURLResponse{}, false
 	}
 	preview, err := s.authorizeProjectDevelopmentPreviewTarget(ctx, c, id, p, target)

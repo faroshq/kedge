@@ -45,6 +45,12 @@ type CreateProjectRequest struct {
 	Description   string `json:"description,omitempty"`
 	Prompt        string `json:"prompt,omitempty"`
 	ConnectionRef string `json:"connectionRef,omitempty"`
+
+	// ExistingRepositoryRef imports an existing Code Repository instead of
+	// creating one: the project adopts the repository (claims it, never
+	// deletes it) and the workspace is hydrated from its default branch
+	// after creation.
+	ExistingRepositoryRef string `json:"existingRepositoryRef,omitempty"`
 }
 
 type PatchProjectRequest struct {
@@ -225,7 +231,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	created, err := s.createProjectFromRequest(r.Context(), c, id, req, nil)
+	created, err := s.createProjectFromRequest(r.Context(), c, id, req, nil, r)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -233,11 +239,17 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, projectView(r.Context(), c, created, id))
 }
 
-func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Client, id identity, req CreateProjectRequest, onStatus projectCreationStatusFunc) (*aiv1alpha1.Project, error) {
+func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Client, id identity, req CreateProjectRequest, onStatus projectCreationStatusFunc, httpReq *http.Request) (*aiv1alpha1.Project, error) {
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.ConnectionRef = strings.TrimSpace(req.ConnectionRef)
+	req.ExistingRepositoryRef = strings.TrimSpace(req.ExistingRepositoryRef)
+	// Repository import defaults the display name to the repository —
+	// "import my repo" shouldn't demand a title.
+	if req.ExistingRepositoryRef != "" && req.DisplayName == "" && req.Prompt == "" {
+		req.DisplayName = req.ExistingRepositoryRef
+	}
 	repoBase := slugifyProjectName(req.DisplayName)
 	if req.Prompt != "" {
 		if err := emitProjectCreationStatus(onStatus, "Naming project"); err != nil {
@@ -263,7 +275,12 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 	if err := emitProjectCreationStatus(onStatus, "Configuring repository"); err != nil {
 		return nil, err
 	}
-	repoPlan, err := s.prepareProjectRepository(ctx, c, req.ConnectionRef, repoBase, req.DisplayName, req.Description)
+	var repoPlan projectRepositoryPlan
+	if req.ExistingRepositoryRef != "" {
+		repoPlan, err = adoptProjectRepository(ctx, c, req.ExistingRepositoryRef)
+	} else {
+		repoPlan, err = s.prepareProjectRepository(ctx, c, req.ConnectionRef, repoBase, req.DisplayName, req.Description)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -285,13 +302,24 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 	if err != nil {
 		return nil, err
 	}
-	if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
-		s.cleanupCreatedProjectSetup(ctx, c, id, created)
-		return nil, err
-	}
-	if err := s.createProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
-		s.cleanupCreatedProjectSetup(ctx, c, id, created)
-		return nil, err
+	if repoPlan.Adopted {
+		if err := emitProjectCreationStatus(onStatus, "Importing repository"); err != nil {
+			s.cleanupCreatedProjectSetup(ctx, c, id, created)
+			return nil, err
+		}
+		if err := claimProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
+			s.cleanupCreatedProjectSetup(ctx, c, id, created)
+			return nil, err
+		}
+	} else {
+		if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
+			s.cleanupCreatedProjectSetup(ctx, c, id, created)
+			return nil, err
+		}
+		if err := s.createProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
+			s.cleanupCreatedProjectSetup(ctx, c, id, created)
+			return nil, err
+		}
 	}
 	created, err = s.reconcileProjectLiveBindings(ctx, c, created, id)
 	if err != nil {
@@ -302,6 +330,18 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 	if err != nil {
 		s.cleanupCreatedProjectSetup(ctx, c, id, created)
 		return nil, err
+	}
+	if repoPlan.Adopted && httpReq != nil {
+		// Best-effort: pull the imported repository's tree into the fresh
+		// workspace. A failure leaves a valid (empty) project the user can
+		// hydrate again via /hydrate-workspace or the assistant.
+		if err := emitProjectCreationStatus(onStatus, "Importing repository files"); err != nil {
+			return updated, nil
+		}
+		if _, err := s.hydrateWorkspaceFromRepository(ctx, id, updated, httpReq, ""); err != nil {
+			klog.V(1).Infof("repository import hydrate failed for project %s: %v", updated.Name, err)
+			_ = emitProjectCreationStatus(onStatus, "Repository import incomplete — retry from project settings")
+		}
 	}
 	return updated, nil
 }
@@ -320,7 +360,14 @@ func (s *Server) cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Cli
 	_ = s.deleteProjectProviderResources(ctx, c, p, id)
 	if p.Spec.Repository != nil {
 		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
-			_ = c.Resource(codeRepositoryResource, "").Delete(ctx, ref, metav1.DeleteOptions{})
+			// An ADOPTED repository (repository import) is never deleted —
+			// App Studio only releases its claim. Only repositories App
+			// Studio created itself are torn down with the project.
+			if repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, ref, metav1.GetOptions{}); err == nil && repositoryAdopted(repo) {
+				_ = releaseProjectRepository(ctx, c, ref)
+			} else if err == nil {
+				_ = c.Resource(codeRepositoryResource, "").Delete(ctx, ref, metav1.DeleteOptions{})
+			}
 		}
 	}
 	if name := strings.TrimSpace(p.Name); name != "" {
@@ -512,7 +559,7 @@ func (s *Server) createProjectStartStream(w http.ResponseWriter, r *http.Request
 	if err := writeStatus("Starting"); err != nil {
 		return
 	}
-	created, err := s.createProjectFromRequest(r.Context(), c, id, req, writeStatus)
+	created, err := s.createProjectFromRequest(r.Context(), c, id, req, writeStatus, r)
 	if err != nil {
 		writeStreamError(err)
 		return

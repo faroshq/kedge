@@ -245,10 +245,20 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.ConnectionRef = strings.TrimSpace(req.ConnectionRef)
 	req.ExistingRepositoryRef = strings.TrimSpace(req.ExistingRepositoryRef)
-	// Repository import defaults the display name to the repository —
-	// "import my repo" shouldn't demand a title.
-	if req.ExistingRepositoryRef != "" && req.DisplayName == "" && req.Prompt == "" {
-		req.DisplayName = req.ExistingRepositoryRef
+	// Repository import resolves the repository up front: the claim guard
+	// runs before anything is created, and the display name can default to
+	// the repository's HOST name (spec.name) — "import my repo" shouldn't
+	// demand a title.
+	var adoptedPlan *projectRepositoryPlan
+	if req.ExistingRepositoryRef != "" {
+		plan, err := adoptProjectRepository(ctx, c, req.ExistingRepositoryRef)
+		if err != nil {
+			return nil, err
+		}
+		adoptedPlan = &plan
+		if req.DisplayName == "" && req.Prompt == "" {
+			req.DisplayName = plan.Name
+		}
 	}
 	repoBase := slugifyProjectName(req.DisplayName)
 	if req.Prompt != "" {
@@ -276,13 +286,13 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 		return nil, err
 	}
 	var repoPlan projectRepositoryPlan
-	if req.ExistingRepositoryRef != "" {
-		repoPlan, err = adoptProjectRepository(ctx, c, req.ExistingRepositoryRef)
+	if adoptedPlan != nil {
+		repoPlan = *adoptedPlan
 	} else {
 		repoPlan, err = s.prepareProjectRepository(ctx, c, req.ConnectionRef, repoBase, req.DisplayName, req.Description)
-	}
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 	now := metav1.Now()
 	p := &aiv1alpha1.Project{
@@ -360,13 +370,19 @@ func (s *Server) cleanupCreatedProjectSetup(ctx context.Context, c *asclient.Cli
 	_ = s.deleteProjectProviderResources(ctx, c, p, id)
 	if p.Spec.Repository != nil {
 		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
-			// An ADOPTED repository (repository import) is never deleted —
-			// App Studio only releases its claim. Only repositories App
-			// Studio created itself are torn down with the project.
-			if repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, ref, metav1.GetOptions{}); err == nil && repositoryAdopted(repo) {
-				_ = releaseProjectRepository(ctx, c, ref)
-			} else if err == nil {
-				_ = c.Resource(codeRepositoryResource, "").Delete(ctx, ref, metav1.DeleteOptions{})
+			// Only touch a repository THIS project owns (its claim label
+			// matches). A failed adopt leaves the claim unset or on another
+			// project — in either case the repository is not ours to delete
+			// or release. An ADOPTED repository is never deleted; only
+			// repositories App Studio created for this project are torn
+			// down with it.
+			if repo, err := c.Resource(codeRepositoryResource, "").Get(ctx, ref, metav1.GetOptions{}); err == nil &&
+				strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel]) == strings.TrimSpace(p.Name) {
+				if repositoryAdopted(repo) {
+					_ = releaseProjectRepository(ctx, c, ref)
+				} else {
+					_ = c.Resource(codeRepositoryResource, "").Delete(ctx, ref, metav1.DeleteOptions{})
+				}
 			}
 		}
 	}
@@ -486,6 +502,20 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.deleteProjectProviderResources(r.Context(), c, p, id); err != nil {
 		writeProjectError(w, err)
 		return
+	}
+	// Repositories deliberately SURVIVE project deletion — git is the durable
+	// source of truth, and deleting a workspace UI concept must never destroy
+	// the user's code. Deletion only releases the claim on a repository this
+	// project owns, so the repository becomes importable again.
+	if p.Spec.Repository != nil {
+		if ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef); ref != "" {
+			if repo, err := c.Resource(codeRepositoryResource, "").Get(r.Context(), ref, metav1.GetOptions{}); err == nil &&
+				strings.TrimSpace(repo.GetLabels()[projectRepositoryProjectLabel]) == strings.TrimSpace(p.Name) {
+				if err := releaseProjectRepository(r.Context(), c, ref); err != nil {
+					klog.FromContext(r.Context()).Error(err, "release project repository claim", "project", name, "repository", ref)
+				}
+			}
+		}
 	}
 	if err := c.Projects().Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
 		writeProjectError(w, err)

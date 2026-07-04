@@ -124,6 +124,11 @@ func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if s.workspaces == nil {
+		// A server configuration gap, not an upstream failure — 503, not 502.
+		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "project workspace store is not configured")
+		return
+	}
 	var req projectHydrateRequest
 	if r.Body != nil {
 		// An empty body is fine — hydrate from the default branch — but a

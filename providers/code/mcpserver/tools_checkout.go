@@ -87,7 +87,7 @@ func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles comm
 		"apiVersion": codev1alpha1.SchemeGroupVersion.String(),
 		"kind":       "RepositoryCheckout",
 		"metadata": map[string]any{
-			"name":   commitObjectName(in.RepositoryRef, "checkout", time.Now()),
+			"name":   checkoutObjectName(in.RepositoryRef, time.Now()),
 			"labels": map[string]any{codev1alpha1.LabelRepository: in.RepositoryRef},
 		},
 		"spec": spec,
@@ -154,6 +154,26 @@ func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles comm
 	return nil, out, nil
 }
 
+// checkoutObjectName composes a per-request-unique RepositoryCheckout name.
+func checkoutObjectName(repositoryRef string, now time.Time) string {
+	base := strings.Trim(repositoryRef, "-")
+	if base == "" {
+		base = "repository"
+	}
+	suffix := fmt.Sprintf("%x", now.UnixNano())
+	maxBase := 253 - len("-checkout-") - len(suffix)
+	if len(base) > maxBase {
+		base = strings.Trim(base[:maxBase], "-")
+	}
+	if base == "" {
+		base = "repository"
+	}
+	return base + "-checkout-" + suffix
+}
+
+// waitRepositoryCheckout polls until the checkout reaches a terminal phase.
+// A timeout returns (nil, nil) — never a non-terminal object — so the caller
+// surfaces "did not complete in time" rather than a misleading failure.
 func waitRepositoryCheckout(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -173,7 +193,7 @@ func waitRepositoryCheckout(ctx context.Context, dyn dynamic.Interface, name str
 		}
 		select {
 		case <-ctx.Done():
-			return obj, nil
+			return nil, nil
 		case <-ticker.C:
 		}
 	}

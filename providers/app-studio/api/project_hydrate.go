@@ -19,7 +19,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -87,8 +89,12 @@ func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	}
 	var req projectHydrateRequest
 	if r.Body != nil {
-		// An empty body is fine — hydrate from the default branch.
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		// An empty body is fine — hydrate from the default branch — but a
+		// malformed one is a caller error, not "default branch".
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
+			return
+		}
 	}
 
 	args := map[string]any{"repositoryRef": repositoryRef}

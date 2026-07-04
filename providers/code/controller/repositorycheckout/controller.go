@@ -42,6 +42,16 @@ type Reconciler struct {
 	Bundles  commitbundle.Store
 }
 
+// Checkout bounds, passed explicitly so every backend behaves consistently
+// (never backend defaults). They mirror the App Studio workspace limits the
+// checked-out tree ultimately lands in: 500 files, 256 KiB per file, 16 MiB
+// total.
+const (
+	checkoutMaxFiles      = 500
+	checkoutMaxFileBytes  = 256 << 10
+	checkoutMaxTotalBytes = 16 << 20
+)
+
 // SetupWithManager wires the reconciler into the multicluster manager.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
@@ -110,7 +120,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, fail(err.Error())
 	}
 
-	res, err := reader.CheckoutFiles(ctx, conn, cred, repo, backend.RepositoryCheckoutInput{Ref: checkout.Spec.Ref})
+	res, err := reader.CheckoutFiles(ctx, conn, cred, repo, backend.RepositoryCheckoutInput{
+		Ref:           checkout.Spec.Ref,
+		MaxFiles:      checkoutMaxFiles,
+		MaxFileBytes:  checkoutMaxFileBytes,
+		MaxTotalBytes: checkoutMaxTotalBytes,
+	})
 	if err != nil {
 		return ctrl.Result{}, fail(err.Error())
 	}

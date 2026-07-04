@@ -131,6 +131,50 @@ func TestProjectTemplateDevBinding(t *testing.T) {
 	}
 }
 
+func TestDevelopmentTemplateViews(t *testing.T) {
+	withDev := applicationTemplateObject()
+	_ = unstructured.SetNestedField(withDev.Object, "Web application", "spec", "displayName")
+	_ = unstructured.SetNestedField(withDev.Object, "Frontend + backend pair", "spec", "description")
+	_ = unstructured.SetNestedField(withDev.Object, "web", "spec", "category")
+
+	// No development block → not a development template, filtered out.
+	prodOnly := applicationTemplateObject()
+	prodOnly.SetName("database")
+	unstructured.RemoveNestedField(prodOnly.Object, "spec", "development")
+
+	// Malformed spec (incomplete instanceCRD) is skipped, not surfaced as an
+	// error — a broken catalog entry must not hide the rest of the catalog.
+	broken := applicationTemplateObject()
+	broken.SetName("broken")
+	unstructured.RemoveNestedField(broken.Object, "spec", "instanceCRD", "kind")
+
+	// Second valid entry, named to sort before "application" if ordering were
+	// insertion order — proves the sort.
+	second := applicationTemplateObject()
+	second.SetName("api-service")
+
+	views := developmentTemplateViews([]unstructured.Unstructured{*withDev, *prodOnly, *broken, *second})
+
+	if len(views) != 2 {
+		t.Fatalf("views = %+v, want exactly the two development templates", views)
+	}
+	if views[0].Name != "api-service" || views[1].Name != "application" {
+		t.Errorf("order = %s, %s; want api-service, application (sorted by name)", views[0].Name, views[1].Name)
+	}
+	app := views[1]
+	if app.DisplayName != "Web application" || app.Description != "Frontend + backend pair" || app.Category != "web" {
+		t.Errorf("metadata = %+v, want displayName/description/category surfaced", app)
+	}
+	wantComponents := map[string]string{"frontend": "web", "backend": "api"}
+	if !reflect.DeepEqual(app.Components, wantComponents) {
+		t.Errorf("components = %v, want %v", app.Components, wantComponents)
+	}
+
+	if got := developmentTemplateViews(nil); got == nil || len(got) != 0 {
+		t.Errorf("empty catalog = %v, want empty non-nil slice", got)
+	}
+}
+
 func TestRouteProjectSyncFiles(t *testing.T) {
 	files := []projectSandboxSyncFile{
 		{Path: "web/package.json", Content: "{}"},

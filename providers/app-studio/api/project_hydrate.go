@@ -141,7 +141,7 @@ func (s *Server) listImportRepositories(w http.ResponseWriter, r *http.Request) 
 	}
 	list, err := c.Resource(codeRepositoryResource, "").List(r.Context(), metav1.ListOptions{})
 	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", "list Code repositories: "+err.Error())
+		writeProjectError(w, err)
 		return
 	}
 	out := make([]projectImportRepositoryView, 0, len(list.Items))

@@ -1056,6 +1056,9 @@ async function applyDevelopmentTemplate() {
   const projectName = selected.value?.name
   const template = developmentTemplateSelection.value
   if (!projectName || !template || developmentTemplateBusy.value) return
+  // Switching templates re-provisions the development environment; the
+  // workspace and git repository survive, but the running instance does not.
+  if (!window.confirm(`Switch the development environment to the "${template}" template? The current development instance will be replaced (your code stays in the workspace and git).`)) return
   developmentTemplateBusy.value = true
   developmentSyncError.value = null
   developmentSyncStatus.value = null
@@ -1077,6 +1080,8 @@ async function applyDevelopmentTemplate() {
 async function hydrateDevelopmentWorkspace() {
   const projectName = selected.value?.name
   if (!projectName || developmentHydrateBusy.value) return
+  // Hydration overwrites workspace files with the repository's tree.
+  if (!window.confirm('Load the workspace from the git repository? Files in the workspace will be overwritten with the repository versions (workspace-only files are kept).')) return
   developmentHydrateBusy.value = true
   developmentSyncError.value = null
   developmentSyncStatus.value = null

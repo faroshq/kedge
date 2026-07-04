@@ -11,12 +11,6 @@ You may obtain a copy of the License at
 package api
 
 import (
-	"encoding/json"
-	"os"
-	"strings"
-
-	"k8s.io/apimachinery/pkg/runtime"
-
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 )
 
@@ -57,21 +51,3 @@ func defaultProjectDevelopmentEnvironment(_ string) aiv1alpha1.ProjectEnvironmen
 	}
 }
 
-// previewHTTPRouteBaseDomain is the public base domain used to validate (anti-
-// spoof) the SandboxRunner's reported preview host: it must equal
-// <runner>.<baseDomain>. The HTTPRoute itself is created by the infrastructure
-// provider's SandboxRunner RGD (on the platform Gateway), so App Studio only
-// needs the domain for this check — set APP_STUDIO_PREVIEW_BASE_DOMAIN to the
-// same value as the infra provider's KEDGE_APP_BASE_DOMAIN.
-func previewHTTPRouteBaseDomain() string {
-	return envValue("APP_STUDIO_PREVIEW_BASE_DOMAIN")
-}
-
-func envValue(key string) string {
-	return strings.TrimSpace(os.Getenv(key))
-}
-
-func projectDeploymentJSONValues(values map[string]any) runtime.RawExtension {
-	raw, _ := json.Marshal(values)
-	return runtime.RawExtension{Raw: raw}
-}

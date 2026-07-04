@@ -334,12 +334,24 @@ func (s *Server) listDevelopmentTemplates(w http.ResponseWriter, r *http.Request
 	}
 	list, err := c.Resource(templateResource, "").List(r.Context(), metav1.ListOptions{})
 	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", "list templates: "+err.Error())
+		// Same mapping as the other /api/projects handlers: workspace
+		// initialization gets 503 + Retry-After, kcp API errors keep their
+		// status, instead of a blanket 502.
+		writeProjectError(w, err)
 		return
 	}
-	out := make([]projectDevelopmentTemplateView, 0, len(list.Items))
-	for i := range list.Items {
-		obj := &list.Items[i]
+	writeJSON(w, http.StatusOK, map[string]any{"templates": developmentTemplateViews(list.Items)})
+}
+
+// developmentTemplateViews filters the raw Template list down to templates
+// declaring development components and shapes them for the portal picker,
+// sorted by name for stable ordering. Templates with a malformed spec are
+// skipped, never surfaced as errors — a broken catalog entry must not hide
+// the rest of the catalog.
+func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelopmentTemplateView {
+	out := make([]projectDevelopmentTemplateView, 0, len(items))
+	for i := range items {
+		obj := &items[i]
 		info, err := projectTemplateInfoFromUnstructured(obj)
 		if err != nil || len(info.Components) == 0 {
 			continue
@@ -354,7 +366,7 @@ func (s *Server) listDevelopmentTemplates(w http.ResponseWriter, r *http.Request
 		out = append(out, view)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	writeJSON(w, http.StatusOK, map[string]any{"templates": out})
+	return out
 }
 
 type projectTemplateSelectRequest struct {

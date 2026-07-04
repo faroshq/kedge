@@ -187,27 +187,3 @@ func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlane
 	}
 }
 
-// previewReadinessProbeTimeout bounds a preview readiness probe through the
-// open proxy verb.
-const previewReadinessProbeTimeout = 2 * time.Second
-
-// dataPlaneProbe performs a GET against the open proxy verb (path tail) and
-// returns the upstream status + a bounded body, for preview readiness.
-func (s *Server) dataPlaneProbe(ctx context.Context, id identity, ref dataPlaneRef, tail string) (int, []byte, error) {
-	callCtx, cancel := context.WithTimeout(ctx, previewReadinessProbeTimeout)
-	defer cancel()
-	req, err := s.newDataPlaneRequest(callCtx, http.MethodGet, id, ref, dataPlaneVerbProxy, tail, nil)
-	if err != nil {
-		return 0, nil, err
-	}
-	resp, err := s.sandboxDataPlaneClient(previewReadinessProbeTimeout).Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return resp.StatusCode, nil, err
-	}
-	return resp.StatusCode, body, nil
-}

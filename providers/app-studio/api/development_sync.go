@@ -82,10 +82,6 @@ func (t projectDevelopmentSyncTargetInfo) sortedComponents() []string {
 	return names
 }
 
-type sandboxPreviewHTTPRouteInfo struct {
-	URL string
-}
-
 type projectSandboxSyncFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`

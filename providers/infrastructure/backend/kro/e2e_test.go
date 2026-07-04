@@ -211,23 +211,42 @@ func e2eClients(t *testing.T) (dynamic.Interface, meta.RESTMapper) {
 	return dyn, restmapper.NewDiscoveryRESTMapper(groups)
 }
 
+// applyRGD creates or updates the RGD, tolerating the lifecycle races between
+// tests that share a template name: a prior test's cleanup delete may still be
+// finalizing (Get succeeds, then Update/Create 404s or conflicts), so retry
+// until the apply lands or the deadline passes.
 func applyRGD(t *testing.T, dyn dynamic.Interface, rgd *unstructured.Unstructured) {
 	t.Helper()
 	ctx := context.Background()
-	existing, err := dyn.Resource(rgdGVR).Get(ctx, rgd.GetName(), metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		if _, err := dyn.Resource(rgdGVR).Create(ctx, rgd, metav1.CreateOptions{}); err != nil {
-			t.Fatalf("create RGD %q: %v", rgd.GetName(), err)
+	deadline := time.Now().Add(e2eGraphWait)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		existing, err := dyn.Resource(rgdGVR).Get(ctx, rgd.GetName(), metav1.GetOptions{})
+		switch {
+		case apierrors.IsNotFound(err):
+			if _, err := dyn.Resource(rgdGVR).Create(ctx, rgd.DeepCopy(), metav1.CreateOptions{}); err == nil {
+				return
+			} else if !apierrors.IsAlreadyExists(err) {
+				lastErr = fmt.Errorf("create RGD %q: %w", rgd.GetName(), err)
+			}
+		case err != nil:
+			lastErr = fmt.Errorf("get RGD %q: %w", rgd.GetName(), err)
+		case existing.GetDeletionTimestamp() != nil:
+			lastErr = fmt.Errorf("RGD %q is still terminating", rgd.GetName())
+		default:
+			next := rgd.DeepCopy()
+			next.SetResourceVersion(existing.GetResourceVersion())
+			if _, err := dyn.Resource(rgdGVR).Update(ctx, next, metav1.UpdateOptions{}); err == nil {
+				return
+			} else if !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+				t.Fatalf("update RGD %q: %v", rgd.GetName(), err)
+			} else {
+				lastErr = fmt.Errorf("update RGD %q: %w", rgd.GetName(), err)
+			}
 		}
-		return
+		time.Sleep(e2ePollEvery)
 	}
-	if err != nil {
-		t.Fatalf("get RGD %q: %v", rgd.GetName(), err)
-	}
-	rgd.SetResourceVersion(existing.GetResourceVersion())
-	if _, err := dyn.Resource(rgdGVR).Update(ctx, rgd, metav1.UpdateOptions{}); err != nil {
-		t.Fatalf("update RGD %q: %v", rgd.GetName(), err)
-	}
+	t.Fatalf("apply RGD %q never settled: %v", rgd.GetName(), lastErr)
 }
 
 // e2eInstance builds a sample instance: the template's sampleValues when present

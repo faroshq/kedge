@@ -35,7 +35,43 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
-func TestDefaultProjectDevelopmentEnvironmentUsesInfrastructureBackedSandboxRunner(t *testing.T) {
+// legacySandboxRunnerBinding is the binding shape pre-template projects carry
+// (the removed creation default). The reconcile paths must keep honoring it
+// until the Phase 4 sweep deletes sandbox-runner support entirely.
+func legacySandboxRunnerBinding(projectName string) aiv1alpha1.ProjectProviderBindingSpec {
+	return aiv1alpha1.ProjectProviderBindingSpec{
+		Name:     "dev",
+		Provider: "app-studio",
+		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
+		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
+			APIVersion: "infrastructure.kedge.faros.sh/v1alpha1",
+			Kind:       "SandboxRunner",
+			Resource:   "sandboxrunners",
+		},
+		Values: projectDeploymentJSONValues(map[string]any{"projectRef": projectName}),
+	}
+}
+
+// legacyDevelopmentEnvironment is the environment shape pre-template projects
+// carry: the development environment WITH the legacy sandbox binding.
+func legacyDevelopmentEnvironment(projectName string) aiv1alpha1.ProjectEnvironmentSpec {
+	env := defaultProjectDevelopmentEnvironment(projectName)
+	env.Bindings = []aiv1alpha1.ProjectProviderBindingSpec{legacySandboxRunnerBinding(projectName)}
+	return env
+}
+
+// legacyProjectSpec is defaultProjectSpec with the legacy sandbox binding, for
+// tests covering pre-template projects.
+func legacyProjectSpec(projectName, displayName, description string, repository *aiv1alpha1.ProjectRepositoryBinding) aiv1alpha1.ProjectSpec {
+	spec := defaultProjectSpec(projectName, displayName, description, repository)
+	spec.Environments = []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment(projectName)}
+	return spec
+}
+
+// New projects get a development environment with NO binding: nothing runs
+// until a template is bound (assistant interview, portal picker, or PUT
+// /template). The legacy always-on SandboxRunner default is gone.
+func TestDefaultProjectDevelopmentEnvironmentHasNoBinding(t *testing.T) {
 	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
 	env := defaultProjectDevelopmentEnvironment("todo")
 	if got, want := env.Name, "development"; got != want {
@@ -44,59 +80,8 @@ func TestDefaultProjectDevelopmentEnvironmentUsesInfrastructureBackedSandboxRunn
 	if got, want := env.Mode, aiv1alpha1.ProjectEnvironmentModeLive; got != want {
 		t.Fatalf("Mode = %q, want %q", got, want)
 	}
-	if got := len(env.Bindings); got != 1 {
-		t.Fatalf("bindings = %d, want 1", got)
-	}
-	binding := env.Bindings[0]
-	if got, want := binding.Provider, "app-studio"; got != want {
-		t.Fatalf("Provider = %q, want %q", got, want)
-	}
-	if got, want := binding.ResourceRef.APIVersion, "infrastructure.kedge.faros.sh/v1alpha1"; got != want {
-		t.Fatalf("APIVersion = %q, want %q", got, want)
-	}
-	if got, want := binding.ResourceRef.Kind, "SandboxRunner"; got != want {
-		t.Fatalf("Kind = %q, want %q", got, want)
-	}
-	if got, want := binding.ResourceRef.Resource, "sandboxrunners"; got != want {
-		t.Fatalf("Resource = %q, want %q", got, want)
-	}
-	if got := binding.ResourceRef.Name; got != "" {
-		t.Fatalf("ResourceRef.Name = %q, want empty derived name", got)
-	}
-	var values map[string]any
-	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
-		t.Fatalf("unmarshal binding values: %v", err)
-	}
-	if _, ok := values["runtime"]; ok {
-		t.Fatalf("binding values should not expose sandbox runtime defaults: %#v", values)
-	}
-	if _, ok := values["name"]; ok {
-		t.Fatalf("binding values should not expose a concrete sandbox runner name: %#v", values)
-	}
-	if got, want := values["projectRef"], "todo"; got != want {
-		t.Fatalf("binding values projectRef = %q, want %q", got, want)
-	}
-}
-
-func TestDefaultProjectDevelopmentEnvironmentDoesNotExposeSandboxPreviewHTTPRoute(t *testing.T) {
-	setPreviewHTTPRouteEnv(t)
-
-	env := defaultProjectDevelopmentEnvironment("todo")
-	if got := len(env.Bindings); got != 1 {
-		t.Fatalf("bindings = %d, want only sandbox runner", got)
-	}
-	if got, want := env.Bindings[0].ResourceRef.Kind, "SandboxRunner"; got != want {
-		t.Fatalf("Kind = %q, want %q", got, want)
-	}
-	var values map[string]any
-	if err := json.Unmarshal(env.Bindings[0].Values.Raw, &values); err != nil {
-		t.Fatalf("unmarshal binding values: %v", err)
-	}
-	if got, want := values["projectRef"], "todo"; got != want {
-		t.Fatalf("projectRef = %q, want %q", got, want)
-	}
-	if _, ok := values["previewRoute"]; ok {
-		t.Fatalf("default tenant binding values exposed previewRoute config: %#v", values)
+	if got := len(env.Bindings); got != 0 {
+		t.Fatalf("bindings = %d, want none until a template is selected", got)
 	}
 }
 
@@ -104,7 +89,7 @@ func TestEnsureProjectProviderResourceStripsTenantSuppliedSandboxRunnerPreviewRo
 	setPreviewHTTPRouteEnv(t)
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "todo"}}
-	binding := defaultSandboxRunnerBinding(project.Name)
+	binding := legacySandboxRunnerBinding(project.Name)
 	// A malicious binding tries to inject preview routing. Preview routing is
 	// owned by the infra SandboxRunner RGD, so App Studio must strip these and
 	// only set name/projectRef.
@@ -153,7 +138,7 @@ func TestReconcileProjectLiveBindingsIgnoresSandboxPreviewHTTPRouteBinding(t *te
 				Name: "development",
 				Mode: aiv1alpha1.ProjectEnvironmentModeLive,
 				Bindings: []aiv1alpha1.ProjectProviderBindingSpec{
-					defaultSandboxRunnerBinding("todo"),
+					legacySandboxRunnerBinding("todo"),
 					{
 						Name:     "preview-route",
 						Provider: "app-studio",
@@ -290,7 +275,7 @@ func TestProjectDevelopmentSyncTargetReadsSandboxBindingName(t *testing.T) {
 	p := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment("todo")},
 		},
 	}
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
@@ -395,7 +380,7 @@ func TestSyncProjectDevelopmentTargetPostsWorkspaceFilesToRuntime(t *testing.T) 
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment("todo")},
 		},
 	}
 	scope := projectWorkspaceScope(id, project.Name)
@@ -444,7 +429,7 @@ func TestAuthorizeProjectDevelopmentPreviewTargetGetsSignedHTTPRouteHostURL(t *t
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment("todo")},
 		},
 	}
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
@@ -521,7 +506,7 @@ func TestAuthorizeProjectDevelopmentPreviewTargetAddsConfiguredPublicPort(t *tes
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment("todo")},
 		},
 	}
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
@@ -558,7 +543,7 @@ func TestAuthorizeProjectDevelopmentPreviewTargetRejectsForgedSandboxRunnerPrevi
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment("todo")},
 		},
 	}
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
@@ -580,7 +565,7 @@ func TestAuthorizeProjectDevelopmentPreviewTargetRejectsForgedSandboxRunnerPrevi
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment("todo")},
 		},
 	}
 	runner := testSandboxRunnerWithPreviewRoute(runnerName, project.Name, "https://"+runnerName+".preview.example.com/")
@@ -603,7 +588,7 @@ func TestAuthorizeProjectDevelopmentPreviewTargetRequiresSandboxRunnerPreviewRou
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
 		Spec: aiv1alpha1.ProjectSpec{
-			Environments: []aiv1alpha1.ProjectEnvironmentSpec{defaultProjectDevelopmentEnvironment("todo")},
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{legacyDevelopmentEnvironment("todo")},
 		},
 	}
 	client := asclient.NewFromDynamic(fake.NewSimpleDynamicClient(
@@ -683,7 +668,7 @@ func TestDeleteProjectProviderResourcesRemovesInfrastructureSandboxRunner(t *tes
 	t.Setenv("APP_STUDIO_PREVIEW_BASE_DOMAIN", "")
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+		Spec:       legacyProjectSpec("todo", "Todo", "", nil),
 	}
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
@@ -707,7 +692,7 @@ func TestDeleteProjectProviderResourcesRemovesInfrastructureSandboxRunner(t *tes
 func TestProjectViewOverlaysSandboxPreviewStatus(t *testing.T) {
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+		Spec:       legacyProjectSpec("todo", "Todo", "", nil),
 	}
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
@@ -739,7 +724,7 @@ func TestProjectViewOverlaysSandboxPreviewStatus(t *testing.T) {
 func TestProjectViewDerivesSandboxRunnerPhaseFromKROReadyCondition(t *testing.T) {
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+		Spec:       legacyProjectSpec("todo", "Todo", "", nil),
 	}
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
@@ -778,7 +763,7 @@ func TestGenerateProjectAssistantStreamUsesLiveBindingStatusOverlay(t *testing.T
 	setPreviewHTTPRouteEnv(t)
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+		Spec:       legacyProjectSpec("todo", "Todo", "", nil),
 	}
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")
@@ -810,7 +795,7 @@ func TestProjectViewOverlaysSandboxRunnerPreviewRouteStatus(t *testing.T) {
 	setPreviewHTTPRouteEnv(t)
 	project := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "todo"},
-		Spec:       defaultProjectSpec("todo", "Todo", "", nil),
+		Spec:       legacyProjectSpec("todo", "Todo", "", nil),
 	}
 	id := identity{tenantPath: "root:kedge:tenants:org-a:ws-1"}
 	runnerName := sandboxRunnerResourceName(id.tenantPath, "todo")

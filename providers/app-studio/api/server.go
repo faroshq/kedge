@@ -146,6 +146,7 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/stream", s.createProjectStartStream).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/create-readiness", s.getProjectCreateReadiness).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/development-templates", s.listDevelopmentTemplates).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/import-repositories", s.listImportRepositories).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)

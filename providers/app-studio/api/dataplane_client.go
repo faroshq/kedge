@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -60,7 +61,10 @@ func sandboxDataPlaneRef(runnerName string) dataPlaneRef {
 
 // dataPlaneURL composes the hub URL for a data-plane verb. tail (with leading
 // slash) is appended after the verb — used only by the open "proxy" verb; the
-// control verbs leave it empty.
+// control verbs leave it empty. Every addressing segment is path-escaped so a
+// crafted value (a component name with a slash, say) cannot reroute the
+// request; kcp cluster IDs keep their colons (':' is a valid path character
+// PathEscape leaves alone).
 func (s *Server) dataPlaneURL(clusterID string, ref dataPlaneRef, verb, tail string) string {
 	resource := ref.Resource
 	if resource == "" {
@@ -68,11 +72,11 @@ func (s *Server) dataPlaneURL(clusterID string, ref dataPlaneRef, verb, tail str
 	}
 	u := strings.TrimRight(s.hubBase, "/") +
 		fmt.Sprintf("/services/providers/%s/dataplane/clusters/%s/%s/%s",
-			infraDataPlaneProvider, clusterID, resource, ref.Name)
+			infraDataPlaneProvider, url.PathEscape(clusterID), url.PathEscape(resource), url.PathEscape(ref.Name))
 	if ref.Component != "" {
-		u += "/components/" + ref.Component
+		u += "/components/" + url.PathEscape(ref.Component)
 	}
-	u += "/" + verb
+	u += "/" + url.PathEscape(verb)
 	if tail != "" {
 		u += tail
 	}
@@ -104,9 +108,9 @@ func (s *Server) sandboxDataPlaneClient(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
 }
 
-// sandboxDataPlanePost sends a POST verb (sync, restart) and returns the body +
-// status code. The caller maps non-2xx to an error so the runner's own response
-// surfaces to the UI.
+// dataPlanePost sends a POST verb (sync, restart, env) and returns the body +
+// status code. The caller maps non-2xx to an error so the runtime's own
+// response surfaces to the UI.
 func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte) ([]byte, int, error) {
 	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
 	defer cancel()
@@ -117,7 +121,7 @@ func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRe
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("sandbox data plane %s: %w", verb, err)
+		return nil, 0, fmt.Errorf("development data plane %s: %w", verb, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
@@ -127,8 +131,8 @@ func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRe
 	return body, resp.StatusCode, nil
 }
 
-// sandboxDataPlaneGet sends a GET verb (log) and returns a bounded body + status
-// code. Unlike sandboxDataPlaneStream it collects the response into memory, for
+// dataPlaneGet sends a GET verb (log) and returns a bounded body + status
+// code. Unlike dataPlaneStream it collects the response into memory, for
 // callers (assistant tools) that need the payload as a value rather than a
 // stream. maxBytes bounds the body so a large log buffer cannot blow the
 // assistant context.
@@ -141,7 +145,7 @@ func (s *Server) dataPlaneGet(ctx context.Context, id identity, ref dataPlaneRef
 	}
 	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("sandbox data plane %s: %w", verb, err)
+		return nil, 0, fmt.Errorf("development data plane %s: %w", verb, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if maxBytes <= 0 {
@@ -154,8 +158,8 @@ func (s *Server) dataPlaneGet(ctx context.Context, id identity, ref dataPlaneRef
 	return body, resp.StatusCode, nil
 }
 
-// sandboxDataPlaneStream proxies a streaming GET verb (logs) straight to w,
-// copying the upstream status and content type.
+// dataPlaneStream proxies a streaming GET verb (logs) straight to w, copying
+// the upstream status and content type.
 func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlaneRef, verb string, w http.ResponseWriter) error {
 	req, err := s.newDataPlaneRequest(ctx, http.MethodGet, id, ref, verb, "", nil)
 	if err != nil {
@@ -165,7 +169,7 @@ func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlane
 	// close) ends them.
 	resp, err := s.sandboxDataPlaneClient(0).Do(req)
 	if err != nil {
-		return fmt.Errorf("sandbox data plane %s: %w", verb, err)
+		return fmt.Errorf("development data plane %s: %w", verb, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -193,8 +197,8 @@ func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlane
 	}
 }
 
-// sandboxDataPlaneProbe performs a GET against the open proxy verb (path tail)
-// and returns the upstream status + a bounded body, for preview readiness.
+// dataPlaneProbe performs a GET against the open proxy verb (path tail) and
+// returns the upstream status + a bounded body, for preview readiness.
 func (s *Server) dataPlaneProbe(ctx context.Context, id identity, ref dataPlaneRef, tail string) (int, []byte, error) {
 	callCtx, cancel := context.WithTimeout(ctx, previewReadinessProbeTimeout)
 	defer cancel()

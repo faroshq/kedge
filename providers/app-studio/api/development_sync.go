@@ -192,6 +192,13 @@ func (s *Server) projectDevelopmentTarget(ctx context.Context, c *asclient.Clien
 	if err != nil {
 		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("read project template %q: %w", p.Spec.Template.Name, err)
 	}
+	// A template-backed target without development components must never fall
+	// through to the legacy sandbox-runner code paths — they would mis-handle
+	// a non-sandbox instance. selectProjectTemplate refuses such templates;
+	// this guards against the template losing its development block later.
+	if len(info.Components) == 0 {
+		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project template %q no longer declares development components", info.Name)
+	}
 	name := projectTemplateInstanceName(p)
 	if name == "" {
 		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project has no name")

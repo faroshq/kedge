@@ -13,6 +13,7 @@ package api
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -71,6 +72,36 @@ func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	unstructured.RemoveNestedField(obj.Object, "spec", "instanceCRD", "kind")
 	if _, err := projectTemplateInfoFromUnstructured(obj); err == nil {
 		t.Error("expected error for incomplete instanceCRD")
+	}
+}
+
+func TestProjectTemplateInstanceNameBoundsLongNames(t *testing.T) {
+	short := &aiv1alpha1.Project{}
+	short.Name = "shop"
+	if got := projectTemplateInstanceName(short); got != "shop-dev" {
+		t.Errorf("short name = %q, want shop-dev", got)
+	}
+
+	long := &aiv1alpha1.Project{}
+	long.Name = strings.Repeat("verylongname-", 12) // 156 chars
+	got := projectTemplateInstanceName(long)
+	// Template graphs derive Service names like "<name>-dev-<component>-control"
+	// from the instance name; the base must leave room under the DNS-label cap.
+	if len(got) > projectTemplateInstanceNameMaxBase+4 {
+		t.Errorf("long name = %q (len %d), want ≤ %d", got, len(got), projectTemplateInstanceNameMaxBase+4)
+	}
+	if !strings.HasSuffix(got, "-dev") {
+		t.Errorf("long name = %q, want -dev suffix", got)
+	}
+	// Deterministic: the same project always maps to the same instance.
+	if again := projectTemplateInstanceName(long); again != got {
+		t.Errorf("instance name not deterministic: %q vs %q", got, again)
+	}
+	// Distinct long names must not collide.
+	other := &aiv1alpha1.Project{}
+	other.Name = strings.Repeat("verylongname-", 11) + "x"
+	if projectTemplateInstanceName(other) == got {
+		t.Error("distinct long project names collided")
 	}
 }
 

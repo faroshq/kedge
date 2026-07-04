@@ -22,10 +22,11 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,16 +63,6 @@ type projectTemplateInfo struct {
 	// ("." claims the whole workspace). Non-empty iff the template declares
 	// spec.development.
 	Components map[string]string
-}
-
-// sortedComponentNames returns the component names in deterministic order.
-func (t projectTemplateInfo) sortedComponentNames() []string {
-	names := make([]string, 0, len(t.Components))
-	for name := range t.Components {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // fetchProjectTemplate reads the named Template from the tenant workspace
@@ -126,6 +117,13 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	return info, nil
 }
 
+// projectTemplateInstanceNameMaxBase bounds the project-name part of the
+// instance name. Template graphs derive child names from the instance name
+// with suffixes like "-dev-<component>-control" (a Service, DNS label ≤63),
+// so the base must stay well under that — long project names switch to a
+// truncated-plus-hash form, still deterministic.
+const projectTemplateInstanceNameMaxBase = 30
+
 // projectTemplateInstanceName is the deterministic instance name for a
 // Project's template-backed development environment. Deterministic so
 // re-selection and status lookups converge without storing the name.
@@ -133,7 +131,12 @@ func projectTemplateInstanceName(p *aiv1alpha1.Project) string {
 	if p == nil || strings.TrimSpace(p.Name) == "" {
 		return ""
 	}
-	return strings.TrimSpace(p.Name) + "-dev"
+	base := strings.TrimSpace(p.Name)
+	if len(base) > projectTemplateInstanceNameMaxBase {
+		sum := sha256.Sum256([]byte(base))
+		base = strings.TrimRight(base[:projectTemplateInstanceNameMaxBase-9], "-") + "-" + hex.EncodeToString(sum[:4])
+	}
+	return base + "-dev"
 }
 
 // projectTemplateDevBinding builds the development binding for a
@@ -163,15 +166,6 @@ func projectTemplateDevBinding(p *aiv1alpha1.Project, info projectTemplateInfo) 
 		},
 		Values: runtime.RawExtension{Raw: values},
 	}, nil
-}
-
-// isProjectTemplateBinding reports whether the binding is the template-backed
-// development binding for the given template info.
-func isProjectTemplateBinding(binding aiv1alpha1.ProjectProviderBindingSpec, info projectTemplateInfo) bool {
-	return binding.ResourceRef != nil &&
-		strings.TrimSpace(binding.Provider) == projectDevelopmentProviderAppStudio &&
-		binding.ResourceRef.Resource == info.Resource &&
-		binding.ResourceRef.APIVersion == info.APIVersion
 }
 
 // selectProjectTemplate switches the Project's development environment onto

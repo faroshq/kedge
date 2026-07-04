@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -314,6 +315,50 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 }
 
 // --- HTTP surface -----------------------------------------------------------
+
+// projectDevelopmentTemplateView is one catalog entry the portal offers when
+// selecting (or switching) a project's development template.
+type projectDevelopmentTemplateView struct {
+	Name        string            `json:"name"`
+	DisplayName string            `json:"displayName,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Category    string            `json:"category,omitempty"`
+	Components  map[string]string `json:"components"`
+}
+
+// listDevelopmentTemplates is GET /api/projects/development-templates: the
+// tenant catalog filtered to templates that can back a development
+// environment (those declaring development components). The portal's
+// template picker reads this instead of the raw infrastructure catalog.
+func (s *Server) listDevelopmentTemplates(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireProjectClient(w, r)
+	if !ok {
+		return
+	}
+	list, err := c.Resource(templateResource, "").List(r.Context(), metav1.ListOptions{})
+	if err != nil {
+		writeStatus(w, http.StatusBadGateway, "BadGateway", "list templates: "+err.Error())
+		return
+	}
+	out := make([]projectDevelopmentTemplateView, 0, len(list.Items))
+	for i := range list.Items {
+		obj := &list.Items[i]
+		info, err := projectTemplateInfoFromUnstructured(obj)
+		if err != nil || len(info.Components) == 0 {
+			continue
+		}
+		view := projectDevelopmentTemplateView{
+			Name:       info.Name,
+			Components: info.Components,
+		}
+		view.DisplayName, _, _ = unstructured.NestedString(obj.Object, "spec", "displayName")
+		view.Description, _, _ = unstructured.NestedString(obj.Object, "spec", "description")
+		view.Category, _, _ = unstructured.NestedString(obj.Object, "spec", "category")
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	writeJSON(w, http.StatusOK, map[string]any{"templates": out})
+}
 
 type projectTemplateSelectRequest struct {
 	Template string `json:"template"`

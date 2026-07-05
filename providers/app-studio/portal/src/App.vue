@@ -1064,8 +1064,16 @@ async function applyDevelopmentTemplate() {
   developmentSyncStatus.value = null
   try {
     const result = await api.setProjectTemplate(props.ctx, projectName, template)
-    if (selected.value?.name === projectName) {
-      selected.value = { ...selected.value, template: result.template }
+    // Re-fetch the project: applying a template creates or replaces the
+    // development environment/binding, and the preview/logs/sync UI keys off
+    // developmentBinding — a local template patch would leave it stale.
+    try {
+      const project = await api.getProject(props.ctx, projectName)
+      if (selected.value?.name === projectName) selected.value = project
+    } catch {
+      if (selected.value?.name === projectName) {
+        selected.value = { ...selected.value, template: result.template }
+      }
     }
     developmentSyncStatus.value = `Development environment is switching to the ${result.template} template.`
   } catch (e) {

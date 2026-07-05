@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -607,7 +608,18 @@ func (s *Server) resolveProjectSandboxRuntime(ctx context.Context, c *asclient.C
 	}
 	target, err := s.projectDevelopmentTarget(ctx, c, p, id)
 	if err != nil {
-		return projectSandboxPreviewURLResponse{}, false
+		// Only the "no template selected yet" validation error means nothing is
+		// deployed. Anything else (template deleted, catalog unreadable, …) is a
+		// bound-but-unavailable runtime and must not masquerade as not_configured.
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
+			return projectSandboxPreviewURLResponse{}, false
+		}
+		return projectSandboxPreviewURLResponse{
+			Ready:   false,
+			Reason:  "runtime_unavailable",
+			Message: "Runtime status is temporarily unavailable: " + err.Error(),
+		}, true
 	}
 	preview, err := s.authorizeProjectDevelopmentPreviewTarget(ctx, c, id, p, target)
 	if err != nil {

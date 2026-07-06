@@ -82,6 +82,12 @@ func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id iden
 	if strings.TrimSpace(id.clusterID) == "" {
 		return nil, fmt.Errorf("no workspace cluster on request; cannot address the development runtime")
 	}
+	// An empty resource or name would produce a URL with a hollow path segment
+	// and surface as a confusing 404/bad-gateway from the hub — fail fast with
+	// the real cause instead.
+	if strings.TrimSpace(ref.Resource) == "" || strings.TrimSpace(ref.Name) == "" {
+		return nil, fmt.Errorf("development target is incomplete (resource %q, name %q); the project's template binding did not resolve", ref.Resource, ref.Name)
+	}
 	req, err := http.NewRequestWithContext(ctx, method, s.dataPlaneURL(id.clusterID, ref, verb, tail), body)
 	if err != nil {
 		return nil, err

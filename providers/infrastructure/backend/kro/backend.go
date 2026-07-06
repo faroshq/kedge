@@ -90,8 +90,8 @@ const (
 //     (defaults "cloudflare-tunnel" / "cfgate-system").
 //
 // Per-instance inputs (container images, etc.) are NOT env tokens — templates
-// declare them as schema fields with sane defaults (e.g. SandboxRunner's
-// spec.runnerImage), the same convention every other template follows. See
+// declare them as schema fields with sane defaults (e.g. simple-webapp's
+// spec.image), the same convention every other template follows. See
 // providers/infrastructure/docs/template-conventions.md.
 func New(runtime dynamic.Interface) *Backend {
 	gatewayName := os.Getenv("KEDGE_GATEWAY_NAME")

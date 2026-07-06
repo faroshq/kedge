@@ -332,6 +332,12 @@ func (s *Server) listDevelopmentTemplates(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	serveDevelopmentTemplates(w, r, c)
+}
+
+// serveDevelopmentTemplates is the client-independent part of the handler,
+// split from the auth plumbing so tests can drive it over HTTP.
+func serveDevelopmentTemplates(w http.ResponseWriter, r *http.Request, c *asclient.Client) {
 	list, err := c.Resource(templateResource, "").List(r.Context(), metav1.ListOptions{})
 	if err != nil {
 		// Same mapping as the other /api/projects handlers: workspace

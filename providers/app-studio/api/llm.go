@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -291,6 +292,11 @@ func (s *Server) generateProjectAssistantStream(
 		return "", err
 	}
 	turnPolicy := projectAssistantTurnPolicyForDecision(turnDecision)
+	// The router decides which tool bundles this turn gets; a silent
+	// misclassification reads exactly like a model refusing to work, so keep
+	// the decision observable.
+	log.Printf("assistant turn route: project=%s profile=%s confidence=%s mutation=%v runtime=%v",
+		p.Name, turnDecision.Profile, turnDecision.Confidence, turnDecision.RequestsMutation, turnDecision.RequiresRuntimeState)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		HTTPRequest:              r,

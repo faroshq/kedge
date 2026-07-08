@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -605,6 +606,8 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			if turnDecision, routeErr := s.projectAssistantTurnRouter()(ctx, projectAssistantTurnRouteRequest{LLM: settings, History: history}); routeErr == nil {
 				engineReq.TurnPolicy = projectAssistantTurnPolicyForDecision(turnDecision)
 				engineReq.TurnProfile = engineReq.TurnPolicy.profile
+				log.Printf("assistant resume re-route: project=%s profile=%s confidence=%s mutation=%v",
+					p.Name, turnDecision.Profile, turnDecision.Confidence, turnDecision.RequestsMutation)
 			}
 		}
 	}

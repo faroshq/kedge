@@ -209,14 +209,41 @@ func TestProjectAssistantSemanticTurnClassifierRejectsToolCalls(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantTurnProfileClassifierUsesLatestUserMessage(t *testing.T) {
+// The fallback merges the recent user messages escalate-only: once the user
+// has instructed work ("Add a dashboard"), a follow-up that reads as guidance
+// or a terse continuation must not downgrade the turn to a toolless profile —
+// that stranded instructed tasks ("go for it" → "I need access to the
+// files"). Mutations stay behind plan approval regardless of profile.
+func TestProjectAssistantTurnProfileClassifierKeepsStandingIntent(t *testing.T) {
 	got := classifyProjectAssistantTurnProfile([]store.Message{
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Add a dashboard"},
 		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "I can do that."},
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "Actually, how should I think about the design?"},
 	})
+	if got != projectAssistantTurnProfileImplementation {
+		t.Fatalf("profile = %q, want implementation kept from the standing instruction", got)
+	}
+
+	// Terse continuations inherit the instruction even when they carry no
+	// keyword of their own ("just check in your workspace" reads as
+	// exploration in isolation).
+	got = classifyProjectAssistantTurnProfile([]store.Message{
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "wire the /api proxy in the web component"},
+		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "I need to inspect the files first."},
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "just check in your workspace."},
+	})
+	if got != projectAssistantTurnProfileImplementation {
+		t.Fatalf("profile = %q, want implementation kept across terse continuation", got)
+	}
+
+	// A conversation with no instruction anywhere stays advisory/toolless.
+	got = classifyProjectAssistantTurnProfile([]store.Message{
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "How should I think about the architecture?"},
+		{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: "Here are the tradeoffs."},
+		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "What about the design approach?"},
+	})
 	if got != projectAssistantTurnProfileGuidance {
-		t.Fatalf("profile = %q, want latest user guidance", got)
+		t.Fatalf("profile = %q, want guidance for a purely advisory conversation", got)
 	}
 }
 

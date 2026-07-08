@@ -483,4 +483,47 @@ func TestProjectAssistantTurnPolicyAllowsRuntimeReadsForRuntimeStateExploration(
 	}
 }
 
+// The regression this guards: a run that starts as a discussion question is
+// checkpointed with a toolless policy; when the user's follow-up answer is an
+// instruction ("go for it"), the resume must escalate to the re-routed
+// profile — and an in-flight implementation run must never downgrade because
+// a follow-up reads as chit-chat.
+func TestEscalateProjectAssistantTurnPolicy(t *testing.T) {
+	discussion := projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion)
+	implementation := projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
+
+	if got := escalateProjectAssistantTurnPolicy(discussion, implementation); got.profile != projectAssistantTurnProfileImplementation {
+		t.Errorf("discussion + implementation = %q, want escalation to implementation", got.profile)
+	}
+	if got := escalateProjectAssistantTurnPolicy(implementation, discussion); got.profile != projectAssistantTurnProfileImplementation {
+		t.Errorf("implementation + discussion = %q, must not downgrade", got.profile)
+	}
+	// Empty next policy (resume without a re-routed decision, e.g. a plain
+	// approve/deny) keeps the checkpoint policy untouched.
+	if got := escalateProjectAssistantTurnPolicy(implementation, projectAssistantTurnPolicy{}); got.profile != projectAssistantTurnProfileImplementation {
+		t.Errorf("implementation + empty = %q, want implementation", got.profile)
+	}
+	// requiresRuntimeState is sticky in both directions (OR).
+	withRuntime := projectAssistantTurnPolicy{profile: projectAssistantTurnProfileExploration, requiresRuntimeState: true}
+	if got := escalateProjectAssistantTurnPolicy(withRuntime, discussion); !got.requiresRuntimeState {
+		t.Error("runtime-state requirement lost on merge with discussion")
+	}
+	if got := escalateProjectAssistantTurnPolicy(discussion, withRuntime); !got.requiresRuntimeState {
+		t.Error("runtime-state requirement not gained from next policy")
+	}
+	// The escalated policy actually grants tools a discussion policy denies.
+	escalated := escalateProjectAssistantTurnPolicy(discussion, implementation)
+	registry := projectAssistantLocalToolRegistry(nil)
+	spec, ok := registry.Spec(projectToolReadProjectFile)
+	if !ok {
+		t.Fatalf("tool %s missing from registry", projectToolReadProjectFile)
+	}
+	if discussion.AllowsTool(spec) {
+		t.Fatal("discussion policy unexpectedly allows workspace reads")
+	}
+	if !escalated.AllowsTool(spec) {
+		t.Fatal("escalated policy still denies workspace reads")
+	}
+}
+
 var _ einomodel.BaseChatModel = (*repositoryFlowEinoChatModel)(nil)

@@ -388,6 +388,35 @@ func (p projectAssistantTurnPolicy) AllowsTool(spec projectAssistantToolSpec) bo
 	}
 }
 
+// projectAssistantTurnProfileRank orders profiles by tool permissiveness so a
+// resumed run can escalate its policy but never silently downgrade mid-run.
+func projectAssistantTurnProfileRank(profile projectAssistantTurnProfile) int {
+	switch normalizeProjectAssistantTurnProfile(profile) {
+	case projectAssistantTurnProfileImplementation, projectAssistantTurnProfileDebugFix:
+		return 3
+	case projectAssistantTurnProfileDebugging:
+		return 2
+	case projectAssistantTurnProfileExploration:
+		return 1
+	default: // discussion, guidance, unknown
+		return 0
+	}
+}
+
+// escalateProjectAssistantTurnPolicy merges the run's saved policy with a
+// fresh routing decision, keeping the more permissive profile. A run that
+// began as a discussion question must gain tools when the user's follow-up is
+// an instruction ("go for it"); the reverse — losing tools because a
+// follow-up reads as chit-chat — would strand an in-flight fix.
+func escalateProjectAssistantTurnPolicy(current, next projectAssistantTurnPolicy) projectAssistantTurnPolicy {
+	merged := current
+	if projectAssistantTurnProfileRank(next.profile) > projectAssistantTurnProfileRank(current.profile) {
+		merged.profile = normalizeProjectAssistantTurnProfile(next.profile)
+	}
+	merged.requiresRuntimeState = current.requiresRuntimeState || next.requiresRuntimeState
+	return normalizeProjectAssistantTurnPolicy(merged, projectAssistantTurnProfileDiscussion)
+}
+
 func projectAssistantToolsForTurnProfile(tools []projectAssistantTool, profile projectAssistantTurnProfile) []projectAssistantTool {
 	return projectAssistantToolsForTurnPolicy(tools, projectAssistantTurnPolicyForProfile(profile))
 }

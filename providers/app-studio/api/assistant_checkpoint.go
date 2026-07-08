@@ -591,6 +591,23 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			OnAssistantEvent: emitAssistantEvent,
 		},
 	}
+	// A free-text resume answer is a fresh user instruction ("go for it",
+	// "fix the login") — re-route it so the engine can escalate the run's
+	// tool policy. Without this, a run that began as a discussion question
+	// restores its toolless policy from the checkpoint on every resume, and
+	// the model can only keep asking for access it will never get. Routing
+	// failures fall through to the checkpoint policy (no escalation).
+	if answer := strings.TrimSpace(resumeReq.Answer); answer != "" {
+		if history, histErr := s.store.LoadRecentMessages(ctx, messageScope, 24); histErr == nil {
+			// The answer is not persisted as a message yet — append it so the
+			// router classifies the instruction, not the stale history.
+			history = append(history, store.Message{Role: "user", Content: answer})
+			if turnDecision, routeErr := s.projectAssistantTurnRouter()(ctx, projectAssistantTurnRouteRequest{LLM: settings, History: history}); routeErr == nil {
+				engineReq.TurnPolicy = projectAssistantTurnPolicyForDecision(turnDecision)
+				engineReq.TurnProfile = engineReq.TurnPolicy.profile
+			}
+		}
+	}
 	currentRequestID := run.RequestID
 	currentToolCallID := strings.TrimSpace(state.Eino.ToolCallID)
 	result, err := s.projectAssistantEngine().ResumeProjectAssistant(ctx, engineReq, resumeReq, state)

@@ -52,6 +52,44 @@ type projectEinoAssistantRunState struct {
 	sessionSnapshot      *projectEinoAssistantSessionSnapshot
 	permissionBarrier    bool
 	approvedPlan         *projectAssistantApprovedPlan
+	usage                projectAssistantTokenUsage
+}
+
+// projectAssistantTokenUsage accumulates model token usage across the model
+// calls of a single assistant run, including cached prompt tokens (which
+// measure prompt-cache effectiveness) and reasoning tokens.
+type projectAssistantTokenUsage struct {
+	ModelCalls       int
+	PromptTokens     int
+	CachedTokens     int
+	CompletionTokens int
+	ReasoningTokens  int
+}
+
+// AddTokenUsage folds one model call's token usage into the run totals and
+// returns the updated snapshot.
+func (s *projectEinoAssistantRunState) AddTokenUsage(promptTokens, cachedTokens, completionTokens, reasoningTokens int) projectAssistantTokenUsage {
+	if s == nil {
+		return projectAssistantTokenUsage{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.usage.ModelCalls++
+	s.usage.PromptTokens += promptTokens
+	s.usage.CachedTokens += cachedTokens
+	s.usage.CompletionTokens += completionTokens
+	s.usage.ReasoningTokens += reasoningTokens
+	return s.usage
+}
+
+// TokenUsage returns the accumulated token usage for the run.
+func (s *projectEinoAssistantRunState) TokenUsage() projectAssistantTokenUsage {
+	if s == nil {
+		return projectAssistantTokenUsage{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usage
 }
 
 func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {

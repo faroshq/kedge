@@ -169,6 +169,37 @@ func TestProjectAssistantApprovedPlanAllowsBatchWithinEnvelope(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantTokenUsageAccumulates(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.AddTokenUsage(1000, 800, 200, 50)
+	totals := runState.AddTokenUsage(500, 400, 100, 0)
+	if totals.ModelCalls != 2 {
+		t.Fatalf("model calls = %d, want 2", totals.ModelCalls)
+	}
+	if totals.PromptTokens != 1500 || totals.CachedTokens != 1200 || totals.CompletionTokens != 300 {
+		t.Fatalf("unexpected totals: %+v", totals)
+	}
+	if got := projectAssistantCacheHitRatio(totals); got != 80 {
+		t.Fatalf("cache hit ratio = %d, want 80", got)
+	}
+	if got := projectAssistantCacheHitRatio(projectAssistantTokenUsage{}); got != 0 {
+		t.Fatalf("empty cache hit ratio = %d, want 0", got)
+	}
+}
+
+func TestProjectAssistantEnvTruthy(t *testing.T) {
+	for _, v := range []string{"1", "true", "TRUE", "yes", "on", "enabled"} {
+		if !projectAssistantEnvTruthy(v) {
+			t.Errorf("%q should be truthy", v)
+		}
+	}
+	for _, v := range []string{"", "0", "false", "no", "off", "nope"} {
+		if projectAssistantEnvTruthy(v) {
+			t.Errorf("%q should be falsy", v)
+		}
+	}
+}
+
 func TestProjectAssistantHistoryToolEvidence(t *testing.T) {
 	history := []store.Message{
 		{Role: aiv1alpha1.ProjectMessageRoleUser, Content: "add a button"},

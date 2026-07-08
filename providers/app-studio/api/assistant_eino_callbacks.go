@@ -55,11 +55,11 @@ func newProjectEinoAssistantModelCallbackHandler(streamCallbacks projectAssistan
 			return ctx
 		}).
 		OnEndFn(func(ctx context.Context, _ *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
-			recorder.recordModelOutput(output)
+			recorder.recordModelOutput(ctx, output)
 			return ctx
 		}).
 		OnEndWithStreamOutputFn(func(ctx context.Context, _ *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
-			recorder.recordModelStream(output)
+			recorder.recordModelStream(ctx, output)
 			return ctx
 		}).
 		Build()
@@ -81,11 +81,12 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelInput(input callb
 	r.runState.RecordModelInput(projectEinoMessagesToChat(modelInput.Messages))
 }
 
-func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(output callbacks.CallbackOutput) {
+func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(ctx context.Context, output callbacks.CallbackOutput) {
 	modelOutput := einomodel.ConvCallbackOutput(output)
 	if modelOutput == nil || modelOutput.Message == nil {
 		return
 	}
+	recordProjectAssistantModelUsage(ctx, r.runState, modelOutput.TokenUsage)
 	reply := projectEinoAssistantReplyFromMessage(modelOutput.Message)
 	if strings.TrimSpace(reply.Content) == "" && len(reply.ToolCalls) == 0 {
 		return
@@ -93,7 +94,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(output cal
 	r.runState.RecordAssistantReply(reply)
 }
 
-func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *schema.StreamReader[callbacks.CallbackOutput]) {
+func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(ctx context.Context, output *schema.StreamReader[callbacks.CallbackOutput]) {
 	if output == nil {
 		return
 	}
@@ -101,6 +102,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *sc
 
 	var content strings.Builder
 	toolCalls := map[int]chatToolCall{}
+	var latestUsage *einomodel.TokenUsage
 	for {
 		chunk, err := output.Recv()
 		if errors.Is(err, io.EOF) {
@@ -110,7 +112,13 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *sc
 			return
 		}
 		modelOutput := einomodel.ConvCallbackOutput(chunk)
-		if modelOutput == nil || modelOutput.Message == nil {
+		if modelOutput == nil {
+			continue
+		}
+		if modelOutput.TokenUsage != nil {
+			latestUsage = modelOutput.TokenUsage
+		}
+		if modelOutput.Message == nil {
 			continue
 		}
 		msg := modelOutput.Message
@@ -122,6 +130,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(output *sc
 			projectEinoMergeToolCalls(toolCalls, msg.ToolCalls)
 		}
 	}
+	recordProjectAssistantModelUsage(ctx, r.runState, latestUsage)
 	reply := projectAssistantReply{
 		Content:   content.String(),
 		ToolCalls: projectEinoSortedToolCalls(toolCalls),

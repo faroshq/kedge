@@ -16,7 +16,10 @@ limitations under the License.
 
 package api
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 const projectAssistantUIRootComponentID = "root-col"
 const projectAssistantUIDevelopmentPreviewRefreshKey = "development.previewRefreshNeeded"
@@ -85,6 +88,13 @@ type projectAssistantUIAction struct {
 	Label   string `json:"label"`
 	Summary string `json:"summary,omitempty"`
 	Count   int    `json:"count,omitempty"`
+	// Tool-level transparency: the actual tool name, its (summarized)
+	// arguments, and the (summarized) result or error — so the portal can
+	// show WHAT ran and what came back, expandable on demand, instead of
+	// only a generic "Completed actions" label.
+	Tool      string `json:"tool,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 type projectAssistantUIDataModelUpdate struct {
@@ -254,11 +264,37 @@ func projectAssistantUIFollowUpInterruptRequestEvent(surfaceID string, followUp 
 }
 
 func projectAssistantUIActionFromToolCall(toolCall projectToolCallStreamEvent) projectAssistantUIAction {
-	return projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	action := projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	action.Tool = strings.TrimSpace(toolCall.Name)
+	action.Arguments = projectAssistantUIActionToolArguments(toolCall.Name, toolCall.Arguments)
+	action.Detail = strings.TrimSpace(toolCall.Summary)
+	if action.Detail == "" {
+		action.Detail = strings.TrimSpace(toolCall.Error)
+	}
+	return action
 }
 
 func projectAssistantUIActionFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantUIAction {
-	return projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	action := projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
+	action.Tool = strings.TrimSpace(toolCall.Name)
+	action.Arguments = projectAssistantUIActionToolArguments(toolCall.Name, toolCall.Arguments)
+	action.Detail = strings.TrimSpace(toolCall.Summary)
+	if action.Detail == "" {
+		action.Detail = strings.TrimSpace(toolCall.Error)
+	}
+	return action
+}
+
+// projectAssistantUIActionToolArguments guards the disclosure boundary: the
+// stream pipeline sends pre-summarized arguments (paths/counts, no file
+// contents), but if a raw JSON argument payload ever reaches an action, run
+// it through the per-tool summarizer instead of disclosing it verbatim.
+func projectAssistantUIActionToolArguments(name, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "{") || strings.HasPrefix(raw, "[") {
+		return summarizeProjectToolArguments(name, raw)
+	}
+	return raw
 }
 
 func projectAssistantUIActionFromPermission(permission projectAssistantPermission) projectAssistantUIAction {

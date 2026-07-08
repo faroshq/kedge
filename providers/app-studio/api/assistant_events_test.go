@@ -205,6 +205,35 @@ func TestProjectAssistantStreamWriterMapsStatusToUIDataModelUpdate(t *testing.T)
 	}
 }
 
+// Minimal disclosure mode (APP_STUDIO_TOOL_DISCLOSURE=minimal) restores the
+// fully opaque contract from #322: generic labels only — no tool names,
+// paths, or error text anywhere in the streamed UI.
+func TestProjectAssistantStreamWriterMinimalDisclosureHidesToolDetail(t *testing.T) {
+	prev := projectAssistantToolDisclosureMinimal
+	projectAssistantToolDisclosureMinimal = true
+	t.Cleanup(func() { projectAssistantToolDisclosureMinimal = prev })
+
+	got, err := collectProjectAssistantStreamEvents(projectAssistantEvent{
+		Type: projectAssistantEventToolCallFinished,
+		ToolCall: &projectAssistantToolCall{
+			ID:        "tool-1",
+			Name:      "write_file",
+			Status:    "succeeded",
+			Summary:   "Wrote src/App.tsx",
+			Arguments: `{"path":"src/App.tsx"}`,
+			Error:     "warning only",
+		},
+	})
+	if err != nil {
+		t.Fatalf("EmitProjectAssistantEvent returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events = %#v, want beginRendering and opaque tool result card", got)
+	}
+	assertA2UICard(t, got[1], "tool result", "Edited files")
+	assertNoRawAssistantTrace(t, got, "src/App.tsx", "write_file", "warning only")
+}
+
 // Tool disclosure contract: the chat shows WHICH tool ran and its summarized
 // arguments/result (summarizers emit paths/counts, never file contents or
 // secrets); raw error text stays hidden when a result summary exists.

@@ -18,8 +18,18 @@ package api
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
+
+// projectAssistantToolDisclosureMinimal switches the chat back to the fully
+// opaque pre-disclosure behavior: generic action labels only, no tool names,
+// no summarized input/output. For deployments whose users should not see
+// implementation detail. Set APP_STUDIO_TOOL_DISCLOSURE=minimal; the default
+// ("summary") disclosure shows tool names plus the per-tool summarizer
+// output — paths, queries, counts — never raw file contents or secrets.
+var projectAssistantToolDisclosureMinimal = strings.EqualFold(
+	strings.TrimSpace(os.Getenv("APP_STUDIO_TOOL_DISCLOSURE")), "minimal")
 
 const projectAssistantUIRootComponentID = "root-col"
 const projectAssistantUIDevelopmentPreviewRefreshKey = "development.previewRefreshNeeded"
@@ -265,22 +275,26 @@ func projectAssistantUIFollowUpInterruptRequestEvent(surfaceID string, followUp 
 
 func projectAssistantUIActionFromToolCall(toolCall projectToolCallStreamEvent) projectAssistantUIAction {
 	action := projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
-	action.Tool = strings.TrimSpace(toolCall.Name)
-	action.Arguments = projectAssistantUIActionToolArguments(toolCall.Name, toolCall.Arguments)
-	action.Detail = strings.TrimSpace(toolCall.Summary)
-	if action.Detail == "" {
-		action.Detail = strings.TrimSpace(toolCall.Error)
-	}
-	return action
+	return discloseProjectAssistantUIAction(action, toolCall.Name, toolCall.Arguments, toolCall.Summary, toolCall.Error)
 }
 
 func projectAssistantUIActionFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantUIAction {
 	action := projectAssistantUIActionFromFields(toolCall.ID, toolCall.Name, toolCall.Status)
-	action.Tool = strings.TrimSpace(toolCall.Name)
-	action.Arguments = projectAssistantUIActionToolArguments(toolCall.Name, toolCall.Arguments)
-	action.Detail = strings.TrimSpace(toolCall.Summary)
+	return discloseProjectAssistantUIAction(action, toolCall.Name, toolCall.Arguments, toolCall.Summary, toolCall.Error)
+}
+
+// discloseProjectAssistantUIAction attaches tool-level transparency to an
+// action per the deployment's disclosure mode. Minimal mode keeps actions at
+// the generic label ("Edited files · 1 edit action") only.
+func discloseProjectAssistantUIAction(action projectAssistantUIAction, name, arguments, summary, errText string) projectAssistantUIAction {
+	if projectAssistantToolDisclosureMinimal {
+		return action
+	}
+	action.Tool = strings.TrimSpace(name)
+	action.Arguments = projectAssistantUIActionToolArguments(name, arguments)
+	action.Detail = strings.TrimSpace(summary)
 	if action.Detail == "" {
-		action.Detail = strings.TrimSpace(toolCall.Error)
+		action.Detail = strings.TrimSpace(errText)
 	}
 	return action
 }

@@ -21,12 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -602,12 +602,13 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		if history, histErr := s.store.LoadRecentMessages(ctx, messageScope, 24); histErr == nil {
 			// The answer is not persisted as a message yet — append it so the
 			// router classifies the instruction, not the stale history.
-			history = append(history, store.Message{Role: "user", Content: answer})
+			history = append(history, store.Message{Role: aiv1alpha1.ProjectMessageRoleUser, Content: answer})
 			if turnDecision, routeErr := s.projectAssistantTurnRouter()(ctx, projectAssistantTurnRouteRequest{LLM: settings, History: history}); routeErr == nil {
 				engineReq.TurnPolicy = projectAssistantTurnPolicyForDecision(turnDecision)
 				engineReq.TurnProfile = engineReq.TurnPolicy.profile
-				log.Printf("assistant resume re-route: project=%s profile=%s confidence=%s mutation=%v",
-					p.Name, turnDecision.Profile, turnDecision.Confidence, turnDecision.RequestsMutation)
+				klog.FromContext(ctx).V(2).Info("assistant resume re-route",
+					"project", p.Name, "profile", turnDecision.Profile, "confidence", turnDecision.Confidence,
+					"mutation", turnDecision.RequestsMutation)
 			}
 		}
 	}

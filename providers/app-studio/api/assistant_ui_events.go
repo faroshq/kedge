@@ -303,12 +303,27 @@ func discloseProjectAssistantUIAction(action projectAssistantUIAction, name, arg
 // stream pipeline sends pre-summarized arguments (paths/counts, no file
 // contents), but if a raw JSON argument payload ever reaches an action, run
 // it through the per-tool summarizer instead of disclosing it verbatim.
+//
+// The summarizer's default case (unknown/MCP tools with no bespoke summary)
+// falls back to marshaling the full argument map, which can carry large or
+// sensitive fields (file contents, secrets). Drop any output that still looks
+// like a raw JSON object/array so the "never raw file contents or secrets"
+// boundary holds even for tools without a dedicated summary.
 func projectAssistantUIActionToolArguments(name, raw string) string {
 	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "{") || strings.HasPrefix(raw, "[") {
-		return summarizeProjectToolArguments(name, raw)
+	if !looksLikeRawJSON(raw) {
+		return raw
 	}
-	return raw
+	summarized := strings.TrimSpace(summarizeProjectToolArguments(name, raw))
+	if looksLikeRawJSON(summarized) {
+		return ""
+	}
+	return summarized
+}
+
+func looksLikeRawJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
 }
 
 func projectAssistantUIActionFromPermission(permission projectAssistantPermission) projectAssistantUIAction {

@@ -26,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -38,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -294,9 +294,10 @@ func (s *Server) generateProjectAssistantStream(
 	turnPolicy := projectAssistantTurnPolicyForDecision(turnDecision)
 	// The router decides which tool bundles this turn gets; a silent
 	// misclassification reads exactly like a model refusing to work, so keep
-	// the decision observable.
-	log.Printf("assistant turn route: project=%s profile=%s confidence=%s mutation=%v runtime=%v",
-		p.Name, turnDecision.Profile, turnDecision.Confidence, turnDecision.RequestsMutation, turnDecision.RequiresRuntimeState)
+	// the decision observable (V(2): per-turn, debugging signal).
+	klog.FromContext(ctx).V(2).Info("assistant turn route",
+		"project", p.Name, "profile", turnDecision.Profile, "confidence", turnDecision.Confidence,
+		"mutation", turnDecision.RequestsMutation, "runtime", turnDecision.RequiresRuntimeState)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		HTTPRequest:              r,

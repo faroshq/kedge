@@ -35,7 +35,6 @@ import (
 
 const (
 	projectEinoAssistantSummaryContextMessages = 128
-	projectEinoAssistantSummaryContextTokens   = 24000
 	projectEinoAssistantSummaryInstruction     = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
 	projectEinoAssistantNoOutputFallback       = "I couldn't produce a response for that turn. Please try again or rephrase the request, and I can continue from the current project context."
 
@@ -168,7 +167,7 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		Model: chatModel,
 		Trigger: &summarization.TriggerCondition{
 			ContextMessages: projectEinoAssistantSummaryContextMessages,
-			ContextTokens:   projectEinoAssistantSummaryContextTokens,
+			ContextTokens:   projectAssistantSummaryContextTokens(req.LLM.Model),
 		},
 		UserInstruction: projectEinoAssistantSummaryInstruction,
 		Finalize:        projectEinoAssistantFinalizeSummary,
@@ -801,6 +800,9 @@ func projectEinoAssistantInputMessages(ctx context.Context, req projectAssistant
 	if err != nil {
 		return nil, err
 	}
+	// Cache the stable system prefix on providers that require explicit
+	// breakpoints (Anthropic); a no-op elsewhere.
+	projectAssistantApplyPromptCacheBreakpoints(req.LLM.Provider, messages)
 	input := make([]adk.Message, 0, len(messages))
 	for _, msg := range messages {
 		input = append(input, msg)

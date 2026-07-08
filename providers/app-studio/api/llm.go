@@ -53,7 +53,13 @@ const (
 	defaultProjectLLMGoogleBaseURL = "https://generativelanguage.googleapis.com"
 	defaultProjectLLMModel         = "gpt-5.4"
 	projectLLMProviderGoogle       = "google-ai-studio"
+	projectLLMProviderAnthropic    = "anthropic"
 	projectLLMGoogleCloudScope     = "https://www.googleapis.com/auth/cloud-platform"
+
+	// projectLLMAnthropicMaxTokens bounds the Claude response length. The
+	// Anthropic API requires an explicit max_tokens; App Studio scaffolding
+	// turns can emit several files, so this is generous but finite.
+	projectLLMAnthropicMaxTokens = 16384
 
 	// maxAssistantToolTurns bounds how many tool-call/round-trips a single
 	// assistant generation may take before the run returns a progress summary.
@@ -77,12 +83,14 @@ const (
 	projectToolGetRuntimeStatus               = "get_runtime_status"
 	projectToolGetPreviewURL                  = "get_preview_url"
 	projectToolGetRuntimeLogs                 = "get_runtime_logs"
+	projectToolVerifyProject                  = "verify_project"
 	projectToolRestartRuntime                 = "restart_runtime"
 	projectToolSetRuntimeEnv                  = "set_runtime_env"
 	projectToolAskFollowUp                    = "ask_follow_up"
 	projectToolRequestProjectPlanApproval     = "request_project_plan_approval"
 	projectToolWriteFile                      = "write_file"
 	projectToolApplyPatch                     = "apply_patch"
+	projectToolApplyPatches                   = "apply_patches"
 	projectToolMkdir                          = "mkdir"
 	projectToolSelectTemplate                 = "select_project_template"
 	projectToolHydrateWorkspace               = "hydrate_workspace"
@@ -656,6 +664,11 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectMutationArgs(args, []string{"path"}, true)
 	case projectToolApplyPatch:
 		return summarizeProjectMutationArgs(args, []string{"path"}, false)
+	case projectToolApplyPatches:
+		if paths := projectToolFilePaths(args["edits"]); len(paths) > 0 {
+			return truncateProjectToolInfo(fmt.Sprintf("%d edit(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
+		}
+		return ""
 	case projectToolMkdir:
 		return summarizeProjectToolKeyValues(args, []string{"path"})
 	}
@@ -729,12 +742,31 @@ func summarizeProjectToolResult(name, result string) string {
 			if summary := projectToolString(decoded["summary"]); summary != "" {
 				return truncateProjectToolInfo(summary)
 			}
+		case projectToolVerifyProject:
+			status := projectToolString(decoded["status"])
+			parts := []string{}
+			if status != "" {
+				parts = append(parts, status)
+			}
+			if errs := projectToolStringList(decoded["errors"]); len(errs) > 0 {
+				parts = append(parts, fmt.Sprintf("%d error line(s)", len(errs)))
+			}
+			if len(parts) > 0 {
+				return truncateProjectToolInfo(strings.Join(parts, ", "))
+			}
+			if summary := projectToolString(decoded["summary"]); summary != "" {
+				return truncateProjectToolInfo(summary)
+			}
 		case projectToolAskFollowUp:
 			if answer := projectToolString(decoded["answer"]); answer != "" {
 				return truncateProjectToolInfo("answered: " + answer)
 			}
 		case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
 			return summarizeWorkspaceMutationResult(decoded)
+		case projectToolApplyPatches:
+			if summary := projectToolString(decoded["summary"]); summary != "" {
+				return truncateProjectToolInfo(summary)
+			}
 		}
 		if message := projectToolString(decoded["message"]); message != "" {
 			return truncateProjectToolInfo(message)
@@ -906,6 +938,16 @@ func summarizeWorkspaceSearchResult(decoded map[string]any) string {
 
 func projectToolCallResultStatus(name, result string) string {
 	baseName := projectToolBaseName(name)
+	if baseName == projectToolVerifyProject {
+		decoded := map[string]any{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err != nil {
+			return "succeeded"
+		}
+		if strings.EqualFold(projectToolString(decoded["status"]), "failing") {
+			return "failed"
+		}
+		return "succeeded"
+	}
 	if baseName != projectToolCommitFiles && baseName != projectToolCommitProjectFiles {
 		return "succeeded"
 	}
@@ -1581,6 +1623,13 @@ func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryV
 
 func projectPromptMessagesForProfile(p *aiv1alpha1.Project, repository *ProjectRepositoryView, history []store.Message, profile projectAssistantTurnProfile) []chatMessage {
 	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p, repository, profile)}}
+	// Reconstruct the tool-activity trail from earlier turns so the model
+	// retains evidence of files it already read/edited/committed. The raw
+	// tool results are not persisted as chat messages, so without this the
+	// cross-turn history would only carry user/assistant prose.
+	if evidence := projectAssistantHistoryToolEvidence(history); evidence != "" {
+		messages = append(messages, chatMessage{Role: "system", Content: evidence})
+	}
 	var lastRole, lastContent string
 	for _, m := range history {
 		if m.Role != aiv1alpha1.ProjectMessageRoleUser && m.Role != aiv1alpha1.ProjectMessageRoleAssistant {
@@ -1692,6 +1741,9 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("Before source edits, call request_project_plan_approval with a concise batch plan, target path envelope, allowed edit operations, and acceptance criteria; after approval, keep workspace edits inside that envelope. ")
 	b.WriteString("Do not give the user manual copy/paste file replacement instructions when App Studio edit tools are available; request approval and apply the change in the workspace instead. ")
 	b.WriteString("Prefer small App Studio workspace mutations with write_file, apply_patch, and mkdir instead of rewriting a whole project. ")
+	b.WriteString("When a change spans multiple hunks or files, use apply_patches to apply all of the edits in a single call instead of many apply_patch round-trips. ")
+	b.WriteString("After applying workspace edits and before telling the user the change is done, call verify_project to confirm the live development runtime is building and serving cleanly. ")
+	b.WriteString("If verify_project returns failing, read the reported error lines, locate the offending file with search_project_files or read_project_file, apply a targeted fix, and verify again before claiming success; if it returns unavailable, say the sandbox could not be verified yet rather than claiming the change works. ")
 	b.WriteString("After workspace mutations, commit the changed source/config files to the managed git source with commit_project_files using repositoryRef \"" + repoRef + "\". ")
 	b.WriteString("Use provider-code only as the git-source boundary; do not use provider-code tools to inspect or mutate the live App Studio workspace. ")
 	b.WriteString("The tool creates a visible RepositoryCommit request; use concise commit messages and include every generated source/config file needed for the app to run. ")

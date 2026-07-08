@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -114,11 +115,33 @@ func classifyProjectAssistantTurnWithModel(ctx context.Context, model einomodel.
 }
 
 func projectAssistantSemanticTurnRouter(ctx context.Context, req projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
-	model, err := newProjectEinoChatModel(ctx, req.LLM)
+	classifierLLM := projectAssistantClassifierLLMSettings(req.LLM)
+	model, err := newProjectEinoChatModel(ctx, classifierLLM)
 	if err != nil {
 		return fallbackProjectAssistantTurnDecision(req.History), nil
 	}
-	return classifyProjectAssistantTurnWithModel(ctx, model, req.History, projectTemperatureOptions(req.LLM.Model, 0)...)
+	return classifyProjectAssistantTurnWithModel(ctx, model, req.History, projectTemperatureOptions(classifierLLM.Model, 0)...)
+}
+
+// projectAssistantRouterModelEnv names the optional environment override that
+// routes turn classification to a cheaper/faster model than the one used for
+// building. Turn routing is a small JSON-labelling task that does not need the
+// flagship coding model, so operators can point it at a mini/haiku-class model
+// on the same provider and credentials to cut latency and cost. When unset (the
+// default) the main configured model is reused, keeping behaviour unchanged for
+// tenants on custom endpoints where the cheaper model name may not exist.
+const projectAssistantRouterModelEnv = "APP_STUDIO_ROUTER_MODEL"
+
+// projectAssistantClassifierLLMSettings derives the LLM settings used for turn
+// routing from the project's build settings, swapping only the model name when
+// an override is configured. Provider, base URL, and credentials are preserved.
+func projectAssistantClassifierLLMSettings(settings projectLLMSettings) projectLLMSettings {
+	override := strings.TrimSpace(os.Getenv(projectAssistantRouterModelEnv))
+	if override == "" {
+		return settings
+	}
+	settings.Model = override
+	return settings
 }
 
 func projectAssistantFallbackTurnRouter(_ context.Context, req projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {

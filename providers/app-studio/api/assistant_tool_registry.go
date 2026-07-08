@@ -264,6 +264,21 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:        projectToolApplyPatches,
+				Description: "Apply several exact text replacements across one or more App Studio workspace files in a single call. Prefer this over many apply_patch calls when a change spans multiple hunks or files: it cuts round-trips. Each edit's oldText must match exactly once in its file unless replaceAll is true. Edits apply in order; each is reported independently.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"edits":{"type":"array","minItems":1,"maxItems":%d,"description":"Ordered list of exact text replacements to apply.","items":{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path."},"oldText":{"type":"string","description":"Exact text to replace."},"newText":{"type":"string","description":"Replacement text."},"replaceAll":{"type":"boolean","description":"Replace every exact match instead of requiring one match."}},"required":["path","oldText","newText"]}}},"required":["edits"]}`, projectAssistantApplyPatchesMaxEdits)),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantApplyPatchesCall(ctx, s, req)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolMkdir,
 				Description: "Create a directory in the App Studio project workspace for later file writes.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative directory path."}},"required":["path"]}`),

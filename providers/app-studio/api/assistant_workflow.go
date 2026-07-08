@@ -224,6 +224,12 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 			Risk:        projectAssistantToolRiskRead,
 		},
 		{
+			Name:        projectToolVerifyProject,
+			Description: "Verify the app after edits: inspect the live development runtime and its recent logs for build, compile, or crash errors, and report whether the app is serving cleanly or failing. Call this after applying workspace edits and before telling the user the change is done.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"tailLines":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum number of trailing log lines to inspect for errors (default 200)."}}}`),
+			Risk:        projectAssistantToolRiskRead,
+		},
+		{
 			Name:        projectToolRestartRuntime,
 			Description: "Restart the development runtime's dev process so it picks up new files or configuration. Use this to recover a sandbox that is stuck or crash-looping.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
@@ -283,6 +289,8 @@ func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx 
 		return newProjectAssistantPreviewURLGraphTool(runCtx)
 	case projectToolGetRuntimeLogs:
 		return newProjectAssistantRuntimeLogsGraphTool(runCtx)
+	case projectToolVerifyProject:
+		return newProjectAssistantVerifyGraphTool(runCtx)
 	case projectToolRestartRuntime:
 		return newProjectAssistantRestartRuntimeGraphTool(runCtx)
 	case projectToolSetRuntimeEnv:

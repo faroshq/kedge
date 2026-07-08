@@ -325,6 +325,31 @@ func TestProjectAssistantModePromptsPutBuilderGuidanceOnlyOnWriteProfiles(t *tes
 	}
 }
 
+// The bound template is the app's environment contract — the prompt must
+// direct the model to describe THAT template (agent.usage) before reasoning
+// about what infrastructure the app has, and must forbid concluding a
+// declared backing service (e.g. the application template's Postgres +
+// injected DATABASE_URL) is missing just because the code doesn't use it.
+func TestProjectAssistantPromptTreatsBoundTemplateAsEnvironmentContract(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	project.Name = "demo-project"
+	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
+	repository := &ProjectRepositoryView{Ref: "demo-repo", Name: "demo", Status: projectRepositoryStatusReady, Ready: true}
+
+	prompt := projectSystemPrompt(project, repository, projectAssistantTurnProfileImplementation)
+	for _, want := range []string{
+		"Development template: application",
+		"ENVIRONMENT CONTRACT",
+		"infrastructure__describe_template on THIS template",
+		"DATABASE_URL",
+		"do not conclude a declared service is missing",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
 func TestProjectAssistantPromptRequiresEvidenceForProductCapabilities(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo-project"

@@ -1620,7 +1620,9 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	b.WriteString("Project metadata:\n")
 	b.WriteString("- Name: " + p.Name + "\n")
 	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) != "" {
-		b.WriteString("- Development template: " + strings.TrimSpace(p.Spec.Template.Name) + " (the development environment runs this infrastructure template in development mode; source directories map to its declared components, so keep new code under the component directories)\n")
+		b.WriteString("- Development template: " + strings.TrimSpace(p.Spec.Template.Name) + " (the development environment runs this infrastructure template in development mode; source directories map to its declared components, so keep new code under the component directories). " +
+			"This template is the app's ENVIRONMENT CONTRACT: before reasoning about what infrastructure, backing services, or environment variables the app has, call infrastructure__describe_template on THIS template and treat its agent.usage / agent.outputs as authoritative. " +
+			"Backing services the template declares (for example a managed database) exist for the development instance too, with the same injected environment (for example DATABASE_URL) — do not conclude a declared service is missing just because the app code does not use it yet, and do not provision a separate instance of a service the bound template already provides.\n")
 	} else {
 		b.WriteString("- Development template: NONE — the project has no development environment yet, so nothing runs and no preview exists until one is bound. Binding a template is your FIRST implementation step: translate the user's business intent into requirements yourself, pick the matching template via infrastructure__list_templates / infrastructure__describe_template, and bind it with select_project_template. Only templates that declare development components qualify. Template selection is INDEPENDENT of repository provisioning — never wait for the repository to bind a template; repository state only gates committing files, not template selection or workspace edits.\n")
 	}

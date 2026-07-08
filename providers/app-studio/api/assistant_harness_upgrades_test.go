@@ -169,6 +169,36 @@ func TestProjectAssistantApprovedPlanAllowsBatchWithinEnvelope(t *testing.T) {
 	}
 }
 
+func TestProjectPromptStablePreambleIsCacheable(t *testing.T) {
+	projA := &aiv1alpha1.Project{}
+	projA.Name = "alpha"
+	projB := &aiv1alpha1.Project{}
+	projB.Name = "beta"
+	projB.Spec.DisplayName = "Beta App"
+
+	msgsA := projectPromptMessagesForProfile(projA, nil, nil, projectAssistantTurnProfileImplementation)
+	msgsB := projectPromptMessagesForProfile(projB, nil, nil, projectAssistantTurnProfileDiscussion)
+
+	if len(msgsA) < 2 || len(msgsB) < 2 {
+		t.Fatalf("expected at least stable + dynamic system messages")
+	}
+	if msgsA[0].Role != "system" || msgsB[0].Role != "system" {
+		t.Fatalf("first message must be system")
+	}
+	// The first (cached) message must be identical regardless of project or
+	// profile, or the Anthropic prompt cache would never hit across turns.
+	if msgsA[0].Content != msgsB[0].Content {
+		t.Fatalf("stable preamble differs across projects/profiles:\nA=%q\nB=%q", msgsA[0].Content, msgsB[0].Content)
+	}
+	if msgsA[0].Content != projectAssistantStableSystemPreamble() {
+		t.Fatalf("first message is not the stable preamble")
+	}
+	// The dynamic message must actually differ (it carries per-project state).
+	if msgsA[1].Content == msgsB[1].Content {
+		t.Fatalf("dynamic system message should differ across projects")
+	}
+}
+
 func TestProjectAssistantTokenUsageAccumulates(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	runState.AddTokenUsage(1000, 800, 200, 50)

@@ -167,22 +167,20 @@ func projectAssistantApplyPromptCacheBreakpoints(provider string, messages []*sc
 	if !projectLLMProviderUsesAnthropicCaching(provider) || len(messages) == 0 {
 		return
 	}
-	// Place a single breakpoint on the last contiguous leading system message.
-	// Anthropic caches everything up to and including the breakpoint, so the
-	// whole system prefix (guardrails + project contract + evidence) is cached.
-	lastSystem := -1
-	for i, msg := range messages {
+	// Place the breakpoint on the FIRST system message, which is the stable
+	// guardrail preamble. Anthropic caches the prefix up to and including the
+	// breakpoint, so only content that is identical across turns is cached —
+	// the per-turn project/profile/evidence system messages that follow are
+	// intentionally left outside the cached prefix.
+	for _, msg := range messages {
 		if msg == nil {
 			continue
 		}
 		if msg.Role == schema.System {
-			lastSystem = i
-			continue
+			claudemodel.SetMessageCacheControl(msg, nil)
+			return
 		}
-		break
-	}
-	if lastSystem >= 0 {
-		claudemodel.SetMessageCacheControl(messages[lastSystem], nil)
+		return
 	}
 }
 

@@ -1622,7 +1622,15 @@ func projectPromptMessages(p *aiv1alpha1.Project, repository *ProjectRepositoryV
 }
 
 func projectPromptMessagesForProfile(p *aiv1alpha1.Project, repository *ProjectRepositoryView, history []store.Message, profile projectAssistantTurnProfile) []chatMessage {
-	messages := []chatMessage{{Role: "system", Content: projectSystemPrompt(p, repository, profile)}}
+	// The stable guardrail preamble is emitted as its own leading system
+	// message so a prompt-cache breakpoint can be placed on it. Everything
+	// after it (conversation mode, project metadata, memory, evidence) varies
+	// per turn and must stay outside the cached prefix, or the cache never
+	// hits across turns.
+	messages := []chatMessage{
+		{Role: "system", Content: projectAssistantStableSystemPreamble()},
+		{Role: "system", Content: projectSystemPromptDynamic(p, repository, profile)},
+	}
 	// Reconstruct the tool-activity trail from earlier turns so the model
 	// retains evidence of files it already read/edited/committed. The raw
 	// tool results are not persisted as chat messages, so without this the
@@ -1649,11 +1657,11 @@ func projectPromptMessagesForProfile(p *aiv1alpha1.Project, repository *ProjectR
 	return messages
 }
 
-func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryView, profiles ...projectAssistantTurnProfile) string {
-	profile := projectAssistantTurnProfileDiscussion
-	if len(profiles) > 0 {
-		profile = normalizeProjectAssistantTurnProfile(profiles[0])
-	}
+// projectAssistantStableSystemPreamble returns the fixed guardrail framing that
+// never varies between turns or projects. It is emitted as its own leading
+// system message and carries the prompt-cache breakpoint, so this large prefix
+// is served from cache on subsequent turns.
+func projectAssistantStableSystemPreamble() string {
 	var b strings.Builder
 	b.WriteString("You are the assistant for a persistent Kedge Project workspace. ")
 	b.WriteString("Help the user reason about and build the application represented by this Project. ")
@@ -1665,7 +1673,20 @@ func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryVie
 	b.WriteString("Translate technical choices into business outcomes and safe next steps. ")
 	b.WriteString("When a live development sandbox exists, assume App Studio source changes run in that sandbox; separate development sandbox guidance from production launch guidance. ")
 	b.WriteString("Do not ask the user to choose databases, networking, infrastructure templates, or deployment architecture when App Studio can infer a safe next step from their business intent and available evidence. ")
-	b.WriteString("When requirements are unclear, ask concise follow-up questions instead of guessing.\n\n")
+	b.WriteString("When requirements are unclear, ask concise follow-up questions instead of guessing.")
+	return b.String()
+}
+
+func projectSystemPrompt(p *aiv1alpha1.Project, repository *ProjectRepositoryView, profiles ...projectAssistantTurnProfile) string {
+	return projectAssistantStableSystemPreamble() + "\n\n" + projectSystemPromptDynamic(p, repository, profiles...)
+}
+
+func projectSystemPromptDynamic(p *aiv1alpha1.Project, repository *ProjectRepositoryView, profiles ...projectAssistantTurnProfile) string {
+	profile := projectAssistantTurnProfileDiscussion
+	if len(profiles) > 0 {
+		profile = normalizeProjectAssistantTurnProfile(profiles[0])
+	}
+	var b strings.Builder
 	b.WriteString("Conversation mode: " + string(profile) + "\n")
 	b.WriteString("Project metadata:\n")
 	b.WriteString("- Name: " + p.Name + "\n")

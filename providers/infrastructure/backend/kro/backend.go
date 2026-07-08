@@ -88,6 +88,10 @@ const (
 //   - KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE — the exposure-layer Gateway
 //     parent every template's HTTPRoutes (apps AND sandbox previews) attach to
 //     (defaults "cloudflare-tunnel" / "cfgate-system").
+//   - KEDGE_APP_PUBLIC_PORT — bare port number appended (as ":<port>") to
+//     synthesized exposure URLs via ${kedge.appPublicPort}. Unset in
+//     production (443 implied); local kind sets 10443 (the envoy
+//     port-forward).
 //
 // Per-instance inputs (container images, etc.) are NOT env tokens — templates
 // declare them as schema fields with sane defaults (e.g. simple-webapp's
@@ -102,9 +106,14 @@ func New(runtime dynamic.Interface) *Backend {
 	if gatewayNamespace == "" {
 		gatewayNamespace = DefaultGatewayNamespace
 	}
+	appPublicPort := ""
+	if port := strings.TrimSpace(os.Getenv("KEDGE_APP_PUBLIC_PORT")); port != "" {
+		appPublicPort = ":" + port
+	}
 	tokens := map[string]string{
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
+		appPublicPortToken:    appPublicPort,
 	}
 	maps.Copy(tokens, devImageTokens())
 	return &Backend{runtime: runtime, tokens: tokens}

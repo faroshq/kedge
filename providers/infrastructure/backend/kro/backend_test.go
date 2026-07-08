@@ -163,6 +163,25 @@ func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 	}
 }
 
+func TestSubstituteTokensAppPublicPort(t *testing.T) {
+	// The status.url CEL embeds the token inside a quoted CEL string; both
+	// values must yield a valid expression.
+	in := []byte(`{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"${kedge.appPublicPort}\"}"}`)
+
+	// Local kind: KEDGE_APP_PUBLIC_PORT=10443 → ":10443" suffix.
+	out := string(substituteTokens(in, map[string]string{appPublicPortToken: ":10443"}))
+	if want := `{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \":10443\"}"}`; out != want {
+		t.Errorf("with port: substituteTokens = %s, want %s", out, want)
+	}
+
+	// Production (token unset in the caller's map): the placeholder must not
+	// leak — it resolves to the empty string.
+	out = string(substituteTokens(in, map[string]string{}))
+	if want := `{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"\"}"}`; out != want {
+		t.Errorf("without port: substituteTokens = %s, want %s", out, want)
+	}
+}
+
 // testTokens is the platform-config token map the backend builds from env (the
 // exposure-layer Gateway parent + the dev-overlay images), for buildRGD tests.
 func testTokens() map[string]string {

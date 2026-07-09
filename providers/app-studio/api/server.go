@@ -156,6 +156,11 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/abort", s.abortProjectAssistant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
+
+	// MCP surface for external harnesses (Claude Code, Cursor, Codex). The hub's
+	// provider MCP federation forwards {backend.url}/mcp here; tenant identity is
+	// taken from the proxy-injected headers inside each tool handler.
+	r.PathPrefix("/mcp").Handler(s.MCPHandler())
 }
 
 // clientFor builds a workspace-scoped client acting as the caller, talking to

@@ -163,6 +163,15 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		return nil, err
 	}
 	var handlers []adk.ChatModelAgentMiddleware
+	// Context editing (opt-in): clear stale tool results before summarization,
+	// so a tool-heavy session sheds old file reads without a model call.
+	if projectAssistantContextEditingEnabled() {
+		reductionMiddleware, err := newProjectAssistantContextEditingMiddleware(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("create eino context-editing middleware: %w", err)
+		}
+		handlers = append(handlers, reductionMiddleware)
+	}
 	summaryMiddleware, err := summarization.New(ctx, &summarization.Config{
 		Model: chatModel,
 		Trigger: &summarization.TriggerCondition{

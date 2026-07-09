@@ -217,6 +217,19 @@ func TestProjectAssistantTokenUsageAccumulates(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantContextClearFiresBeforeSummary(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-5", "gpt-5.4", "gemini-2.5-flash", "unknown"} {
+		clear := projectAssistantContextClearTokens(model)
+		summary := int64(projectAssistantSummaryContextTokens(model))
+		if clear <= 0 {
+			t.Errorf("clear threshold for %q must be positive, got %d", model, clear)
+		}
+		if clear >= summary {
+			t.Errorf("clear threshold (%d) for %q must fire before summary (%d)", clear, model, summary)
+		}
+	}
+}
+
 func TestProjectAssistantEnvTruthy(t *testing.T) {
 	for _, v := range []string{"1", "true", "TRUE", "yes", "on", "enabled"} {
 		if !projectAssistantEnvTruthy(v) {

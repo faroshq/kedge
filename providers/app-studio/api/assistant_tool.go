@@ -71,11 +71,11 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 		return projectAssistantToolBundleWorkflow
 	case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL,
-		projectToolGetRuntimeLogs, projectToolRestartRuntime, projectToolSetRuntimeEnv:
+		projectToolGetRuntimeLogs, projectToolVerifyProject, projectToolRestartRuntime, projectToolSetRuntimeEnv:
 		return projectAssistantToolBundleRuntime
 	case projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles:
 		return projectAssistantToolBundleWorkspaceRead
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolApplyPatches, projectToolMkdir:
 		return projectAssistantToolBundleEdit
 	case projectToolCommitProjectFiles, projectToolCommitFiles:
 		return projectAssistantToolBundleRepo

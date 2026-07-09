@@ -74,7 +74,7 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	}
 	toolName = projectToolBaseName(toolName)
 	switch toolName {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolApplyPatches, projectToolMkdir:
 	default:
 		return false
 	}
@@ -86,7 +86,21 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	if !projectAssistantApprovedPlanAllowsOperation(plan, toolName) {
 		return false
 	}
-	targetPath := projectAssistantWriteTargetPath(toolName, args)
+	targetPaths := projectAssistantWriteTargetPaths(toolName, args)
+	if len(targetPaths) == 0 {
+		return false
+	}
+	// A batch edit is only covered when EVERY path it touches is within the
+	// approved envelope — a single out-of-envelope path re-prompts the batch.
+	for _, targetPath := range targetPaths {
+		if !projectAssistantApprovedPlanCoversPath(plan, targetPath) {
+			return false
+		}
+	}
+	return true
+}
+
+func projectAssistantApprovedPlanCoversPath(plan *projectAssistantApprovedPlan, targetPath string) bool {
 	if targetPath == "" {
 		return false
 	}
@@ -106,19 +120,39 @@ func projectAssistantApprovedPlanAllowsOperation(plan *projectAssistantApprovedP
 		return false
 	}
 	for _, op := range plan.Operations {
-		if projectToolBaseName(op) == toolName {
+		opName := projectToolBaseName(op)
+		if opName == toolName {
+			return true
+		}
+		// A batch apply_patches is semantically a set of apply_patch edits, so a
+		// plan that granted apply_patch also covers the batch form (paths are
+		// still checked individually against the envelope).
+		if toolName == projectToolApplyPatches && opName == projectToolApplyPatch {
 			return true
 		}
 	}
 	return false
 }
 
-func projectAssistantWriteTargetPath(toolName string, args map[string]any) string {
+func projectAssistantWriteTargetPaths(toolName string, args map[string]any) []string {
 	switch projectToolBaseName(toolName) {
 	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
-		return normalizeProjectAssistantRelativePath(projectToolString(args["path"]))
+		path := normalizeProjectAssistantRelativePath(projectToolString(args["path"]))
+		if path == "" {
+			return nil
+		}
+		return []string{path}
+	case projectToolApplyPatches:
+		raw := projectToolFilePaths(args["edits"])
+		out := make([]string, 0, len(raw))
+		for _, p := range raw {
+			if norm := normalizeProjectAssistantRelativePath(p); norm != "" {
+				out = append(out, norm)
+			}
+		}
+		return out
 	default:
-		return ""
+		return nil
 	}
 }
 

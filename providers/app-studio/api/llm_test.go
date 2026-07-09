@@ -36,9 +36,18 @@ func TestNewProjectEinoAssistantModelFactoryUsesNativeOpenAIModel(t *testing.T) 
 	if err != nil {
 		t.Fatalf("newProjectEinoAssistantModelFactory returned error: %v", err)
 	}
-	if got := reflect.TypeOf(model).String(); !strings.Contains(got, "openai.ChatModel") {
+	if got := reflect.TypeOf(projectEinoTestUnwrapModel(model)).String(); !strings.Contains(got, "openai.ChatModel") {
 		t.Fatalf("model type = %s, want native Eino OpenAI chat model", got)
 	}
+}
+
+// projectEinoTestUnwrapModel returns the underlying provider model behind the
+// retry wrapper so provider-selection assertions inspect the concrete model.
+func projectEinoTestUnwrapModel(model any) any {
+	if retrying, ok := model.(*projectEinoRetryingChatModel); ok {
+		return retrying.inner
+	}
+	return model
 }
 
 func TestNewProjectEinoAssistantModelFactoryUsesNativeGeminiModel(t *testing.T) {
@@ -54,7 +63,7 @@ func TestNewProjectEinoAssistantModelFactoryUsesNativeGeminiModel(t *testing.T) 
 	if err != nil {
 		t.Fatalf("newProjectEinoAssistantModelFactory returned error: %v", err)
 	}
-	if got := reflect.TypeOf(model).String(); !strings.Contains(got, "gemini.ChatModel") {
+	if got := reflect.TypeOf(projectEinoTestUnwrapModel(model)).String(); !strings.Contains(got, "gemini.ChatModel") {
 		t.Fatalf("model type = %s, want native Eino Gemini chat model", got)
 	}
 }

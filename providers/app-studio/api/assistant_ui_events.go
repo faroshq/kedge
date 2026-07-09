@@ -410,11 +410,11 @@ func projectAssistantUIActionKind(name string) string {
 		return projectAssistantUIActionPlan
 	case base == projectToolPlanProjectChanges:
 		return projectAssistantUIActionPlan
-	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment || base == projectToolDeployProjectRuntime || base == projectToolGetRuntimeStatus || base == projectToolGetPreviewURL || base == projectToolGetRuntimeLogs || base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv:
+	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment || base == projectToolDeployProjectRuntime || base == projectToolGetRuntimeStatus || base == projectToolGetPreviewURL || base == projectToolGetRuntimeLogs || base == projectToolVerifyProject || base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv:
 		return projectAssistantUIActionRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantUIActionCommit
-	case base == projectToolWriteFile || base == projectToolApplyPatch || base == projectToolMkdir:
+	case base == projectToolWriteFile || base == projectToolApplyPatch || base == projectToolApplyPatches || base == projectToolMkdir:
 		return projectAssistantUIActionEdit
 	case base == projectToolListProjectFiles || base == projectToolReadProjectFile || base == projectToolSearchProjectFiles:
 		return projectAssistantUIActionInspect

@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"cloud.google.com/go/auth/credentials"
+	claudemodel "github.com/cloudwego/eino-ext/components/model/claude"
 	geminimodel "github.com/cloudwego/eino-ext/components/model/gemini"
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -34,12 +35,80 @@ import (
 
 const defaultProjectLLMGoogleCloudLocation = "global"
 
+const (
+	// projectAssistantDefaultContextWindowTokens is the conservative context
+	// window assumed for models App Studio does not recognise. Erring low means
+	// the harness compacts a little earlier than strictly necessary, which is
+	// safe; erring high risks provider context-overflow errors.
+	projectAssistantDefaultContextWindowTokens = 128000
+	// projectAssistantSummaryContextTokenFraction is the fraction of the model
+	// context window at which conversation summarisation is triggered, leaving
+	// headroom for the system prompt, tool schemas, and the model's own reply.
+	projectAssistantSummaryContextTokenFraction = 0.6
+	// projectAssistantSummaryContextTokenFloor keeps the trigger from collapsing
+	// to a tiny value on models that report (or are mapped to) small windows.
+	projectAssistantSummaryContextTokenFloor = 24000
+	// projectAssistantSummaryContextTokenCap bounds how much raw conversation the
+	// harness is willing to hold before summarising even on very large windows,
+	// so a single turn does not send an unbounded prompt.
+	projectAssistantSummaryContextTokenCap = 300000
+)
+
+// projectModelContextWindowTokens returns a conservative estimate of the input
+// context window for the configured model, keyed by model family. It exists so
+// the summarisation trigger scales with the model instead of a fixed 24k
+// ceiling that discarded most of a modern window.
+func projectModelContextWindowTokens(model string) int {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
+	}
+	switch {
+	case m == "":
+		return projectAssistantDefaultContextWindowTokens
+	case strings.HasPrefix(m, "claude"):
+		return 200000
+	case strings.HasPrefix(m, "gpt-5"), strings.HasPrefix(m, "gpt5"):
+		return 400000
+	case strings.HasPrefix(m, "gpt-4.1"):
+		return 1000000
+	case strings.HasPrefix(m, "gpt-4o"), strings.HasPrefix(m, "gpt-4-turbo"):
+		return 128000
+	case strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
+		return 200000
+	case strings.HasPrefix(m, "gemini-2"), strings.HasPrefix(m, "gemini-1.5"), strings.HasPrefix(m, "gemini-exp"):
+		return 1000000
+	case strings.HasPrefix(m, "gemini"):
+		return 128000
+	default:
+		return projectAssistantDefaultContextWindowTokens
+	}
+}
+
+// projectAssistantSummaryContextTokens returns the token count at which the
+// conversation summarisation middleware should fire for the configured model.
+func projectAssistantSummaryContextTokens(model string) int {
+	window := projectModelContextWindowTokens(model)
+	trigger := int(float64(window) * projectAssistantSummaryContextTokenFraction)
+	if trigger < projectAssistantSummaryContextTokenFloor {
+		trigger = projectAssistantSummaryContextTokenFloor
+	}
+	if trigger > projectAssistantSummaryContextTokenCap {
+		trigger = projectAssistantSummaryContextTokenCap
+	}
+	return trigger
+}
+
 func newProjectEinoAssistantModelFactory(server *Server) projectEinoAssistantModelFactory {
 	return func(ctx context.Context, req projectAssistantRunRequest, _ *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
 		if server == nil {
 			return nil, errors.New("server is not configured")
 		}
-		return newProjectEinoChatModel(ctx, req.LLM)
+		model, err := newProjectEinoChatModel(ctx, req.LLM)
+		if err != nil {
+			return nil, err
+		}
+		return projectEinoWithRetries(model), nil
 	}
 }
 
@@ -53,8 +122,65 @@ func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (
 	switch strings.TrimSpace(settings.Provider) {
 	case projectLLMProviderGoogle:
 		return newProjectEinoGeminiChatModel(ctx, settings)
+	case projectLLMProviderAnthropic:
+		return newProjectEinoClaudeChatModel(ctx, settings)
 	default:
 		return newProjectEinoOpenAIChatModel(ctx, settings)
+	}
+}
+
+// projectLLMProviderUsesAnthropicCaching reports whether the configured provider
+// is Anthropic, whose prompt caching requires explicit cache breakpoints on the
+// stable prompt prefix (system prompt + tool schemas). OpenAI and Gemini cache
+// large prefixes automatically, so no per-message annotation is needed there.
+func projectLLMProviderUsesAnthropicCaching(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), projectLLMProviderAnthropic)
+}
+
+func newProjectEinoClaudeChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
+	config := &claudemodel.Config{
+		APIKey:     strings.TrimSpace(settings.APIKey),
+		Model:      strings.TrimSpace(settings.Model),
+		MaxTokens:  projectLLMAnthropicMaxTokens,
+		HTTPClient: &http.Client{},
+	}
+	// Honour a custom Anthropic-compatible endpoint (proxy/gateway) when the
+	// tenant configured one; the default Anthropic base URL is used otherwise.
+	if base := strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"); base != "" && !isGenericOpenAIBaseURL(base) {
+		config.BaseURL = &base
+	}
+	temperature := float32(0.2)
+	config.Temperature = &temperature
+	model, err := claudemodel.NewChatModel(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("create native Eino Claude chat model: %w", err)
+	}
+	return model, nil
+}
+
+// projectAssistantApplyPromptCacheBreakpoints annotates the leading system
+// messages with an Anthropic cache breakpoint so the stable prompt prefix (the
+// large system prompt and reconstructed evidence block) is served from cache on
+// subsequent turns. It is a no-op for non-Anthropic providers, whose SDKs
+// ignore the message extra.
+func projectAssistantApplyPromptCacheBreakpoints(provider string, messages []*schema.Message) {
+	if !projectLLMProviderUsesAnthropicCaching(provider) || len(messages) == 0 {
+		return
+	}
+	// Place the breakpoint on the FIRST system message, which is the stable
+	// guardrail preamble. Anthropic caches the prefix up to and including the
+	// breakpoint, so only content that is identical across turns is cached —
+	// the per-turn project/profile/evidence system messages that follow are
+	// intentionally left outside the cached prefix.
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		if msg.Role == schema.System {
+			claudemodel.SetMessageCacheControl(msg, nil)
+			return
+		}
+		return
 	}
 }
 

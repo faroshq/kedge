@@ -230,6 +230,27 @@ func TestProjectAssistantContextClearFiresBeforeSummary(t *testing.T) {
 	}
 }
 
+func TestProjectClassifierReasoningOptions(t *testing.T) {
+	// OpenAI reasoning models get a low-effort option.
+	if got := projectClassifierReasoningOptions(projectLLMSettings{Provider: "openai-compatible", Model: "gpt-5.4"}); len(got) != 1 {
+		t.Errorf("gpt-5 should get 1 reasoning option, got %d", len(got))
+	}
+	if got := projectClassifierReasoningOptions(projectLLMSettings{Provider: "", Model: "o3-mini"}); len(got) != 1 {
+		t.Errorf("o3 should get 1 reasoning option, got %d", len(got))
+	}
+	// Non-reasoning OpenAI models: none (reasoning_effort would error there).
+	if got := projectClassifierReasoningOptions(projectLLMSettings{Provider: "openai-compatible", Model: "gpt-4o"}); len(got) != 0 {
+		t.Errorf("gpt-4o should get no reasoning option, got %d", len(got))
+	}
+	// Non-OpenAI providers: none regardless of model.
+	if got := projectClassifierReasoningOptions(projectLLMSettings{Provider: projectLLMProviderGoogle, Model: "gemini-2.5-flash"}); len(got) != 0 {
+		t.Errorf("gemini should get no reasoning option, got %d", len(got))
+	}
+	if got := projectClassifierReasoningOptions(projectLLMSettings{Provider: projectLLMProviderAnthropic, Model: "claude-sonnet-5"}); len(got) != 0 {
+		t.Errorf("anthropic should get no reasoning option, got %d", len(got))
+	}
+}
+
 func TestProjectAssistantEnvTruthy(t *testing.T) {
 	for _, v := range []string{"1", "true", "TRUE", "yes", "on", "enabled"} {
 		if !projectAssistantEnvTruthy(v) {

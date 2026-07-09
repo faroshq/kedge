@@ -120,7 +120,9 @@ func projectAssistantSemanticTurnRouter(ctx context.Context, req projectAssistan
 	if err != nil {
 		return fallbackProjectAssistantTurnDecision(req.History), nil
 	}
-	return classifyProjectAssistantTurnWithModel(ctx, model, req.History, projectTemperatureOptions(classifierLLM.Model, 0)...)
+	opts := projectTemperatureOptions(classifierLLM.Model, 0)
+	opts = append(opts, projectClassifierReasoningOptions(classifierLLM)...)
+	return classifyProjectAssistantTurnWithModel(ctx, model, req.History, opts...)
 }
 
 // projectAssistantRouterModelEnv names the optional environment override that

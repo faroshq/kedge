@@ -44,7 +44,11 @@ kedge hosts **no git server** — repos live on **GitHub**. You edit locally and
 
 ## Without a local clone
 
-If you're not cloning locally (e.g. a lightweight change), you can author file contents and commit them straight to the repo with `code__commit_files`, then run the same sync → verify → preview steps. The git-native local-clone path is preferred for anything nontrivial because it lets you use your native editor and run builds locally.
+If you're not cloning locally (e.g. a lightweight change), author file contents with `app-studio__write_file` (which also triggers a sandbox sync), then persist them with `app-studio__commit_files`, and run the same verify → preview steps. The git-native local-clone path is preferred for anything nontrivial because it lets you use your native editor and run builds locally.
+
+## Auto-discovery
+
+This endpoint also serves an MCP **prompt** (`kedge_app_studio_workflow`) carrying this workflow and the domain rules, and an MCP **resource** (`appstudio://projects`) listing your projects — so a client can surface the guidance and browse projects without any manual setup.
 
 ## Tool reference (app-studio__*)
 

@@ -79,7 +79,11 @@ func (s *Server) newMCPServer(r *http.Request) *mcp.Server {
 			"already injected — do not provision duplicates. Tenant identity is " +
 			"taken from your bearer token; never ask the user for a workspace path.",
 	})
-	s.registerMCPTools(srv, r)
+	id := mcpIdentityFromRequest(r)
+	s.registerMCPTools(srv, r, id)
+	s.registerMCPWriteTools(srv, r, id)
+	s.registerMCPPrompts(srv)
+	s.registerMCPResources(srv, id)
 	return srv
 }
 
@@ -176,8 +180,7 @@ type mcpSearchFilesInput struct {
 	MaxResults int    `json:"maxResults,omitempty" jsonschema:"maximum matching files to return"`
 }
 
-func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
-	id := mcpIdentityFromRequest(r)
+func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request, id identity) {
 	yes := true
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &yes}
 

@@ -236,6 +236,26 @@ func projectTemperatureOptions(model string, temperature float32) []einomodel.Op
 	return []einomodel.Option{einomodel.WithTemperature(temperature)}
 }
 
+// projectClassifierReasoningOptions returns a low reasoning-effort option for
+// the turn classifier when — and only when — the classifier model is an OpenAI
+// reasoning model (GPT-5 / o-series). Turn classification is a lightweight JSON
+// labelling task that does not need deep reasoning, so 'low' cuts latency and
+// cost. It is guarded to OpenAI reasoning models because reasoning_effort is not
+// accepted by non-reasoning OpenAI models (would error on the hot path) nor by
+// the Gemini/Anthropic components; those return nil and keep their defaults.
+func projectClassifierReasoningOptions(settings projectLLMSettings) []einomodel.Option {
+	switch strings.TrimSpace(settings.Provider) {
+	case projectLLMProviderGoogle, projectLLMProviderAnthropic:
+		return nil
+	}
+	// projectModelSupportsTemperature is false exactly for the reasoning models
+	// (GPT-5, o1/o3/o4) that accept reasoning_effort.
+	if projectModelSupportsTemperature(settings.Model) {
+		return nil
+	}
+	return []einomodel.Option{openaimodel.WithReasoningEffort(openaimodel.ReasoningEffortLevelLow)}
+}
+
 func newProjectEinoGeminiChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
 	clientConfig, err := projectEinoGeminiClientConfig(settings)
 	if err != nil {

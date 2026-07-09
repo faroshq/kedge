@@ -39,6 +39,11 @@ All reuse existing App Studio operations; identity is taken from the bearer.
 | `verify_project` | `verifyProjectAssistantRuntime` | read |
 | `get_runtime_logs` | `fetchProjectAssistantRuntimeLogs` | read |
 | `get_runtime_status` / `get_preview_url` | runtime-status/preview graph lambdas | read |
+| `write_file` | `workspace.WriteFile` + dev sync (no-clone path) | mutating |
+| `commit_files` | `commitProjectWorkspaceFiles` → `code__commit_files` | mutating |
+| `deploy` | deploy graph lambdas (returns blockers until a runtime target exists) | mutating |
+
+Beyond tools, the endpoint serves an MCP **prompt** (`kedge_app_studio_workflow` — the git-native workflow + domain rules, so clients auto-discover the guidance without a manual skill install) and an MCP **resource** (`appstudio://projects` — a read-only JSON list of the caller's projects).
 
 ## Packaging
 
@@ -47,9 +52,9 @@ All reuse existing App Studio operations; identity is taken from the bearer.
 ## What was NOT implemented (follow-ups)
 
 - **Automatic push → sandbox sync** via a GitHub webhook receiver (or repo-HEAD poller) on `providers/code`, so a push rebuilds the preview without the explicit `sync_workspace_from_repo` call. v1 requires the agent to call the sync tool; the webhook is a convenience that removes that step. Needs webhook ingress + secret plumbing (cluster/GitHub-dependent, not unit-testable here).
-- **Write/edit file tools over MCP** — intentionally omitted. Editing is git-native (local clone), so the MCP file tools are read-only; a server-side write path exists via `code__commit_files` for the no-clone case.
-- **`deploy` on MCP** — production deployment handoff (`deploy_project_runtime`) is not yet exposed; it returns structured blockers until a runtime target is configured.
-- **Live-cluster verification** — the tool wiring is unit-tested (identity, registration, summaries), but the end-to-end loop (clone → push → sync → preview) needs a live workspace + sandbox to exercise.
+- **Live-cluster verification** — the tool wiring is unit-tested (identity, registration, summaries, prompt/resource registration), but the end-to-end loop (clone → push → sync → preview, and the no-clone write → commit path) needs a live workspace + sandbox to exercise.
+- **`kedge mcp serve` stdio proxy** — for MCP clients that speak stdio rather than a URL.
+- **One-shot auth onboarding** (`kedge login` → token → MCP config) and packaging as a Claude Code plugin/marketplace (MCP config + skill + slash commands).
 
 ## Tests
 

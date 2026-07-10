@@ -237,7 +237,7 @@ func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 	// Exposure-only kinds: stamp the fqdn and stop — no cross-cluster state,
 	// no finalizer, nothing to clean up on deletion.
 	if !r.kind.oidc {
-		if app.GetDeletionTimestamp() != nil && !app.GetDeletionTimestamp().IsZero() {
+		if !app.GetDeletionTimestamp().IsZero() {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, c.stampSpec(ctx, tenantClient, tenant, app, false)

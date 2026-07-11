@@ -121,11 +121,22 @@ func applyProviderManifests() error {
 					return fmt.Errorf("%s: override spec.backend.url: %w", file, err)
 				}
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			_, err = cl.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-			cancel()
-			if err != nil && !apierrors.IsAlreadyExists(err) {
-				return fmt.Errorf("create %s %s: %w", obj.GetKind(), obj.GetName(), err)
+			// The hub reports /readyz before the admin/catalog APIs in
+			// root:kedge:system:providers are fully servable, so the first
+			// Create on a slow runner can 404 ("could not find the requested
+			// resource"). Retry until the API is up.
+			deadline := time.Now().Add(90 * time.Second)
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				_, err = cl.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+				cancel()
+				if err == nil || apierrors.IsAlreadyExists(err) {
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("create %s %s: %w", obj.GetKind(), obj.GetName(), err)
+				}
+				time.Sleep(2 * time.Second)
 			}
 		}
 	}

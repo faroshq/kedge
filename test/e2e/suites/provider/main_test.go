@@ -169,8 +169,9 @@ func TestMain(m *testing.M) {
 	initCmd.Env = append(os.Environ(),
 		"KEDGE_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"QUICKSTART_WORKSPACE_PATH="+workspacePath,
-		// Same as the Makefile dev flow: no chart schemas dir on a host run.
-		"KEDGE_SCHEMAS_DIR=/nonexistent",
+		// The greetings APIResourceSchema the chart ships — init reads the
+		// schemas dir to author the APIExport's resources.
+		"KEDGE_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "quickstart", "deploy", "chart", "files", "schemas"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog

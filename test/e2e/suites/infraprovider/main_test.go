@@ -152,14 +152,15 @@ func TestMain(m *testing.M) {
 
 	// Bootstrap: `infrastructure-provider init` installs the CRDs, APIExport,
 	// CachedResource and seeds the templates (mirrors the chart init
-	// container / `make init-provider-infrastructure`).
+	// container / `make init-provider-infrastructure`). It also mints the
+	// workspace-scoped ServiceAccount kubeconfig serve runs with.
+	mintedKubeconfig := filepath.Join(dataDir, "infrastructure.kubeconfig")
 	initLog, _ := os.Create(filepath.Join(dataDir, "init.log"))
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"), "init")
 	initCmd.Env = append(os.Environ(),
 		"INFRASTRUCTURE_ADMIN_KUBECONFIG="+adminKubeconfig,
 		"INFRASTRUCTURE_WORKSPACE_PATH="+workspacePath,
-		// Keep init off the runtime-cluster steps — no kro in this suite.
-		"INFRASTRUCTURE_KUBECONFIG="+filepath.Join(dataDir, "infrastructure.kubeconfig"),
+		"INFRASTRUCTURE_KUBECONFIG="+mintedKubeconfig,
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -170,8 +171,9 @@ func TestMain(m *testing.M) {
 	}
 
 	// Serve: REST + MCP + the Template controller (stub backend only — no
-	// KRO_KUBECONFIG). The admin kubeconfig is retargeted at the provider
-	// workspace via INFRASTRUCTURE_WORKSPACE_PATH, same as the operator flow.
+	// KRO_KUBECONFIG). Runs with the SA kubeconfig init minted — NOT the
+	// admin one — so the suite exercises the RBAC init actually granted,
+	// exactly like the chart's serve container.
 	provLog, _ := os.Create(filepath.Join(dataDir, "provider.log"))
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"))
 	provCmd.Env = append(os.Environ(),
@@ -180,8 +182,7 @@ func TestMain(m *testing.M) {
 		"KEDGE_HUB_TOKEN="+staticToken,
 		"KEDGE_HUB_INSECURE=true",
 		"KEDGE_PROVIDER_NAME=infrastructure",
-		"INFRASTRUCTURE_KUBECONFIG="+adminKubeconfig,
-		"INFRASTRUCTURE_WORKSPACE_PATH="+workspacePath,
+		"INFRASTRUCTURE_KUBECONFIG="+mintedKubeconfig,
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog

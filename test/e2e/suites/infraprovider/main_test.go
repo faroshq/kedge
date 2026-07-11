@@ -92,7 +92,11 @@ func TestMain(m *testing.M) {
 	}
 	keepData := os.Getenv("KEDGE_E2E_KEEP_DATA") == "true"
 
-	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
+	hubLog, err := os.Create(filepath.Join(dataDir, "hub.log"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create hub.log:", err)
+		os.Exit(1)
+	}
 	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "kedge-hub"),
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
@@ -155,7 +159,12 @@ func TestMain(m *testing.M) {
 	// container / `make init-provider-infrastructure`). It also mints the
 	// workspace-scoped ServiceAccount kubeconfig serve runs with.
 	mintedKubeconfig := filepath.Join(dataDir, "infrastructure.kubeconfig")
-	initLog, _ := os.Create(filepath.Join(dataDir, "init.log"))
+	initLog, err := os.Create(filepath.Join(dataDir, "init.log"))
+	if err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "create init.log:", err)
+		os.Exit(1)
+	}
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"), "init")
 	initCmd.Env = append(os.Environ(),
 		"INFRASTRUCTURE_ADMIN_KUBECONFIG="+adminKubeconfig,
@@ -174,7 +183,12 @@ func TestMain(m *testing.M) {
 	// KRO_KUBECONFIG). Runs with the SA kubeconfig init minted — NOT the
 	// admin one — so the suite exercises the RBAC init actually granted,
 	// exactly like the chart's serve container.
-	provLog, _ := os.Create(filepath.Join(dataDir, "provider.log"))
+	provLog, err := os.Create(filepath.Join(dataDir, "provider.log"))
+	if err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "create provider.log:", err)
+		os.Exit(1)
+	}
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"))
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,

@@ -114,8 +114,12 @@ func applyProviderManifests() error {
 				// The committed manifest targets the dev-loop port (:8082);
 				// this suite runs the binary on its own port.
 				overrideURL := "http://localhost:" + providerPort
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url")
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url")
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "ui", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.ui.url: %w", file, err)
+				}
+				if err := unstructured.SetNestedField(obj.Object, overrideURL, "spec", "backend", "url"); err != nil {
+					return fmt.Errorf("%s: override spec.backend.url: %w", file, err)
+				}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			_, err = cl.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
@@ -238,7 +242,9 @@ func TestBStubTemplateFullReconcile(t *testing.T) {
 		t.Fatalf("create stub template: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = cl.Resource(templatesGVR).Delete(context.Background(), name, metav1.DeleteOptions{})
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = cl.Resource(templatesGVR).Delete(ctx, name, metav1.DeleteOptions{})
 	})
 
 	// Ready=True end to end.
@@ -342,10 +348,11 @@ func TestCRetiredTemplateIsSwept(t *testing.T) {
 // TestDProvidersDTO asserts the hub lists the infrastructure provider for a
 // logged-in user once the CatalogEntry is reconciled.
 func TestDProvidersDTO(t *testing.T) {
+	client := &http.Client{Timeout: 5 * time.Second}
 	ok := waitForCondition(t, 90*time.Second, func() (bool, string) {
 		req, _ := http.NewRequest(http.MethodGet, hubURL+"/api/providers", nil)
 		req.Header.Set("Authorization", "Bearer "+staticToken)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return false, err.Error()
 		}
@@ -390,7 +397,9 @@ func TestETenantSeesTemplatesCatalog(t *testing.T) {
 		t.Fatalf("create APIBinding: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = tenant.Resource(apiBindingGVR).Delete(context.Background(), "infrastructure", metav1.DeleteOptions{})
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = tenant.Resource(apiBindingGVR).Delete(ctx, "infrastructure", metav1.DeleteOptions{})
 	})
 
 	ok := waitForCondition(t, 60*time.Second, func() (bool, string) {
@@ -462,10 +471,11 @@ func loginStaticTokenAndGetCluster(t *testing.T) string {
 		b    []byte
 		code int
 	)
+	client := &http.Client{Timeout: 10 * time.Second}
 	if !waitForCondition(t, 90*time.Second, func() (bool, string) {
 		req, _ := http.NewRequest(http.MethodPost, hubURL+"/auth/token-login", nil)
 		req.Header.Set("Authorization", "Bearer "+staticToken)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return false, "token-login: " + err.Error()
 		}

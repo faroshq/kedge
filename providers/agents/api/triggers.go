@@ -42,7 +42,7 @@ type createTriggerRequest struct {
 }
 
 func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
+	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
@@ -82,7 +82,29 @@ func (s *Server) createTrigger(w http.ResponseWriter, r *http.Request) {
 		writeResourceError(w, err)
 		return
 	}
+	// Webhook-style sources get a token-guarded inbound URL (HMAC over
+	// cluster/name — no state to store). Best-effort status write; the token
+	// only works once the background executor is running.
+	if req.Source == agentsv1alpha1.TriggerSourceWebhook || req.Source == agentsv1alpha1.TriggerSourceGitHub {
+		if _, ok := s.requireIdentityCluster(w, id); ok {
+			if token := s.webhookToken(id.clusterID, req.Name); token != "" {
+				out.Status.WebhookPath = "/services/providers/agents/webhooks/triggers/" + id.clusterID + "/" + req.Name + "/" + token
+				if updated, uerr := c.Triggers().UpdateStatus(r.Context(), out, metav1.UpdateOptions{}); uerr == nil {
+					out = updated
+				}
+			}
+		}
+	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// requireIdentityCluster is a small guard so webhook URLs are only minted when
+// the request carries a resolved cluster.
+func (s *Server) requireIdentityCluster(_ http.ResponseWriter, id identity) (string, bool) {
+	if id.clusterID == "" {
+		return "", false
+	}
+	return id.clusterID, true
 }
 
 func (s *Server) deleteTrigger(w http.ResponseWriter, r *http.Request) {

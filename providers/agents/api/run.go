@@ -19,8 +19,8 @@ import (
 	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/engine"
+	"github.com/faroshq/provider-agents/llm"
 	"github.com/faroshq/provider-agents/store"
 )
 
@@ -79,13 +79,15 @@ type runResult struct {
 	} `json:"usage"`
 }
 
-// executeTask runs one agent turn to completion (no streaming) against a task
-// prompt, persisting the transcript and run record. It is the shared execution
-// path for chat "run now", schedule fires, and (later) event triggers. onDelta
-// is optional — pass nil for a non-streaming run.
+// executeTask runs one agent turn to completion against a task prompt,
+// persisting the transcript and run record. It is the shared execution path
+// for chat, run-now, background schedule fires, and webhook events. creds is
+// only used to read the agent's model-credential Secret — per-request callers
+// pass the tenant client (acting as the user), background callers pass a
+// virtual-workspace-backed getter. onDelta is optional (nil = non-streaming).
 func (s *Server) executeTask(
 	ctx context.Context,
-	c *agentsclient.Client,
+	creds llm.SecretGetter,
 	scope store.Scope,
 	agent *agentsv1alpha1.Agent,
 	sessionID, task, trigger, scheduleRef string,
@@ -96,7 +98,7 @@ func (s *Server) executeTask(
 		return runResult{}, err
 	}
 
-	model, err := s.buildChatModelCtx(ctx, c, agent)
+	model, err := s.buildChatModelCtx(ctx, creds, agent)
 	if err != nil {
 		return runResult{}, err
 	}

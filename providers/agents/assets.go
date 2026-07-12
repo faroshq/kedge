@@ -41,8 +41,8 @@ func withPortal(apiHandler http.Handler) (http.Handler, error) {
 	fileServer := http.FileServer(http.FS(distFS))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// API + health are owned by the API handler.
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/healthz" {
+		// API, health, and inbound webhooks are owned by the API handler.
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webhooks/") || r.URL.Path == "/healthz" {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}

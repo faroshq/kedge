@@ -90,10 +90,13 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if req.RunAt != "" {
-		if t, err := time.Parse(time.RFC3339, req.RunAt); err == nil {
-			mt := metav1.NewTime(t)
-			sched.Spec.RunAt = &mt
+		t, err := time.Parse(time.RFC3339, req.RunAt)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "runAt must be RFC3339 (e.g. 2026-07-13T09:00:00Z): "+err.Error())
+			return
 		}
+		mt := metav1.NewTime(t)
+		sched.Spec.RunAt = &mt
 	}
 	out, err := c.Schedules().Create(r.Context(), sched, metav1.CreateOptions{})
 	if err != nil {

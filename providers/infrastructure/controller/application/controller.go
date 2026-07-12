@@ -240,33 +240,19 @@ func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Registry image-pull: if the tenant minted a "<instance>-registry" Secret
-	// (App Studio does this at promote, from the git connection token), bridge
-	// it into the runtime namespace and attach it to the default ServiceAccount
-	// so every pod there can pull the private image — wired once, covering all
-	// components of every template kind. No-op when absent (public images /
-	// non-production instances).
-	if app.GetDeletionTimestamp().IsZero() {
-		if err := c.bridgeRegistryPullSecret(ctx, tenantClient, tenant, app.GetName()); err != nil {
-			return ctrl.Result{}, fmt.Errorf("bridging registry pull secret: %w", err)
-		}
-	}
-
-	// Exposure-only kinds: stamp the fqdn and stop — no cross-cluster state,
-	// no finalizer, nothing to clean up on deletion.
-	if !r.kind.oidc {
-		if !app.GetDeletionTimestamp().IsZero() {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, c.stampSpec(ctx, tenantClient, tenant, app, false)
-	}
-
-	// Deletion: clean up the cross-cluster bridged Secret, then drop the
-	// finalizer so the instance can be removed.
+	// Deletion: clean up all cross-cluster state — the OIDC bridged Secret (oidc
+	// kinds) and the registry pull Secret + its default-SA attachment (any
+	// promoted instance) — then drop the finalizer so the instance can be
+	// removed. Cross-cluster state has no ownerRef, so GC can't reap it.
 	if !app.GetDeletionTimestamp().IsZero() {
 		if controllerutil.ContainsFinalizer(app, finalizer) {
-			if err := c.deleteBridgedSecret(ctx, tenant, app.GetName()); err != nil {
-				return ctrl.Result{}, fmt.Errorf("cleanup bridged secret: %w", err)
+			if r.kind.oidc {
+				if err := c.deleteBridgedSecret(ctx, tenant, app.GetName()); err != nil {
+					return ctrl.Result{}, fmt.Errorf("cleanup bridged secret: %w", err)
+				}
+			}
+			if err := c.cleanupRegistryPullSecret(ctx, tenant, app.GetName()); err != nil {
+				return ctrl.Result{}, fmt.Errorf("cleanup registry pull secret: %w", err)
 			}
 			controllerutil.RemoveFinalizer(app, finalizer)
 			if err := tenantClient.Update(ctx, app); err != nil {
@@ -276,13 +262,34 @@ func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure our finalizer is present before we create cross-cluster state.
-	if !controllerutil.ContainsFinalizer(app, finalizer) {
+	// A finalizer is needed only when the instance creates cross-cluster state:
+	// oidc kinds always do; any kind does once the tenant mints a registry pull
+	// Secret at promote. Dev/public instances stay finalizer-free so their
+	// frequent create/delete never depends on this controller.
+	hasPull, err := c.tenantHasPullSecret(ctx, tenantClient, app.GetName())
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("checking registry pull secret: %w", err)
+	}
+	if (r.kind.oidc || hasPull) && !controllerutil.ContainsFinalizer(app, finalizer) {
 		controllerutil.AddFinalizer(app, finalizer)
 		if err := tenantClient.Update(ctx, app); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
 		return ctrl.Result{}, nil // our own update re-queues
+	}
+
+	// Bridge the registry pull Secret into the runtime namespace + attach it to
+	// the default ServiceAccount, so production pods pull the private image —
+	// wired once, covering all components of every template kind.
+	if hasPull {
+		if err := c.bridgeRegistryPullSecret(ctx, tenantClient, tenant, app.GetName()); err != nil {
+			return ctrl.Result{}, fmt.Errorf("bridging registry pull secret: %w", err)
+		}
+	}
+
+	// Exposure-only kinds: stamp the fqdn and stop.
+	if !r.kind.oidc {
+		return ctrl.Result{}, c.stampSpec(ctx, tenantClient, tenant, app, false)
 	}
 
 	// 1. Stamp spec.expose.fqdn + spec.credentialsSecretName (idempotent).
@@ -505,6 +512,67 @@ func (c *Controller) bridgeRegistryPullSecret(ctx context.Context, tenantClient 
 		return err
 	}
 	return c.ensureDefaultSAImagePullSecret(ctx, ns, secretName)
+}
+
+// tenantHasPullSecret reports whether the tenant minted an "<instance>-registry"
+// Secret (i.e. the instance was promoted with a private image).
+func (c *Controller) tenantHasPullSecret(ctx context.Context, tenantClient client.Client, name string) (bool, error) {
+	src := &unstructured.Unstructured{}
+	src.SetGroupVersionKind(secretGVK)
+	err := tenantClient.Get(ctx, types.NamespacedName{Namespace: c.cfg.CredentialsNamespace, Name: registryPullSecretName(name)}, src)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// cleanupRegistryPullSecret removes the bridged pull Secret and detaches it from
+// the default ServiceAccount when the instance is deleted. NotFound is success
+// (the namespace may already be gone).
+func (c *Controller) cleanupRegistryPullSecret(ctx context.Context, tenant, name string) error {
+	ns := kro.TenantNamespace(tenant)
+	secretName := registryPullSecretName(name)
+	if err := c.cfg.Runtime.Resource(secretGVR).Namespace(ns).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete runtime pull secret: %w", err)
+	}
+	return c.detachDefaultSAImagePullSecret(ctx, ns, secretName)
+}
+
+// detachDefaultSAImagePullSecret removes secretName from the default SA's
+// imagePullSecrets (idempotent). A missing namespace/SA is success.
+func (c *Controller) detachDefaultSAImagePullSecret(ctx context.Context, ns, secretName string) error {
+	sa, err := c.cfg.Runtime.Resource(serviceAccountGVR).Namespace(ns).Get(ctx, "default", metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get default serviceaccount in %s: %w", ns, err)
+	}
+	pullSecrets, _, _ := unstructured.NestedSlice(sa.Object, "imagePullSecrets")
+	kept := make([]any, 0, len(pullSecrets))
+	changed := false
+	for _, ps := range pullSecrets {
+		if m, ok := ps.(map[string]any); ok && m["name"] == secretName {
+			changed = true
+			continue
+		}
+		kept = append(kept, ps)
+	}
+	if !changed {
+		return nil
+	}
+	if len(kept) == 0 {
+		unstructured.RemoveNestedField(sa.Object, "imagePullSecrets")
+	} else if err := unstructured.SetNestedSlice(sa.Object, kept, "imagePullSecrets"); err != nil {
+		return err
+	}
+	if _, err := c.cfg.Runtime.Resource(serviceAccountGVR).Namespace(ns).Update(ctx, sa, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("detach imagePullSecret from default serviceaccount in %s: %w", ns, err)
+	}
+	return nil
 }
 
 // writeRuntimePullSecret upserts the dockerconfigjson pull Secret in the runtime

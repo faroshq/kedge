@@ -26,6 +26,7 @@ type MemoryStore struct {
 	inbox     map[string]InboxItem  // key: scope|itemID
 	toolCalls map[string][]ToolCall // key: scope
 	usage     map[string]Usage      // key: scope|agent|windowStart
+	tenants   map[string]TenantRef  // key: clusterID
 }
 
 // NewMemoryStore returns an empty in-memory store.
@@ -37,7 +38,25 @@ func NewMemoryStore() *MemoryStore {
 		inbox:     map[string]InboxItem{},
 		toolCalls: map[string][]ToolCall{},
 		usage:     map[string]Usage{},
+		tenants:   map[string]TenantRef{},
 	}
+}
+
+func (m *MemoryStore) SaveTenantRef(_ context.Context, clusterID string, ref TenantRef) error {
+	if clusterID == "" {
+		return fmt.Errorf("cluster ID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tenants[clusterID] = ref
+	return nil
+}
+
+func (m *MemoryStore) GetTenantRef(_ context.Context, clusterID string) (TenantRef, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ref, ok := m.tenants[clusterID]
+	return ref, ok, nil
 }
 
 func (m *MemoryStore) EnsureSchema(context.Context) error { return nil }

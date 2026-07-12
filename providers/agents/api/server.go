@@ -40,6 +40,16 @@ type Config struct {
 	InMemoryStore bool
 	// EncryptionKeys is the optional at-rest message encryption key set.
 	EncryptionKeys string
+	// ProviderKubeconfig is the provider service-account kubeconfig (targets
+	// the provider's kcp workspace). Enables the background executor:
+	// autonomous schedule firing + trigger webhooks via the APIExport virtual
+	// workspace. Empty → per-request execution only.
+	ProviderKubeconfig string
+	// WebhookKey signs trigger webhook URLs. Empty → derived from the provider
+	// kubeconfig contents.
+	WebhookKey string
+	// SchedulerInterval is the background poll cadence (default 30s).
+	SchedulerInterval time.Duration
 }
 
 // Server holds the provider's backend dependencies.
@@ -48,6 +58,7 @@ type Server struct {
 	store   store.Store
 	gql     *tenant.GraphQLClient
 	engine  *engine.Engine
+	bg      *background
 	started time.Time
 }
 
@@ -134,6 +145,10 @@ func (s *Server) Routes() http.Handler {
 	// Approvals inbox (M5).
 	mux.HandleFunc("GET /api/inbox", s.listInboxItems)
 	mux.HandleFunc("POST /api/inbox/{id}/resolve", s.resolveInboxItem)
+
+	// Inbound trigger webhooks — token-authenticated, no tenant headers
+	// (external senders reach this through the hub's anonymous forwarding).
+	mux.HandleFunc("POST /webhooks/triggers/{cluster}/{name}/{token}", s.webhookTrigger)
 
 	return mux
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/store"
@@ -137,5 +138,11 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating tenant client: "+err.Error())
 		return nil, identity{}, false
 	}
+	// Record the cluster→tenant mapping so background execution (which only
+	// sees cluster IDs via the APIExport virtual workspace) writes transcripts
+	// under the same scope the portal reads.
+	_ = s.store.SaveTenantRef(r.Context(), id.clusterID, store.TenantRef{
+		OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, UpdatedAt: time.Now().UTC(),
+	})
 	return agentsclient.NewFromGraphQL(scope), id, true
 }

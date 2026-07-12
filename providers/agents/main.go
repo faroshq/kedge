@@ -72,15 +72,23 @@ func runServe() {
 	defer stop()
 
 	srv, err := api.New(ctx, api.Config{
-		HubURL:         os.Getenv("KEDGE_HUB_URL"),
-		HubInsecure:    os.Getenv("KEDGE_HUB_INSECURE") == "true",
-		DatabaseURL:    os.Getenv("AGENTS_DATABASE_URL"),
-		InMemoryStore:  os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
-		EncryptionKeys: os.Getenv("AGENTS_MESSAGE_ENCRYPTION_KEYS"),
+		HubURL:             os.Getenv("KEDGE_HUB_URL"),
+		HubInsecure:        os.Getenv("KEDGE_HUB_INSECURE") == "true",
+		DatabaseURL:        os.Getenv("AGENTS_DATABASE_URL"),
+		InMemoryStore:      os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
+		EncryptionKeys:     os.Getenv("AGENTS_MESSAGE_ENCRYPTION_KEYS"),
+		ProviderKubeconfig: os.Getenv("KEDGE_PROVIDER_KUBECONFIG"),
+		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
+		SchedulerInterval:  parseDuration(os.Getenv("AGENTS_SCHEDULER_INTERVAL")),
 	})
 	if err != nil {
 		log.Fatalf("build server: %v", err)
 	}
+
+	// Background executor: autonomous schedule firing + trigger webhooks via
+	// the APIExport virtual workspace. Interface-based (see the executor
+	// package) so the in-process pool can later swap for a durable engine.
+	srv.StartBackground(ctx)
 
 	handler, err := withPortal(srv.Routes())
 	if err != nil {
@@ -110,6 +118,20 @@ func runServe() {
 		log.Printf("shutdown error: %v", err)
 	}
 	srv.Close()
+}
+
+// parseDuration parses a Go duration ("45s", "2m"); empty or invalid → 0
+// (the server default applies).
+func parseDuration(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		log.Printf("invalid AGENTS_SCHEDULER_INTERVAL %q — using default", s)
+		return 0
+	}
+	return d
 }
 
 func logMiddleware(next http.Handler) http.Handler {

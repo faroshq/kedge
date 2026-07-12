@@ -70,7 +70,7 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 	switch projectToolBaseName(spec.Name) {
 	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolCheckProjectBuild, projectToolGetBuildLogs:
 		return projectAssistantToolBundleWorkflow
-	case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL,
+	case projectToolGetRuntimeStatus, projectToolGetPreviewURL,
 		projectToolGetRuntimeLogs, projectToolRestartRuntime, projectToolSetRuntimeEnv, projectToolPromoteProject, projectToolRebuildProject:
 		return projectAssistantToolBundleRuntime
 	case projectToolListProjectFiles, projectToolReadProjectFile, projectToolSearchProjectFiles:

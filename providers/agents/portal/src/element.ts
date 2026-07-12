@@ -13,7 +13,7 @@ export interface KedgeContext {
 
 interface Agent {
   metadata: { name: string }
-  spec: { displayName?: string; description?: string; models?: Record<string, string> }
+  spec: { displayName?: string; description?: string; models?: Record<string, string>; defaultNotifyConnection?: string }
 }
 interface Credential {
   name: string
@@ -35,7 +35,7 @@ interface Connection {
 interface Trigger {
   metadata: { name: string }
   spec: { agentRef: string; source: string; connectionRef?: string; task?: string; suspend?: boolean }
-  status?: { lastFired?: string }
+  status?: { lastFired?: string; webhookPath?: string }
 }
 interface InboxItem {
   id: string
@@ -514,6 +514,10 @@ export class AgentsElement extends HTMLElement {
     const credOptions = (selected?: string) =>
       `<option value="">— no model —</option>` +
       this._credentials.map((c) => `<option value="${escapeHTML(c.name)}" ${c.name === selected ? 'selected' : ''}>${escapeHTML(c.name)}${c.model ? ` (${escapeHTML(c.model)})` : ''}</option>`).join('')
+    const messaging = this._connections.filter((c) => ['telegram', 'slack', 'smtp'].includes(c.spec.type))
+    const notifyOptions = (selected?: string) =>
+      `<option value="">— no notify —</option>` +
+      messaging.map((c) => `<option value="${escapeHTML(c.metadata.name)}" ${c.metadata.name === selected ? 'selected' : ''}>notify: ${escapeHTML(c.metadata.name)}</option>`).join('')
     return `
       <div class="agents-root">
         <aside class="agents-side">
@@ -530,6 +534,9 @@ export class AgentsElement extends HTMLElement {
                         </div>
                         <select class="agents-cred" data-reassign="${escapeHTML(a.metadata.name)}" title="Model credential">
                           ${credOptions(a.spec?.models?.chat)}
+                        </select>
+                        <select class="agents-cred" data-notify="${escapeHTML(a.metadata.name)}" title="Where background runs deliver output">
+                          ${notifyOptions(a.spec?.defaultNotifyConnection)}
                         </select>
                       </li>`,
                     )
@@ -585,6 +592,12 @@ export class AgentsElement extends HTMLElement {
       el.addEventListener('change', (e) => {
         e.stopPropagation()
         void this._reassignAgent(el.dataset.reassign!, el.value)
+      }),
+    )
+    this.querySelectorAll<HTMLSelectElement>('[data-notify]').forEach((el) =>
+      el.addEventListener('change', (e) => {
+        e.stopPropagation()
+        void this._setNotify(el.dataset.notify!, el.value)
       }),
     )
     const cf = this.querySelector<HTMLFormElement>('.agents-create')

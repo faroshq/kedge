@@ -101,7 +101,6 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"plan_project_changes",
 		"check_project_readiness",
 		"prepare_project_deployment",
-		"deploy_project_runtime",
 		"get_runtime_status",
 		"get_preview_url",
 		"get_runtime_logs",
@@ -155,7 +154,6 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"plan_project_changes",
 		"check_project_readiness",
 		"prepare_project_deployment",
-		"deploy_project_runtime",
 		"get_runtime_status",
 		"get_preview_url",
 		"get_runtime_logs",
@@ -661,7 +659,7 @@ func TestGenerateProjectAssistantStreamHonorsRuntimeStateRouterDecision(t *testi
 			t.Fatalf("model input missing %s:\n%s", want, joined)
 		}
 	}
-	for _, unwanted := range []string{projectToolDeployProjectRuntime, projectToolWriteFile, projectToolCommitProjectFiles} {
+	for _, unwanted := range []string{projectToolRestartRuntime, projectToolWriteFile, projectToolCommitProjectFiles} {
 		if strings.Contains(joined, unwanted) {
 			t.Fatalf("model input unexpectedly mentions %s:\n%s", unwanted, joined)
 		}
@@ -680,7 +678,7 @@ func TestProjectSystemPromptRequiresWorkspaceInspectBeforeEdit(t *testing.T) {
 	}
 
 	prompt := projectSystemPrompt(project, repository, projectAssistantTurnProfileImplementation)
-	for _, want := range []string{"check_project_readiness", "prepare_project_deployment", "deploy_project_runtime", "get_runtime_status", "get_preview_url", "list_project_files", "read_project_file", "search_project_files", "write_file", "apply_patch", "mkdir", "commit_project_files"} {
+	for _, want := range []string{"check_project_readiness", "prepare_project_deployment", "get_runtime_status", "get_preview_url", "list_project_files", "read_project_file", "search_project_files", "write_file", "apply_patch", "mkdir", "commit_project_files"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
@@ -2300,8 +2298,8 @@ func TestResumeProjectAssistantRunPersistsAssistantTextBeforeNextPause(t *testin
 			// Approving the first write grants every write until the next commit,
 			// so the next pause has to come from a tool that still always asks.
 			secondCall := chatStreamingCall{Index: 0, ID: "call-second-runtime", Type: "function"}
-			secondCall.Function.Name = projectToolDeployProjectRuntime
-			secondCall.Function.Arguments = `{"targetRef":"runtime-a","image":"ghcr.io/demo/app:latest","port":8080,"intent":"preview"}`
+			secondCall.Function.Name = projectToolRestartRuntime
+			secondCall.Function.Arguments = `{}`
 			model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
 				{Message: einoschema.AssistantMessage("", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{firstCall}))},
 				{Message: einoschema.AssistantMessage("First change applied. ", projectEinoToolCallsFromStreamingForTest([]chatStreamingCall{secondCall}))},

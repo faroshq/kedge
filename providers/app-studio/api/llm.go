@@ -73,7 +73,6 @@ const (
 	projectToolPlanProjectChanges             = "plan_project_changes"
 	projectToolCheckProjectReadiness          = "check_project_readiness"
 	projectToolPrepareProjectDeployment       = "prepare_project_deployment"
-	projectToolDeployProjectRuntime           = "deploy_project_runtime"
 	projectToolGetRuntimeStatus               = "get_runtime_status"
 	projectToolGetPreviewURL                  = "get_preview_url"
 	projectToolGetRuntimeLogs                 = "get_runtime_logs"
@@ -629,8 +628,6 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return summarizeProjectToolKeyValues(args, []string{"query", "maxResults"})
 	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 		return summarizeProjectPlanningWorkflowArgs(args)
-	case projectToolDeployProjectRuntime:
-		return summarizeProjectToolKeyValues(args, []string{"targetRef", "appName", "image", "port", "intent"})
 	case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime:
 		return ""
 	case projectToolGetRuntimeLogs:
@@ -727,7 +724,7 @@ func summarizeProjectToolResult(name, result string) string {
 			}
 		case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment:
 			return summarizeProjectReadinessWorkflowResult(decoded)
-		case projectToolDeployProjectRuntime, projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime, projectToolSetRuntimeEnv:
+		case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolRestartRuntime, projectToolSetRuntimeEnv:
 			return summarizeProjectRuntimeWorkflowResult(decoded)
 		case projectToolGetRuntimeLogs:
 			if lines := projectToolStringList(decoded["lines"]); len(lines) > 0 {
@@ -1689,7 +1686,7 @@ func appendProjectAssistantBuilderPrompt(b *strings.Builder, repoRef string) {
 	b.WriteString("Use check_project_readiness before mutating or verifying existing work so repository, memory, workspace context, and recommended checks come from the App Studio graph workflow. ")
 	b.WriteString("When a named App Studio tool is deferred, load it first with tool_search using select:<tool_name>, then call the loaded tool. ")
 	b.WriteString("Use prepare_project_deployment before discussing deployment handoff so build artifact readiness, blockers, and runtime handoff constraints come from the App Studio graph workflow. ")
-	b.WriteString("To take a project to production, use promote_project (see the build/promote guidance above) — do not use deploy_project_runtime, which is a superseded handoff stub. Use get_runtime_status and get_preview_url as App Studio runtime graph workflows for the development sandbox. ")
+	b.WriteString("To take a project to production, use promote_project (see the build/promote guidance above). Use get_runtime_status and get_preview_url as App Studio runtime graph workflows for the development sandbox. ")
 	b.WriteString("For supporting infrastructure, use infrastructure__list_templates before naming any available template, infrastructure__describe_template before recommending values, and infrastructure__provision only after the user explicitly asks to create supporting infrastructure and the permission flow approves the call. ")
 	appendProjectAssistantTemplateFitPrompt(b)
 	b.WriteString("When the user asks for a supporting capability such as persistent data, first decide whether the current sandbox app can satisfy the development need before provisioning infrastructure. ")

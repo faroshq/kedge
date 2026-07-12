@@ -21,7 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/faroshq/provider-agents/apis/v1alpha1"
-	agentsclient "github.com/faroshq/provider-agents/client"
 	"github.com/faroshq/provider-agents/llm"
 )
 
@@ -78,6 +77,9 @@ type createAgentRequest struct {
 	BudgetTokens int64 `json:"budgetTokens,omitempty"`
 	// BudgetUSD caps spend per month as a decimal string (empty = unlimited).
 	BudgetUSD string `json:"budgetUSD,omitempty"`
+	// NotifyConnection names the messaging Connection background runs deliver
+	// output/alerts to.
+	NotifyConnection string `json:"notifyConnection,omitempty"`
 }
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +115,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	if req.BudgetTokens > 0 || strings.TrimSpace(req.BudgetUSD) != "" {
 		a.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "month", TokenLimit: req.BudgetTokens, USDLimit: strings.TrimSpace(req.BudgetUSD)}
 	}
+	a.Spec.DefaultNotifyConnection = strings.TrimSpace(req.NotifyConnection)
 	out, err := c.Agents().Create(r.Context(), a, metav1.CreateOptions{})
 	if err != nil {
 		writeResourceError(w, err)
@@ -122,11 +125,12 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateAgentRequest struct {
-	ModelCredential *string `json:"modelCredential,omitempty"`
-	SystemPrompt    *string `json:"systemPrompt,omitempty"`
-	Autonomy        *string `json:"autonomy,omitempty"`
-	BudgetTokens    *int64  `json:"budgetTokens,omitempty"`
-	BudgetUSD       *string `json:"budgetUSD,omitempty"`
+	ModelCredential  *string `json:"modelCredential,omitempty"`
+	SystemPrompt     *string `json:"systemPrompt,omitempty"`
+	Autonomy         *string `json:"autonomy,omitempty"`
+	BudgetTokens     *int64  `json:"budgetTokens,omitempty"`
+	BudgetUSD        *string `json:"budgetUSD,omitempty"`
+	NotifyConnection *string `json:"notifyConnection,omitempty"`
 }
 
 // updateAgent patches mutable agent fields â€” notably the assigned model
@@ -163,6 +167,9 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Autonomy != nil {
 		agent.Spec.Autonomy = *req.Autonomy
+	}
+	if req.NotifyConnection != nil {
+		agent.Spec.DefaultNotifyConnection = strings.TrimSpace(*req.NotifyConnection)
 	}
 	if req.BudgetTokens != nil || req.BudgetUSD != nil {
 		if agent.Spec.Budget == nil {
@@ -292,12 +299,12 @@ var errNoCredential = errors.New("this agent has no model credential assigned â€
 // buildChatModelCtx resolves the agent's assigned named model credential and
 // builds the Eino model from it. Agents reference a credential by name in
 // spec.models["chat"]; the credential is its own Secret (kedge-agents-model-<name>).
-func (s *Server) buildChatModelCtx(ctx context.Context, c *agentsclient.Client, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
+func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
 	cred := strings.TrimSpace(agent.Spec.Models["chat"])
 	if cred == "" {
 		return nil, errNoCredential
 	}
-	profile, err := llm.LoadCredential(ctx, c, cred)
+	profile, err := llm.LoadCredential(ctx, creds, cred)
 	if err != nil {
 		return nil, err
 	}

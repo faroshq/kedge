@@ -174,6 +174,17 @@ type Page struct {
 	NextCursor string    `json:"nextCursor,omitempty"`
 }
 
+// TenantRef maps a kcp logical-cluster ID to the org/workspace scope the UI
+// reads with. Recorded on every authenticated request; consumed by background
+// execution (which only knows the cluster ID from the APIExport virtual
+// workspace) so scheduled-run transcripts land in the same scope the portal
+// lists.
+type TenantRef struct {
+	OrgUUID       string    `json:"orgUUID"`
+	WorkspaceUUID string    `json:"workspaceUUID"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
 // Store is the agents provider persistence boundary. Implementations: Postgres
 // (production) and an in-memory backend (dev/tests).
 type Store interface {
@@ -206,6 +217,10 @@ type Store interface {
 	AppendToolCall(ctx context.Context, scope Scope, tc ToolCall) error
 	AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error)
 	GetUsage(ctx context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error)
+
+	// Tenant mapping (cluster ID → org/workspace scope) for background runs.
+	SaveTenantRef(ctx context.Context, clusterID string, ref TenantRef) error
+	GetTenantRef(ctx context.Context, clusterID string) (TenantRef, bool, error)
 
 	// Retention / teardown.
 	DeleteAgentData(ctx context.Context, scope Scope, agentName string) error

@@ -60,19 +60,38 @@ func Send(ctx context.Context, m Message) error {
 	}
 }
 
-// sendDiscord posts to a Discord incoming-webhook URL (the connection's
-// channel). No token or bot needed: create a webhook under a Discord channel's
-// Integrations settings and paste the URL. Discord caps content at 2000 chars.
+// sendDiscord delivers to Discord in one of two modes:
+//   - Bot: Token is a bot token and Target is a channel id → REST message on
+//     that channel (the mode gateway-bot chat replies use).
+//   - Webhook: Target is an incoming-webhook URL → post directly (outbound
+//     notify only, no token).
+//
+// Discord caps message content at 2000 chars.
 func sendDiscord(ctx context.Context, m Message) error {
 	if m.Target == "" {
-		return fmt.Errorf("discord needs a webhook URL as the channel (Server Settings → Integrations → Webhooks → New Webhook → Copy URL)")
+		return fmt.Errorf("discord needs a bot token + channel id, or an incoming-webhook URL")
 	}
 	text := m.Text
 	if len(text) > 2000 {
 		text = text[:2000]
 	}
 	body, _ := json.Marshal(map[string]string{"content": text})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.Target, bytes.NewReader(body))
+
+	var req *http.Request
+	var err error
+	if strings.HasPrefix(m.Target, "https://") {
+		// Webhook URL mode.
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, m.Target, bytes.NewReader(body))
+	} else {
+		// Bot mode: POST a message to the channel id as the bot.
+		if m.Token == "" {
+			return fmt.Errorf("discord channel id needs a bot token")
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, "https://discord.com/api/v10/channels/"+m.Target+"/messages", bytes.NewReader(body))
+		if req != nil {
+			req.Header.Set("Authorization", "Bot "+m.Token)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -83,7 +102,7 @@ func sendDiscord(ctx context.Context, m Message) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("discord webhook: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("discord send: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

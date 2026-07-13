@@ -70,6 +70,8 @@ type background struct {
 
 	interval time.Duration
 	key      []byte // webhook HMAC key ("" → webhooks disabled)
+
+	discord *discordManager // Discord gateway bots (inbound chat)
 }
 
 // StartBackground wires and starts the background executor + scheduler loop.
@@ -91,6 +93,7 @@ func (s *Server) StartBackground(ctx context.Context) {
 	}
 	bg := &background{server: s, base: base, interval: interval, key: s.webhookKeyBytes()}
 	bg.exec = executor.NewInProcess(bg.handle, 4, 10*time.Minute)
+	bg.discord = newDiscordManager(bg)
 	_ = bg.exec.Start(ctx)
 	s.bg = bg
 	go bg.loop(ctx)
@@ -201,9 +204,15 @@ func (b *background) loop(ctx context.Context) {
 	if err := b.ensureVW(ctx); err != nil {
 		log.Printf("background: virtual workspace not ready at startup: %v", err)
 	}
+	if b.vwURL != "" && b.discord != nil {
+		b.discord.reconcile(ctx)
+	}
 	for {
 		select {
 		case <-ctx.Done():
+			if b.discord != nil {
+				b.discord.closeAll()
+			}
 			return
 		case <-t.C:
 			if err := b.ensureVW(ctx); err != nil {
@@ -212,6 +221,9 @@ func (b *background) loop(ctx context.Context) {
 			}
 			b.tick(ctx)
 			b.refreshOAuthTokens(ctx)
+			if b.discord != nil {
+				b.discord.reconcile(ctx)
+			}
 		}
 	}
 }
@@ -394,11 +406,11 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// the user is standing in — not the notify connection.
 	if job.Kind == executor.KindChannel {
 		if runErr != nil {
-			b.replyToChannel(ctx, dyn, job.SourceName, "⚠️ "+runErr.Error())
+			b.replyToChannelTarget(ctx, dyn, job.SourceName, job.ReplyTarget, "⚠️ "+runErr.Error())
 			return runErr
 		}
 		if out := strings.TrimSpace(res.Content); out != "" {
-			b.replyToChannel(ctx, dyn, job.SourceName, truncate(out, 3500))
+			b.replyToChannelTarget(ctx, dyn, job.SourceName, job.ReplyTarget, truncate(out, 3500))
 		}
 		return nil
 	}
@@ -482,6 +494,13 @@ func (b *background) notify(ctx context.Context, dyn dynamic.Interface, agent *a
 // replyToChannel sends text through a named messaging connection to its
 // configured chat/channel (the outbound half of channel conversations).
 func (b *background) replyToChannel(ctx context.Context, dyn dynamic.Interface, connName, text string) {
+	b.replyToChannelTarget(ctx, dyn, connName, "", text)
+}
+
+// replyToChannelTarget delivers a channel reply, optionally to a specific target
+// (channel/chat id) instead of the connection's configured default — the
+// Discord gateway bot replies to whichever channel the user typed in.
+func (b *background) replyToChannelTarget(ctx context.Context, dyn dynamic.Interface, connName, targetOverride, text string) {
 	cu, err := dyn.Resource(agentsclient.ConnectionGVR).Get(ctx, connName, metav1.GetOptions{})
 	if err != nil {
 		log.Printf("background: channel connection %q: %v", connName, err)
@@ -497,8 +516,12 @@ func (b *background) replyToChannel(ctx context.Context, dyn dynamic.Interface, 
 			token = string(v)
 		}
 	}
+	target := conn.Spec.Channel
+	if targetOverride != "" {
+		target = targetOverride
+	}
 	if err := channels.Send(ctx, channels.Message{
-		Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config, Text: text,
+		Type: conn.Spec.Type, Token: token, Target: target, Config: conn.Spec.Config, Text: text,
 	}); err != nil {
 		log.Printf("background: send via %q failed: %v", connName, err)
 	}

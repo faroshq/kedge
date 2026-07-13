@@ -244,16 +244,28 @@ const CONN_DEFS: ConnTypeDef[] = [
     id: 'discord',
     label: 'Discord',
     glyph: '🎮',
-    desc: 'Notify a Discord channel (easiest to set up)',
-    fields: [
+    desc: 'Chat with your agent (bot) or just notify (webhook)',
+    modes: [
       {
-        key: 'channel',
-        label: 'Webhook URL',
-        required: true,
-        hint: 'Discord channel → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL. No bot or token needed.',
+        id: 'bot',
+        label: 'Bot (two-way chat)',
+        fields: [
+          { key: 'token', label: 'Bot token', password: true, required: true, hint: 'Discord dev portal → your app → Bot → Reset Token. Enable the MESSAGE CONTENT intent there, then invite the bot to your server.' },
+          { key: 'channel', label: 'Channel ID (optional)', hint: 'Restrict the bot to one channel (right-click channel → Copy ID). Blank = respond in DMs and when @-mentioned.' },
+        ],
+      },
+      {
+        id: 'webhook',
+        label: 'Webhook (notify only)',
+        fields: [
+          { key: 'channel', label: 'Webhook URL', required: true, hint: 'Channel → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL. Outbound only, no chat.' },
+        ],
       },
     ],
-    build: (v) => ({ type: 'discord', name: v.name, channel: v.channel }),
+    build: (v, mode) =>
+      mode === 'webhook'
+        ? { type: 'discord', name: v.name, channel: v.channel }
+        : { type: 'discord', name: v.name, secret: v.token, channel: v.channel || undefined },
   },
   {
     id: 'smtp',

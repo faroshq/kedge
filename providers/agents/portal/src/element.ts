@@ -337,18 +337,39 @@ export class AgentsElement extends HTMLElement {
   get kedgeContext(): KedgeContext | null {
     return this._ctx
   }
+  private _onHashChange = (): void => {
+    this._applyRoute()
+    this._render()
+  }
   connectedCallback(): void {
+    this._applyRoute()
+    window.addEventListener('hashchange', this._onHashChange)
     this._render()
     this._maybeLoad()
+  }
+  disconnectedCallback(): void {
+    window.removeEventListener('hashchange', this._onHashChange)
   }
 
   private _maybeLoad(): void {
     if (!this._ctx?.basePath || !this._hasWorkspace()) return
     const key = this._ctx.tenant || JSON.stringify(this._tenant())
     if (key === this._loadedTenant) return
+    // Switching tenants (not the first load) resets to home so we never show a
+    // stale agent from another workspace. On first load we keep whatever the
+    // hash route restored, so a refresh stays put.
+    if (this._loadedTenant !== null) {
+      this._selected = null
+      this._shared = null
+      if (location.hash && location.hash !== '#/') {
+        try {
+          history.replaceState(null, '', '#/')
+        } catch {
+          /* ignore */
+        }
+      }
+    }
     this._loadedTenant = key
-    this._selected = null
-    this._shared = null
     this._messages = []
     void this._loadAgents()
     void this._loadCredentials()
@@ -503,6 +524,43 @@ export class AgentsElement extends HTMLElement {
     this._selected = null
     this._shared = null
     this._render()
+  }
+
+  // ---- hash routing --------------------------------------------------------
+  // The portal is an embedded micro-frontend, so we route via location.hash
+  // (never sent to the host server): #/, #/connections, #/models, #/inbox,
+  // #/agent/<name>/<tab>. The hash mirrors state on every render (replaceState,
+  // which does NOT fire hashchange, so no loop) and is restored on load and on
+  // browser back/forward — a refresh keeps you where you were.
+  private _hashFor(): string {
+    if (this._selected) return `#/agent/${encodeURIComponent(this._selected)}/${this._agentTab}`
+    if (this._shared) return `#/${this._shared}`
+    return '#/'
+  }
+  private _syncHash(): void {
+    const h = this._hashFor()
+    if (location.hash !== h) {
+      try {
+        history.replaceState(null, '', h)
+      } catch {
+        /* sandboxed iframe without same-origin history — ignore */
+      }
+    }
+  }
+  private _applyRoute(): void {
+    const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean)
+    if (parts[0] === 'agent' && parts[1]) {
+      this._selected = decodeURIComponent(parts[1])
+      this._shared = null
+      const tab = parts[2] as AgentTab
+      this._agentTab = AGENT_TABS.some(([id]) => id === tab) ? tab : 'chat'
+    } else if (parts[0] === 'models' || parts[0] === 'connections' || parts[0] === 'inbox') {
+      this._shared = parts[0]
+      this._selected = null
+    } else {
+      this._selected = null
+      this._shared = null
+    }
   }
 
   // ---- agent actions -------------------------------------------------------
@@ -804,6 +862,7 @@ export class AgentsElement extends HTMLElement {
       this.innerHTML = `<div class="agents-empty"><p class="muted">Select an organization and workspace in the sidebar to use your agents.</p></div>`
       return
     }
+    this._syncHash()
 
     let inner: string
     if (this._shared) {

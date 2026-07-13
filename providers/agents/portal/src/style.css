@@ -251,6 +251,15 @@ kedge-provider-agents .agents-conn-tile:hover { border-color: var(--color-accent
 kedge-provider-agents .agents-conn-glyph { font-size: 22px; }
 kedge-provider-agents .agents-conn-name { font-weight: 600; font-size: 14px; }
 kedge-provider-agents .agents-conn-tile .muted { font-size: 12px; }
+kedge-provider-agents .agents-setup {
+  border: 1px solid var(--color-border-default, rgba(0,0,0,0.12)); border-radius: 10px;
+  padding: 10px 12px; background: var(--color-surface-overlay, rgba(0,0,0,0.03)); font-size: 13px;
+}
+kedge-provider-agents .agents-setup summary { cursor: pointer; font-weight: 600; }
+kedge-provider-agents .agents-setup ol { margin: 10px 0 2px; padding-left: 20px; display: flex; flex-direction: column; gap: 7px; }
+kedge-provider-agents .agents-setup li { line-height: 1.45; }
+kedge-provider-agents .agents-setup a { color: var(--color-accent, #6d4fe0); }
+kedge-provider-agents .agents-setup code { font-size: 12px; }
 kedge-provider-agents .agents-conn-group { display: flex; flex-direction: column; gap: 8px; }
 kedge-provider-agents .agents-conn-grouphead {
   margin: 4px 0 0; font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;

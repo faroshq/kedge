@@ -96,6 +96,9 @@ interface ConnTypeDef {
   label: string
   glyph: string
   desc: string
+  // setup is an ordered list of setup steps (HTML allowed), shown as a guide at
+  // the top of the create form so users know what to prepare.
+  setup?: string[]
   fields?: ConnField[]
   modes?: ConnMode[]
   advanced?: ConnField[]
@@ -246,8 +249,15 @@ const CONN_DEFS: ConnTypeDef[] = [
     label: 'Discord chat',
     glyph: '🎮',
     desc: 'Two-way chat with your agent (bot)',
+    setup: [
+      'Create the bot: <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a> → <strong>New Application</strong> → <strong>Bot</strong> → <strong>Reset Token</strong> → copy it into <strong>Bot token</strong> below.',
+      'Enable reading messages: on that same <strong>Bot</strong> page, turn ON <strong>MESSAGE CONTENT INTENT</strong> (privileged). Without it the bot can’t see what you type.',
+      'Invite it to your server: <strong>OAuth2 → URL Generator</strong> → scope <code>bot</code> → permissions <strong>View Channel</strong>, <strong>Send Messages</strong>, <strong>Read Message History</strong> → open the generated URL and add the bot. (Missing these → 403 on send.)',
+      '(Optional) Home channel: enable <strong>Developer Mode</strong> (User Settings → Advanced), right-click a text channel → <strong>Copy ID</strong> → paste below. Needed if you want notify/scheduled output delivered to Discord.',
+      'Chat: <strong>DM the bot</strong> or <strong>@-mention</strong> it in any channel it can see. With a home channel set, it also replies there without a mention.',
+    ],
     fields: [
-      { key: 'token', label: 'Bot token', password: true, required: true, hint: 'Discord dev portal → your app → Bot → Reset Token. Enable the MESSAGE CONTENT intent there, then invite the bot to your server.' },
+      { key: 'token', label: 'Bot token', password: true, required: true, hint: 'From the Bot page → Reset Token (step 1).' },
       { key: 'channel', label: 'Home channel ID', hint: 'Right-click a channel → Copy ID. The bot auto-replies here (no @-mention) and scheduled/notify output is delivered here. Blank still works for chat — it replies to DMs and @-mentions in any channel — but leave it set if you want this agent to notify you.' },
     ],
     build: (v) => ({ type: 'discord', name: v.name, secret: v.token, channel: v.channel || undefined }),
@@ -1591,6 +1601,11 @@ export class AgentsElement extends HTMLElement {
           <h4>${def.glyph} ${escapeHTML(def.label)}</h4>
         </div>
         <p class="muted">${escapeHTML(def.desc)}</p>
+        ${
+          def.setup
+            ? `<details class="agents-setup" open><summary>Before you start — setup steps</summary><ol>${def.setup.map((s) => `<li>${s}</li>`).join('')}</ol></details>`
+            : ''
+        }
         <label>Name *<input name="name" required pattern="[a-z0-9-]+" placeholder="my-${def.id}" /><span class="agents-hint">A short id you'll reference from agents.</span></label>
         ${
           def.modes

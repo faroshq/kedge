@@ -114,6 +114,7 @@ const CONN_CATEGORY: Record<string, ConnCategory> = {
   telegram: 'channel',
   slack: 'channel',
   discord: 'channel',
+  'discord-webhook': 'channel',
   smtp: 'channel',
   http: 'connection',
 }
@@ -242,30 +243,24 @@ const CONN_DEFS: ConnTypeDef[] = [
   },
   {
     id: 'discord',
-    label: 'Discord',
+    label: 'Discord chat',
     glyph: '🎮',
-    desc: 'Chat with your agent (bot) or just notify (webhook)',
-    modes: [
-      {
-        id: 'bot',
-        label: 'Bot (two-way chat)',
-        fields: [
-          { key: 'token', label: 'Bot token', password: true, required: true, hint: 'Discord dev portal → your app → Bot → Reset Token. Enable the MESSAGE CONTENT intent there, then invite the bot to your server.' },
-          { key: 'channel', label: 'Channel ID (optional)', hint: 'Restrict the bot to one channel (right-click channel → Copy ID). Blank = respond in DMs and when @-mentioned.' },
-        ],
-      },
-      {
-        id: 'webhook',
-        label: 'Webhook (notify only)',
-        fields: [
-          { key: 'channel', label: 'Webhook URL', required: true, hint: 'Channel → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL. Outbound only, no chat.' },
-        ],
-      },
+    desc: 'Two-way chat with your agent (bot)',
+    fields: [
+      { key: 'token', label: 'Bot token', password: true, required: true, hint: 'Discord dev portal → your app → Bot → Reset Token. Enable the MESSAGE CONTENT intent there, then invite the bot to your server.' },
+      { key: 'channel', label: 'Channel ID (optional)', hint: 'Restrict the bot to one channel (right-click channel → Copy ID). Blank = respond in DMs and when @-mentioned.' },
     ],
-    build: (v, mode) =>
-      mode === 'webhook'
-        ? { type: 'discord', name: v.name, channel: v.channel }
-        : { type: 'discord', name: v.name, secret: v.token, channel: v.channel || undefined },
+    build: (v) => ({ type: 'discord', name: v.name, secret: v.token, channel: v.channel || undefined }),
+  },
+  {
+    id: 'discord-webhook',
+    label: 'Discord webhook',
+    glyph: '📣',
+    desc: 'Notify a Discord channel (outbound only)',
+    fields: [
+      { key: 'channel', label: 'Webhook URL', required: true, hint: 'Channel → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL. Outbound only, no chat.' },
+    ],
+    build: (v) => ({ type: 'discord', name: v.name, channel: v.channel }),
   },
   {
     id: 'smtp',
@@ -1543,28 +1538,38 @@ export class AgentsElement extends HTMLElement {
   private _renderConnEditForm(c: Connection): string {
     const cat = connCategory(c.spec.type)
     const usesChannel = cat === 'channel' || !!c.spec.channel
-    // The main endpoint field is the channel target for channels, else baseURL.
-    const endpointLabel = usesChannel
-      ? c.spec.type === 'discord' || c.spec.type === 'slack'
-        ? 'Webhook URL / target'
-        : c.spec.type === 'smtp'
-          ? 'Send to'
-          : 'Channel / chat ID'
-      : 'Endpoint URL'
+    // Discord is one backend type with two shapes: a webhook (channel is a
+    // https:// URL, no secret) or a chat bot (channel is a numeric id or blank,
+    // secret is the bot token). Detect so editing shows the right form.
+    const isDiscord = c.spec.type === 'discord'
+    const isDiscordWebhook = isDiscord && (c.spec.channel || '').startsWith('https://')
+    const isDiscordBot = isDiscord && !isDiscordWebhook
+
+    let endpointLabel: string
+    if (isDiscordWebhook) endpointLabel = 'Webhook URL'
+    else if (isDiscordBot) endpointLabel = 'Channel ID (optional)'
+    else if (!usesChannel) endpointLabel = 'Endpoint URL'
+    else if (c.spec.type === 'slack') endpointLabel = 'Webhook URL / channel'
+    else if (c.spec.type === 'smtp') endpointLabel = 'Send to'
+    else endpointLabel = 'Channel / chat ID'
+
     const endpointVal = usesChannel ? c.spec.channel || '' : c.spec.baseURL || ''
     const isOAuth = c.spec.auth === 'oauth'
+    // Webhook discord has no secret; bot has a bot token.
+    const secretField = isDiscordWebhook
+      ? ''
+      : isOAuth
+        ? '<p class="agents-hint">This is an OAuth connection — use the 🔗 button in the table to re-authorize. Client credentials aren’t edited here.</p>'
+        : `<label>New ${isDiscordBot ? 'bot token' : 'secret / token'}<input name="secret" type="password" placeholder="leave blank to keep the current one" /><span class="agents-hint">Only set this to rotate the credential.</span></label>`
+    const kindLabel = isDiscordWebhook ? 'Discord webhook' : isDiscordBot ? 'Discord chat' : ''
     return `<form class="agents-conn-form" data-editconn="${escapeHTML(c.metadata.name)}" data-usechannel="${usesChannel ? '1' : '0'}">
         <div class="agents-conn-formhead">
           <button type="button" class="agents-back" data-conncancel>← connections</button>
-          <h4>Edit ${escapeHTML(CATEGORY_META[cat].icon)} <code>${escapeHTML(c.metadata.name)}</code></h4>
+          <h4>Edit ${escapeHTML(CATEGORY_META[cat].icon)} <code>${escapeHTML(c.metadata.name)}</code>${kindLabel ? ` <span class="agents-badge">${escapeHTML(kindLabel)}</span>` : ''}</h4>
         </div>
         <label>Display name<input name="displayName" value="${escapeHTML(c.spec.displayName || '')}" placeholder="${escapeHTML(c.metadata.name)}" /></label>
         <label>${endpointLabel}<input name="endpoint" value="${escapeHTML(endpointVal)}" /></label>
-        ${
-          isOAuth
-            ? '<p class="agents-hint">This is an OAuth connection — use the 🔗 button in the table to re-authorize. Client credentials aren’t edited here.</p>'
-            : `<label>New secret / token<input name="secret" type="password" placeholder="leave blank to keep the current one" /><span class="agents-hint">Only set this to rotate the credential.</span></label>`
-        }
+        ${secretField}
         <div class="agents-form-actions"><button>Save changes</button><button type="button" class="secondary" data-conncancel>Cancel</button></div>
       </form>`
   }
@@ -1626,6 +1631,11 @@ export class AgentsElement extends HTMLElement {
       const m = CATEGORY_META[connCategory(id)]
       return `<span class="agents-badge agents-badge-cat agents-cat-${connCategory(id)}">${m.icon} ${escapeHTML(m.label)}</span>`
     }
+    // Discord is one backend type but two shapes — label it so the list reads clearly.
+    const typeLabel = (c: Connection) => {
+      if (c.spec.type !== 'discord') return c.spec.type
+      return (c.spec.channel || '').startsWith('https://') ? 'discord webhook' : 'discord chat'
+    }
     return `
       <div class="agents-panel">
         <h3>Connections</h3>
@@ -1640,7 +1650,7 @@ export class AgentsElement extends HTMLElement {
                       (c) => `<tr>
                         <td><span class="agents-cell-name">${escapeHTML(c.spec.displayName || c.metadata.name)}</span>${c.status?.webhookPath ? ' <span class="agents-inbound-on" title="Inbound enabled">⇄</span>' : ''}${c.status?.oauthConnected ? ' <span class="agents-inbound-on" title="OAuth connected">🔗</span>' : ''}</td>
                         <td>${catBadge(c.spec.type)}</td>
-                        <td><span class="agents-badge">${escapeHTML(c.spec.type)}</span></td>
+                        <td><span class="agents-badge">${escapeHTML(typeLabel(c))}</span></td>
                         <td class="agents-cell-task muted">${escapeHTML(c.spec.baseURL || c.spec.channel || '—')}</td>
                         <td class="agents-row-actions">
                           <button class="agents-iconbtn" data-editconn="${escapeHTML(c.metadata.name)}" title="Edit">✏️</button>

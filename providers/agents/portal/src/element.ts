@@ -248,7 +248,7 @@ const CONN_DEFS: ConnTypeDef[] = [
     desc: 'Two-way chat with your agent (bot)',
     fields: [
       { key: 'token', label: 'Bot token', password: true, required: true, hint: 'Discord dev portal → your app → Bot → Reset Token. Enable the MESSAGE CONTENT intent there, then invite the bot to your server.' },
-      { key: 'channel', label: 'Channel ID (optional)', hint: 'Restrict the bot to one channel (right-click channel → Copy ID). Blank = respond in DMs and when @-mentioned.' },
+      { key: 'channel', label: 'Home channel ID', hint: 'Right-click a channel → Copy ID. The bot auto-replies here (no @-mention) and scheduled/notify output is delivered here. Blank still works for chat — it replies to DMs and @-mentions in any channel — but leave it set if you want this agent to notify you.' },
     ],
     build: (v) => ({ type: 'discord', name: v.name, secret: v.token, channel: v.channel || undefined }),
   },

@@ -195,6 +195,12 @@ func fromU[T any](u *unstructured.Unstructured) (*T, error) {
 func (b *background) loop(ctx context.Context) {
 	t := time.NewTicker(b.interval)
 	defer t.Stop()
+	// Discover the VW immediately so OAuth callbacks and inbound webhooks work
+	// right after startup instead of failing for a full interval (they depend
+	// on b.vwURL, which is otherwise only set on the first tick).
+	if err := b.ensureVW(ctx); err != nil {
+		log.Printf("background: virtual workspace not ready at startup: %v", err)
+	}
 	for {
 		select {
 		case <-ctx.Done():

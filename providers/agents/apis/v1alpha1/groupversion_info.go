@@ -49,6 +49,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&TriggerList{},
 		&Run{},
 		&RunList{},
+		&Toolset{},
+		&ToolsetList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

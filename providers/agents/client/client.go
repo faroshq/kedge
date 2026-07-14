@@ -42,6 +42,7 @@ var (
 	ScheduleGVR   = agentsGVR("schedules")
 	TriggerGVR    = agentsGVR("triggers")
 	RunGVR        = agentsGVR("runs")
+	ToolsetGVR    = agentsGVR("toolsets")
 	SecretGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 )
 
@@ -55,6 +56,7 @@ var (
 	scheduleResource = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
 	triggerResource  = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
 	runResource      = tenant.Resource{GVR: RunGVR, Kind: "Run", Plural: "Runs", Namespaced: false}
+	toolsetResource  = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
 	secretResource   = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 )
 
@@ -106,6 +108,14 @@ func (c *Client) Runs() *TypedResource[agentsv1alpha1.Run, agentsv1alpha1.RunLis
 	return &TypedResource[agentsv1alpha1.Run, agentsv1alpha1.RunList]{
 		scope: c.scope, res: runResource,
 		gvk: RunGVR.GroupVersion().WithKind("Run"),
+	}
+}
+
+// Toolsets returns a typed interface for Toolset resources.
+func (c *Client) Toolsets() *TypedResource[agentsv1alpha1.Toolset, agentsv1alpha1.ToolsetList] {
+	return &TypedResource[agentsv1alpha1.Toolset, agentsv1alpha1.ToolsetList]{
+		scope: c.scope, res: toolsetResource,
+		gvk: ToolsetGVR.GroupVersion().WithKind("Toolset"),
 	}
 }
 

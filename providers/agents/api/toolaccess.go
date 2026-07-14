@@ -56,6 +56,10 @@ func (a clientCR) GetConnection(ctx context.Context, name string) (*agentsv1alph
 	return a.c.Connections().Get(ctx, name, metav1.GetOptions{})
 }
 
+func (a clientCR) GetToolset(ctx context.Context, name string) (*agentsv1alpha1.Toolset, error) {
+	return a.c.Toolsets().Get(ctx, name, metav1.GetOptions{})
+}
+
 // vwCR implements tools.CRAccess over a virtual-workspace dynamic client
 // scoped to one tenant cluster (background execution path).
 type vwCR struct{ dyn dynamic.Interface }
@@ -118,4 +122,12 @@ func (a vwCR) GetConnection(ctx context.Context, name string) (*agentsv1alpha1.C
 		return nil, err
 	}
 	return fromU[agentsv1alpha1.Connection](u)
+}
+
+func (a vwCR) GetToolset(ctx context.Context, name string) (*agentsv1alpha1.Toolset, error) {
+	u, err := a.dyn.Resource(agentsclient.ToolsetGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return fromU[agentsv1alpha1.Toolset](u)
 }

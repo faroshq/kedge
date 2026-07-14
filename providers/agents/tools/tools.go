@@ -32,6 +32,7 @@ type CRAccess interface {
 	ListSchedules(ctx context.Context) ([]agentsv1alpha1.Schedule, error)
 	ListConnections(ctx context.Context) ([]agentsv1alpha1.Connection, error)
 	GetConnection(ctx context.Context, name string) (*agentsv1alpha1.Connection, error)
+	GetToolset(ctx context.Context, name string) (*agentsv1alpha1.Toolset, error)
 }
 
 // Deps carries everything a tool family needs to build its tools for one run.

@@ -1448,15 +1448,7 @@ export class AgentsElement extends HTMLElement {
         canRun: true,
         canDelete: true,
         fields: [
-          {
-            key: 'source',
-            label: 'Source',
-            kind: 'select',
-            value: t.spec.source,
-            // Only webhook/github actually fire. Preserve a legacy value (channel/
-            // email/connection) on an existing trigger so editing doesn't flip it.
-            options: [...(['webhook', 'github'].includes(t.spec.source) ? [] : [{ value: t.spec.source, label: t.spec.source + ' (deprecated)' }]), ...['webhook', 'github'].map((v) => ({ value: v, label: v }))],
-          },
+          { key: 'source', label: 'Source', kind: 'select', value: t.spec.source, options: ['webhook', 'github'].map((v) => ({ value: v, label: v })) },
           {
             key: 'connectionRef',
             label: 'Connection',

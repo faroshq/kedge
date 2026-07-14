@@ -9,6 +9,9 @@
 // Connections, and the Inbox are workspace-shared resources reached from the
 // sidebar footer — they live outside any single agent.
 
+import { FlowCanvas } from './flow'
+import type { FlowModel, FNode, FNodeType, FWire, FlowCallbacks } from './flow'
+
 export interface KedgeContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
@@ -333,6 +336,9 @@ export class AgentsElement extends HTMLElement {
   private _note: string | null = null
   private _modelsMsg: string | null = null
   private _loadedTenant: string | null = null
+  private _agentView: 'flow' | 'list' = 'flow'
+  private _flow: FlowCanvas | null = null
+  private _flowRoot: HTMLElement | null = null
 
   set kedgeContext(v: KedgeContext | null) {
     this._ctx = v
@@ -966,8 +972,10 @@ export class AgentsElement extends HTMLElement {
   private _renderAgentDetail(): string {
     const a = this._agent()
     if (!a) return `<div class="agents-empty"><p class="muted">Agent not found.</p></div>`
-    const body =
-      this._agentTab === 'chat'
+    const flow = this._agentView === 'flow'
+    const listBody = flow
+      ? ''
+      : this._agentTab === 'chat'
         ? this._renderChat(a)
         : this._agentTab === 'schedules'
           ? this._renderSchedules(a)
@@ -977,24 +985,36 @@ export class AgentsElement extends HTMLElement {
               ? this._renderChannels(a)
               : this._renderSettings(a)
     return `
-      <div class="agents-detail">
+      <div class="agents-detail ${flow ? 'is-flow' : ''}">
         <div class="agents-detail-head">
           <div class="agents-detail-title">
             ${this._renderBack()}
             <h2>${escapeHTML(a.spec?.displayName || a.metadata.name)}</h2>
           </div>
-          <button class="secondary" data-delagent="${escapeHTML(a.metadata.name)}">Delete agent</button>
+          <div class="agents-detail-actions">
+            <div class="agents-viewseg">
+              <button class="${flow ? 'on' : ''}" data-view="flow">◆ Flow</button>
+              <button class="${flow ? '' : 'on'}" data-view="list">☰ List</button>
+            </div>
+            <button class="secondary" data-delagent="${escapeHTML(a.metadata.name)}">Delete agent</button>
+          </div>
         </div>
-        <nav class="agents-subnav">
-          ${AGENT_TABS.map(([id, label]) => `<button class="agents-subtab ${this._agentTab === id ? 'sel' : ''}" data-subtab="${id}">${label}</button>`).join('')}
-        </nav>
-        <div class="agents-detail-body">${body}</div>
+        ${
+          flow
+            ? `<div class="agents-flow-host" data-flow-host></div>`
+            : `<nav class="agents-subnav">
+                 ${AGENT_TABS.map(([id, label]) => `<button class="agents-subtab ${this._agentTab === id ? 'sel' : ''}" data-subtab="${id}">${label}</button>`).join('')}
+               </nav>
+               <div class="agents-detail-body">${listBody}</div>`
+        }
       </div>`
   }
   private _wireAgentDetail(): void {
-    this.querySelectorAll<HTMLElement>('[data-subtab]').forEach((el) =>
+    this.querySelectorAll<HTMLElement>('[data-view]').forEach((el) =>
       el.addEventListener('click', () => {
-        this._agentTab = el.dataset.subtab as AgentTab
+        const v = el.dataset.view as 'flow' | 'list'
+        if (v === this._agentView) return
+        this._agentView = v
         this._render()
       }),
     )
@@ -1002,11 +1022,309 @@ export class AgentsElement extends HTMLElement {
       const name = (e.currentTarget as HTMLElement).dataset.delagent!
       if (confirm(`Delete agent ${name} and its history?`)) void this._deleteAgent(name)
     })
+    if (this._agentView === 'flow') {
+      this._mountFlow()
+      return
+    }
+    this.querySelectorAll<HTMLElement>('[data-subtab]').forEach((el) =>
+      el.addEventListener('click', () => {
+        this._agentTab = el.dataset.subtab as AgentTab
+        this._render()
+      }),
+    )
     if (this._agentTab === 'chat') this._wireChat()
     else if (this._agentTab === 'schedules') this._wireSchedules()
     else if (this._agentTab === 'triggers') this._wireTriggers()
     else if (this._agentTab === 'channels') this._wireChannels()
     else this._wireSettings()
+  }
+
+  // ---- flow canvas ----------------------------------------------------------
+
+  // Mount (or re-attach) the imperative FlowCanvas into the freshly-rendered
+  // host. The portal replaces innerHTML on every _render(), so the canvas DOM is
+  // kept alive off-tree via _flowRoot and re-appended here — that preserves its
+  // pan/zoom/positions/selection across re-renders. The instance is reused
+  // across agents; update() re-keys on the agent name.
+  private _mountFlow(): void {
+    const host = this.querySelector<HTMLElement>('[data-flow-host]')
+    if (!host) return
+    if (!this._flow || !this._flowRoot) {
+      this._flowRoot = document.createElement('div')
+      this._flow = new FlowCanvas(this._flowRoot, this._flowCallbacks())
+    }
+    host.appendChild(this._flowRoot)
+    this._flow.update(this._flowModel())
+  }
+
+  private _flowCallbacks(): FlowCallbacks {
+    return {
+      onEdit: (id, values) => void this._flowEdit(id, values),
+      onLink: (from, to) => void this._flowLink(from, to),
+      onAdd: (t) => this._flowAdd(t),
+      onRun: (id) => void this._flowRun(id),
+      onDelete: (id) => void this._flowDelete(id),
+      onOpenChat: () => {
+        this._agentView = 'list'
+        this._agentTab = 'chat'
+        this._render()
+      },
+      onToast: (m) => this._flow?.toast(m),
+    }
+  }
+
+  private _flowModel(): FlowModel {
+    const a = this._agent()!
+    const name = a.metadata.name
+    const nodes: FNode[] = []
+    const wires: FWire[] = []
+    const scheds = this._schedules.filter((s) => s.spec.agentRef === name)
+    const trigs = this._triggers.filter((t) => t.spec.agentRef === name)
+    const model = a.spec?.models?.chat
+    const notify = a.spec?.defaultNotifyConnection
+    const usedConns = new Set<string>()
+    trigs.forEach((t) => t.spec.connectionRef && usedConns.add(t.spec.connectionRef))
+    if (notify) usedConns.add(notify)
+
+    // agent core
+    nodes.push({
+      id: 'agent',
+      type: 'agent',
+      title: a.spec?.displayName || name,
+      core: true,
+      ins: ['input', 'model', 'tools'],
+      outs: ['result', 'delegate'],
+      sub: a.spec?.description ? escapeHTML(a.spec.description) : escapeHTML((a.spec?.systemPrompt || 'No system prompt yet.').slice(0, 96)),
+      status: ['ok', 'autonomy: ' + (a.spec?.autonomy || 'ask')],
+      fields: [
+        { key: 'displayName', label: 'Display name', kind: 'text', value: a.spec?.displayName || name },
+        { key: 'systemPrompt', label: 'System prompt', kind: 'textarea', value: a.spec?.systemPrompt || '', placeholder: 'You are a concise assistant that…' },
+        { key: 'autonomy', label: 'Autonomy', kind: 'select', value: a.spec?.autonomy || 'ask', options: ['suggest', 'ask', 'auto'].map((v) => ({ value: v, label: v })) },
+      ],
+    })
+
+    // chat
+    nodes.push({ id: 'chat', type: 'chat', title: 'interactive', ins: [], outs: ['msg'], sub: 'live console — talk to it now', status: [model ? 'ok' : 'warn', model ? 'ready' : 'no model'] })
+    wires.push({ from: ['chat', 'msg'], to: ['agent', 'input'] })
+
+    // schedules
+    for (const s of scheds) {
+      const id = 'sched:' + s.metadata.name
+      const when = s.spec.type === 'wakeup' ? s.spec.runAt || '' : s.spec.schedule || ''
+      const dis = s.status?.disabledReason
+      nodes.push({
+        id,
+        type: 'schedule',
+        title: s.metadata.name,
+        ins: [],
+        outs: ['fire'],
+        sub: `<span class="mono">${escapeHTML(when)}</span>${s.spec.timeZone ? ' · ' + escapeHTML(s.spec.timeZone) : ''}`,
+        status: dis ? ['off', dis] : s.spec.suspend ? ['off', 'paused'] : ['ok', s.status?.nextRun ? 'next ' + this._fmtTime(s.status.nextRun) : 'armed'],
+        canRun: true,
+        canDelete: true,
+        fields: [
+          { key: 'schedule', label: 'Cron', kind: 'text', mono: true, value: s.spec.schedule || '', placeholder: '0 9 * * *', hint: '5-field cron · crontab.guru' },
+          { key: 'timeZone', label: 'Timezone', kind: 'text', value: s.spec.timeZone || '' },
+          { key: 'task', label: 'Task', kind: 'textarea', value: s.spec.task || s.spec.checklist || '' },
+        ],
+      })
+      wires.push({ from: [id, 'fire'], to: ['agent', 'input'] })
+    }
+
+    // triggers
+    for (const t of trigs) {
+      const id = 'trig:' + t.metadata.name
+      nodes.push({
+        id,
+        type: 'trigger',
+        title: t.metadata.name,
+        ins: ['src'],
+        outs: ['fire'],
+        sub: `source <span class="mono">${escapeHTML(t.spec.source)}</span>${t.spec.connectionRef ? ' · ' + escapeHTML(t.spec.connectionRef) : ''}`,
+        status: t.spec.suspend ? ['off', 'paused'] : ['ok', t.status?.lastFired ? 'last ' + this._fmtTime(t.status.lastFired) : 'armed'],
+        canRun: true,
+        canDelete: true,
+        fields: [
+          { key: 'source', label: 'Source', kind: 'select', value: t.spec.source, options: ['webhook', 'github', 'channel'].map((v) => ({ value: v, label: v })) },
+          {
+            key: 'connectionRef',
+            label: 'Connection',
+            kind: 'select',
+            value: t.spec.connectionRef || '',
+            options: [{ value: '', label: '— none —' }, ...this._connections.map((c) => ({ value: c.metadata.name, label: c.metadata.name }))],
+          },
+          { key: 'task', label: 'Task on fire', kind: 'textarea', value: t.spec.task || '' },
+        ],
+      })
+      wires.push({ from: [id, 'fire'], to: ['agent', 'input'] })
+    }
+
+    // model (active chat credential)
+    if (model) {
+      const id = 'model:' + model
+      const c = this._credentials.find((x) => x.name === model)
+      nodes.push({
+        id,
+        type: 'model',
+        title: model,
+        ins: [],
+        outs: ['infer'],
+        sub: `<span class="mono">${escapeHTML(c?.provider || 'model')}</span>${c?.model ? ' · ' + escapeHTML(c.model) : ''}`,
+        status: c?.hasAPIKey ? ['ok', 'key set'] : ['warn', 'no key'],
+        fields: [
+          {
+            key: 'modelCredential',
+            label: 'Credential',
+            kind: 'select',
+            value: model,
+            options: [{ value: '', label: '— no model —' }, ...this._credentials.map((x) => ({ value: x.name, label: x.name + (x.model ? ` (${x.model})` : '') }))],
+            hint: 'Switch which credential this agent reasons with.',
+          },
+        ],
+      })
+      wires.push({ from: [id, 'infer'], to: ['agent', 'model'] })
+    }
+
+    // tools
+    const known = ['core', 'web', 'github', 'mcp', 'edges']
+    const inter = new Set(a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges'])
+    const fams = known.filter((f) => f !== 'core' && inter.has(f))
+    nodes.push({
+      id: 'tools',
+      type: 'tools',
+      title: 'toolset',
+      ins: [],
+      outs: ['use'],
+      tags: fams.length ? fams : undefined,
+      sub: fams.length ? undefined : 'no extra tools granted',
+      status: fams.length ? ['ok', fams.length + ' families'] : ['off', 'core only'],
+      fields: [
+        {
+          key: 'families',
+          label: 'Capability families',
+          kind: 'chips',
+          chips: known.filter((f) => f !== 'core').map((f) => ({ value: f, label: f, on: inter.has(f) })),
+          hint: 'Applies to chat + automation. Core memory/notify is always on.',
+        },
+      ],
+    })
+    wires.push({ from: ['tools', 'use'], to: ['agent', 'tools'] })
+
+    // connections (real wiring hubs: events → triggers, notify ← agent)
+    for (const c of this._connections) {
+      if (!usedConns.has(c.metadata.name)) continue
+      const cn = c.metadata.name
+      const isChannel = CONN_CATEGORY[c.spec.type] === 'channel'
+      const id = 'conn:' + cn
+      nodes.push({
+        id,
+        type: 'connection',
+        title: cn,
+        ins: isChannel ? ['notify'] : [],
+        outs: ['events'],
+        sub: `<span class="mono">${escapeHTML(c.spec.type)}</span>${c.status?.oauthConnected ? ' · connected' : ''}`,
+        status: c.status?.oauthConnected || c.status?.phase === 'Ready' ? ['ok', 'connected'] : ['warn', c.status?.phase || 'setup'],
+        fields: [
+          { key: 'type', label: 'Type', kind: 'static', value: c.spec.type },
+          { key: 'phase', label: 'Status', kind: 'static', value: c.status?.phase || (c.status?.oauthConnected ? 'connected' : 'setup') },
+        ],
+      })
+      trigs.forEach((t) => {
+        if (t.spec.connectionRef === cn) wires.push({ from: [id, 'events'], to: ['trig:' + t.metadata.name, 'src'] })
+      })
+      if (notify === cn && isChannel) wires.push({ from: ['agent', 'result'], to: [id, 'notify'] })
+    }
+
+    // delegates
+    for (const d of a.spec?.delegates || []) {
+      const id = 'delegate:' + d
+      nodes.push({ id, type: 'delegate', title: d, ins: ['call'], outs: [], sub: 'sub-agent', status: ['off', 'on demand'], canDelete: true })
+      wires.push({ from: ['agent', 'delegate'], to: [id, 'call'] })
+    }
+
+    return { key: name, nodes, wires }
+  }
+
+  private _fmtTime(iso: string): string {
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return iso
+    const diff = d.getTime() - Date.now()
+    const abs = Math.abs(diff)
+    const m = Math.round(abs / 60000)
+    if (m < 60) return diff > 0 ? `in ${m}m` : `${m}m ago`
+    const h = Math.round(m / 60)
+    if (h < 48) return diff > 0 ? `in ${h}h` : `${h}h ago`
+    return d.toLocaleDateString()
+  }
+
+  private async _flowEdit(id: string, values: Record<string, string | string[]>): Promise<void> {
+    const str = (v: string | string[] | undefined): string => (Array.isArray(v) ? v.join(',') : v || '')
+    if (id === 'agent') {
+      await this._updateAgent({ displayName: str(values.displayName), systemPrompt: str(values.systemPrompt), autonomy: str(values.autonomy) })
+    } else if (id.startsWith('sched:')) {
+      await this._updateSchedule(id.slice(6), { schedule: str(values.schedule), timeZone: str(values.timeZone), task: str(values.task) })
+    } else if (id.startsWith('trig:')) {
+      await this._updateTrigger(id.slice(5), { source: str(values.source), connectionRef: str(values.connectionRef), task: str(values.task) })
+    } else if (id.startsWith('model:')) {
+      await this._updateAgent({ modelCredential: str(values.modelCredential) }, 'Model reassigned.')
+    } else if (id === 'tools') {
+      const fams = ['core', ...((values.families as string[]) || [])]
+      await this._updateAgent({ interactiveFamilies: fams, backgroundFamilies: fams.filter((f) => f === 'core' || f === 'web') })
+    }
+  }
+
+  // Interpret a dragged cable (out-port → in-port) as a real spec mutation.
+  private async _flowLink(from: [string, string], to: [string, string]): Promise<void> {
+    const [fromNode] = from
+    const [toNode, toPort] = to
+    // connection.events → trigger.src : point the trigger at this connection
+    if (fromNode.startsWith('conn:') && toNode.startsWith('trig:') && toPort === 'src') {
+      return void this._updateTrigger(toNode.slice(5), { connectionRef: fromNode.slice(5) }, 'Trigger connected.')
+    }
+    // model.infer → agent.model : switch the agent's model credential
+    if (fromNode.startsWith('model:') && toNode === 'agent' && toPort === 'model') {
+      return void this._updateAgent({ modelCredential: fromNode.slice(6) }, 'Model reassigned.')
+    }
+    // agent.result → connection.notify : set the default notify channel
+    if (fromNode === 'agent' && toNode.startsWith('conn:') && toPort === 'notify') {
+      return void this._updateAgent({ notifyConnection: toNode.slice(5) }, 'Notify channel set.')
+    }
+    this._flow?.toast('These ports don’t connect — try schedule/trigger → agent, or model → agent.')
+  }
+
+  private _flowAdd(type: FNodeType): void {
+    // Creating a resource needs details (name, cron, credentials) — route to the
+    // matching form rather than dropping an incomplete node on the canvas.
+    if (type === 'schedule' || type === 'trigger' || type === 'chat') {
+      this._agentView = 'list'
+      this._agentTab = type === 'chat' ? 'chat' : (type as AgentTab)
+      this._render()
+    } else if (type === 'model') {
+      this._openShared('models')
+    } else if (type === 'connection' || type === 'output') {
+      this._openShared('connections')
+    } else if (type === 'tools' || type === 'delegate') {
+      this._agentView = 'list'
+      this._agentTab = 'settings'
+      this._render()
+    }
+  }
+
+  private async _flowRun(id: string): Promise<void> {
+    if (id.startsWith('sched:')) await this._runSchedule(id.slice(6))
+    else if (id.startsWith('trig:')) await this._runTrigger(id.slice(5))
+  }
+
+  private async _flowDelete(id: string): Promise<void> {
+    if (id.startsWith('sched:')) {
+      if (confirm(`Delete schedule ${id.slice(6)}?`)) await this._deleteSchedule(id.slice(6))
+    } else if (id.startsWith('trig:')) {
+      if (confirm(`Delete trigger ${id.slice(5)}?`)) await this._deleteTrigger(id.slice(5))
+    } else if (id.startsWith('delegate:')) {
+      const a = this._agent()
+      const next = (a?.spec?.delegates || []).filter((d) => d !== id.slice(9))
+      await this._updateAgent({ delegates: next }, 'Delegate removed.')
+    }
   }
 
   // ---- agent: chat ---------------------------------------------------------

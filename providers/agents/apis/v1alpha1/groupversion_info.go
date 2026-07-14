@@ -43,12 +43,12 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&AgentList{},
 		&Connection{},
 		&ConnectionList{},
-		&AgentSchedule{},
-		&AgentScheduleList{},
-		&AgentTrigger{},
-		&AgentTriggerList{},
-		&AgentRun{},
-		&AgentRunList{},
+		&Schedule{},
+		&ScheduleList{},
+		&Trigger{},
+		&TriggerList{},
+		&Run{},
+		&RunList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

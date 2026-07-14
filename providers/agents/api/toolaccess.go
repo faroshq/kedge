@@ -31,12 +31,12 @@ func (a clientCR) GetAgent(ctx context.Context, name string) (*agentsv1alpha1.Ag
 	return a.c.Agents().Get(ctx, name, metav1.GetOptions{})
 }
 
-func (a clientCR) CreateSchedule(ctx context.Context, s *agentsv1alpha1.AgentSchedule) error {
+func (a clientCR) CreateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) error {
 	_, err := a.c.Schedules().Create(ctx, s, metav1.CreateOptions{})
 	return err
 }
 
-func (a clientCR) ListSchedules(ctx context.Context) ([]agentsv1alpha1.AgentSchedule, error) {
+func (a clientCR) ListSchedules(ctx context.Context) ([]agentsv1alpha1.Schedule, error) {
 	list, err := a.c.Schedules().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
@@ -70,24 +70,24 @@ func (a vwCR) GetAgent(ctx context.Context, name string) (*agentsv1alpha1.Agent,
 	return fromU[agentsv1alpha1.Agent](u)
 }
 
-func (a vwCR) CreateSchedule(ctx context.Context, s *agentsv1alpha1.AgentSchedule) error {
-	s.TypeMeta = metav1.TypeMeta{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "AgentSchedule"}
+func (a vwCR) CreateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) error {
+	s.TypeMeta = metav1.TypeMeta{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "Schedule"}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(s)
 	if err != nil {
 		return err
 	}
-	_, err = a.dyn.Resource(agentsclient.AgentScheduleGVR).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
+	_, err = a.dyn.Resource(agentsclient.ScheduleGVR).Create(ctx, &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{})
 	return err
 }
 
-func (a vwCR) ListSchedules(ctx context.Context) ([]agentsv1alpha1.AgentSchedule, error) {
-	list, err := a.dyn.Resource(agentsclient.AgentScheduleGVR).List(ctx, metav1.ListOptions{})
+func (a vwCR) ListSchedules(ctx context.Context) ([]agentsv1alpha1.Schedule, error) {
+	list, err := a.dyn.Resource(agentsclient.ScheduleGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]agentsv1alpha1.AgentSchedule, 0, len(list.Items))
+	out := make([]agentsv1alpha1.Schedule, 0, len(list.Items))
 	for i := range list.Items {
-		s, err := fromU[agentsv1alpha1.AgentSchedule](&list.Items[i])
+		s, err := fromU[agentsv1alpha1.Schedule](&list.Items[i])
 		if err != nil {
 			return nil, err
 		}

@@ -28,8 +28,8 @@ import (
 // the api package over the tenant client and over the virtual workspace.
 type CRAccess interface {
 	GetAgent(ctx context.Context, name string) (*agentsv1alpha1.Agent, error)
-	CreateSchedule(ctx context.Context, s *agentsv1alpha1.AgentSchedule) error
-	ListSchedules(ctx context.Context) ([]agentsv1alpha1.AgentSchedule, error)
+	CreateSchedule(ctx context.Context, s *agentsv1alpha1.Schedule) error
+	ListSchedules(ctx context.Context) ([]agentsv1alpha1.Schedule, error)
 	ListConnections(ctx context.Context) ([]agentsv1alpha1.Connection, error)
 	GetConnection(ctx context.Context, name string) (*agentsv1alpha1.Connection, error)
 }

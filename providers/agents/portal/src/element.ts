@@ -1173,7 +1173,7 @@ export class AgentsElement extends HTMLElement {
         agentPort: 'input',
         fields: [
           nameField,
-          { key: 'source', label: 'Source', kind: 'select', value: 'webhook', options: ['webhook', 'github', 'channel'].map((v) => ({ value: v, label: v })) },
+          { key: 'source', label: 'Source', kind: 'select', value: 'webhook', options: ['webhook', 'github'].map((v) => ({ value: v, label: v })) },
           { key: 'connectionRef', label: 'Connection', kind: 'select', value: '', options: [{ value: '', label: '— none —' }, ...this._connections.map((c) => ({ value: c.metadata.name, label: c.metadata.name }))] },
           { key: 'task', label: 'Task on fire', kind: 'textarea', placeholder: 'Triage the incoming event.' },
         ],
@@ -1448,7 +1448,15 @@ export class AgentsElement extends HTMLElement {
         canRun: true,
         canDelete: true,
         fields: [
-          { key: 'source', label: 'Source', kind: 'select', value: t.spec.source, options: ['webhook', 'github', 'channel'].map((v) => ({ value: v, label: v })) },
+          {
+            key: 'source',
+            label: 'Source',
+            kind: 'select',
+            value: t.spec.source,
+            // Only webhook/github actually fire. Preserve a legacy value (channel/
+            // email/connection) on an existing trigger so editing doesn't flip it.
+            options: [...(['webhook', 'github'].includes(t.spec.source) ? [] : [{ value: t.spec.source, label: t.spec.source + ' (deprecated)' }]), ...['webhook', 'github'].map((v) => ({ value: v, label: v }))],
+          },
           {
             key: 'connectionRef',
             label: 'Connection',

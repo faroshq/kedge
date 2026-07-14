@@ -44,6 +44,18 @@ export interface FNode {
   fields?: FieldSpec[]
   canRun?: boolean
   canDelete?: boolean
+  draft?: boolean // unsaved: shows a Create button instead of auto-save
+}
+
+// DraftSpec describes a new, unsaved node dropped from the palette: the fields
+// to collect before it can be written, and how it wires to the agent.
+export interface DraftSpec {
+  title: string
+  ins: string[]
+  outs: string[]
+  fields: FieldSpec[]
+  outPort?: string // this node's out-port …
+  agentPort?: string // … wired to this agent in-port (schedule/trigger/model)
 }
 
 export interface FWire {
@@ -65,6 +77,12 @@ export interface FlowCallbacks {
   onDelete(nodeId: string): void
   onOpenChat(): void
   onToast(msg: string): void
+  // draftFor returns the create-form spec for a draggable/creatable type, or
+  // null for types that aren't standalone objects (chat/tools/notify/delegate).
+  draftFor(type: FNodeType): DraftSpec | null
+  // create writes the object from the draft's values; returns the real node id
+  // (e.g. "sched:daily") on success so the canvas can place it, or null on fail.
+  create(type: FNodeType, values: Record<string, string | string[]>): Promise<string | null>
 }
 
 interface TypeDef {
@@ -125,6 +143,20 @@ export class FlowCanvas {
   private needFit = false
   private hiWire = -1
   private linking: { from: [string, string]; el: SVGPathElement } | null = null
+  private drafts: FNode[] = [] // unsaved nodes dropped from the palette
+  private draftWires: FWire[] = []
+  private draftSeq = 0
+
+  // Live model plus any in-flight drafts — everything the canvas renders.
+  private nodes(): FNode[] {
+    return this.drafts.length ? [...this.model.nodes, ...this.drafts] : this.model.nodes
+  }
+  private wires(): FWire[] {
+    return this.draftWires.length ? [...this.model.wires, ...this.draftWires] : this.model.wires
+  }
+  private node(id: string): FNode | undefined {
+    return this.nodes().find((n) => n.id === id)
+  }
 
   constructor(root: HTMLElement, cb: FlowCallbacks) {
     this.cb = cb
@@ -170,10 +202,10 @@ export class FlowCanvas {
     this.renderWires()
     // A per-field auto-save reloads data and re-renders; keep the dialog open
     // (and refreshed) if the edited node still exists.
-    if (this.editing && this.model.nodes.some((n) => n.id === this.editing)) this.renderModal()
+    if (this.editing && this.nodes().some((n) => n.id === this.editing)) this.renderModal()
     else if (this.editing) this.closeEditor()
     this.applyView()
-    if (this.needFit && this.model.nodes.length) {
+    if (this.needFit && this.nodes().length) {
       // Defer the initial fit one frame: called synchronously right after the
       // host is attached, getBoundingClientRect() can still report a stale size.
       this.needFit = false
@@ -210,12 +242,12 @@ export class FlowCanvas {
     // so layout() runs several times as nodes arrive. Seed each column's cursor
     // below the lowest node already placed in it, or a later-arriving node would
     // land on top of an earlier one.
-    for (const n of this.model.nodes) {
+    for (const n of this.nodes()) {
       if (!this.pos.has(n.id)) continue
       const col = colOf(n.type)
       cursor[col] = Math.max(cursor[col], (this.pos.get(n.id) as Pos).y + step(n))
     }
-    for (const n of this.model.nodes) {
+    for (const n of this.nodes()) {
       if (this.pos.has(n.id)) continue
       const col = colOf(n.type)
       const y = cursor[col]
@@ -230,14 +262,14 @@ export class FlowCanvas {
 
   // ---- nodes ----------------------------------------------------------------
   private syncNodes(): void {
-    const ids = new Set(this.model.nodes.map((n) => n.id))
+    const ids = new Set(this.nodes().map((n) => n.id))
     for (const [id, el] of this.nodeEls) {
       if (!ids.has(id)) {
         el.remove()
         this.nodeEls.delete(id)
       }
     }
-    for (const n of this.model.nodes) this.renderNode(n)
+    for (const n of this.nodes()) this.renderNode(n)
   }
 
   private renderNode(n: FNode): void {
@@ -254,6 +286,7 @@ export class FlowCanvas {
     el.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(n.type)} 15%, var(--color-surface-raised, #fff))`)
     el.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(n.type)} 40%, var(--color-border-default, #ccc))`)
     el.classList.toggle('sel', this.sel === n.id)
+    el.classList.toggle('draft', !!n.draft)
     const tags = (n.tags || []).map((t) => `<span class="flow-tag acc">${esc(t)}</span>`).join('')
     const st = n.status ? `<div class="flow-statusline"><span class="flow-led ${n.status[0]}"></span>${esc(n.status[1])}</div>` : ''
     const editable = (n.fields || []).some((f) => f.kind !== 'static')
@@ -313,7 +346,7 @@ export class FlowCanvas {
 
   // ---- ports & positions ----------------------------------------------------
   private portPos(nodeId: string, port: string, side: 'in' | 'out'): Pos {
-    const n = this.model.nodes.find((x) => x.id === nodeId)
+    const n = this.nodes().find((x) => x.id === nodeId)
     const p = this.pos.get(nodeId)
     if (!n || !p) return { x: 0, y: 0 }
     const list = side === 'out' ? n.outs : n.ins
@@ -330,10 +363,10 @@ export class FlowCanvas {
   private renderWires(): void {
     // keep the live-linking temp path if present
     this.svg.innerHTML = ''
-    this.model.wires.forEach((w, i) => {
+    this.wires().forEach((w, i) => {
       const a = this.portPos(w.from[0], w.from[1], 'out')
       const b = this.portPos(w.to[0], w.to[1], 'in')
-      const src = this.model.nodes.find((n) => n.id === w.from[0])
+      const src = this.nodes().find((n) => n.id === w.from[0])
       const col = src ? cvar(src.type) : 'var(--color-border-strong)'
       const d = this.path(a, b)
       const hit = document.createElementNS(NS, 'path')
@@ -388,43 +421,45 @@ export class FlowCanvas {
   }
 
   private renderModal(): void {
-    const n = this.model.nodes.find((x) => x.id === this.editing)
+    const n = this.nodes().find((x) => x.id === this.editing)
     if (!n) return this.closeEditor()
     this.dialog.style.setProperty('--nc', cvar(n.type))
     this.dialog.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(n.type)} 15%, var(--color-surface-raised, #fff))`)
     this.dialog.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(n.type)} 40%, var(--color-border-default, #ccc))`)
-    const cables = this.model.wires
+    const cables = this.wires()
       .filter((w) => w.from[0] === n.id || w.to[0] === n.id)
       .map((w) => {
         const out = w.from[0] === n.id
-        const other = this.model.nodes.find((x) => x.id === (out ? w.to[0] : w.from[0]))
-        const src = this.model.nodes.find((x) => x.id === w.from[0])
+        const other = this.nodes().find((x) => x.id === (out ? w.to[0] : w.from[0]))
+        const src = this.nodes().find((x) => x.id === w.from[0])
         const col = src ? cvar(src.type) : 'var(--color-border-strong)'
         return `<div class="flow-wireitem"><span class="sw" style="background:${col}"></span><span class="dir">${out ? 'OUT →' : '← IN'}</span> ${esc(other?.title || '')}</div>`
       })
       .join('') || `<div class="flow-wireitem muted">no cables yet — drag from a port on the canvas</div>`
     const fields = (n.fields || []).map((f) => this.fieldHTML(f)).join('')
     const editable = (n.fields || []).some((f) => f.kind !== 'static')
+    const draft = !!n.draft
     this.dialog.innerHTML = `
       <div class="flow-dialog-head">
         <span class="flow-nic">${svgIcon(n.type)}</span>
-        <span class="t"><span class="flow-ntype">${TYPES[n.type].label}</span><div class="flow-ntitle">${esc(n.title)}</div></span>
+        <span class="t"><span class="flow-ntype">${draft ? 'New ' + TYPES[n.type].label.toLowerCase() : TYPES[n.type].label}</span><div class="flow-ntitle">${esc(n.title)}</div></span>
         <span class="flow-saved" data-saved>saved ✓</span>
         <button class="flow-x" data-x aria-label="Close">✕</button>
       </div>
       <div class="flow-dialog-body">
         ${fields || '<p class="flow-nsub">Nothing to edit here — this node is wired from the canvas.</p>'}
-        <div class="flow-field"><label>Cables</label><div class="flow-wirelist">${cables}</div></div>
+        ${draft ? '' : `<div class="flow-field"><label>Cables</label><div class="flow-wirelist">${cables}</div></div>`}
       </div>
       <div class="flow-dialog-foot">
-        ${editable ? '<span class="flow-autonote">Changes save automatically</span>' : '<span></span>'}
+        ${draft ? '<span class="flow-autonote">Create writes it as a real object</span>' : editable ? '<span class="flow-autonote">Changes save automatically</span>' : '<span></span>'}
         <div class="flow-dialog-actions">
-          ${n.type === 'chat' ? '<button class="flow-btn primary" data-chat>Open chat</button>' : ''}
-          ${n.canRun ? '<button class="flow-btn" data-run>▶ Test</button>' : ''}
-          ${n.canDelete ? '<button class="flow-btn danger" data-del>Remove</button>' : ''}
+          ${draft ? '<button class="flow-btn" data-discard>Discard</button><button class="flow-btn primary" data-create>Create</button>' : ''}
+          ${!draft && n.type === 'chat' ? '<button class="flow-btn primary" data-chat>Open chat</button>' : ''}
+          ${!draft && n.canRun ? '<button class="flow-btn" data-run>▶ Test</button>' : ''}
+          ${!draft && n.canDelete ? '<button class="flow-btn danger" data-del>Remove</button>' : ''}
         </div>
       </div>`
-    ;(this.dialog.querySelector('[data-x]') as HTMLElement).onclick = () => this.closeEditor()
+    ;(this.dialog.querySelector('[data-x]') as HTMLElement).onclick = () => (draft ? this.discardEditing() : this.closeEditor())
     const chatBtn = this.dialog.querySelector('[data-chat]') as HTMLElement | null
     if (chatBtn) chatBtn.onclick = () => this.cb.onOpenChat()
     const runBtn = this.dialog.querySelector('[data-run]') as HTMLElement | null
@@ -435,16 +470,82 @@ export class FlowCanvas {
         this.closeEditor()
         this.cb.onDelete(n.id)
       }
-    // auto-save: commit on blur/change of any control, and on chip toggle
-    this.dialog.querySelectorAll<HTMLElement>('input, textarea, select').forEach((el) => {
-      el.addEventListener('change', () => this.autosave())
+    const discardBtn = this.dialog.querySelector('[data-discard]') as HTMLElement | null
+    if (discardBtn) discardBtn.onclick = () => this.discardEditing()
+    const createBtn = this.dialog.querySelector('[data-create]') as HTMLElement | null
+    if (createBtn) createBtn.onclick = () => void this.doCreate(n)
+    if (!draft) {
+      // auto-save: commit on blur/change of any control, and on chip toggle
+      this.dialog.querySelectorAll<HTMLElement>('input, textarea, select').forEach((el) => {
+        el.addEventListener('change', () => this.autosave())
+      })
+      this.dialog.querySelectorAll<HTMLElement>('.flow-chip').forEach((c) => {
+        c.onclick = () => {
+          c.classList.toggle('on')
+          this.autosave()
+        }
+      })
+    } else {
+      // draft: live-mirror the title from the name field for a bit of feedback
+      const nameEl = this.dialog.querySelector<HTMLInputElement>('[data-k="name"]')
+      const titleEl = this.dialog.querySelector<HTMLElement>('.flow-ntitle')
+      if (nameEl && titleEl) nameEl.addEventListener('input', () => (titleEl.textContent = nameEl.value || TYPES[n.type].label))
+      this.dialog.querySelectorAll<HTMLElement>('.flow-chip').forEach((c) => {
+        c.onclick = () => c.classList.toggle('on')
+      })
+    }
+  }
+
+  private discardEditing(): void {
+    const id = this.editing
+    this.closeEditor()
+    if (id) this.discardDraft(id)
+  }
+
+  private async doCreate(n: FNode): Promise<void> {
+    const values: Record<string, string | string[]> = {}
+    this.dialog.querySelectorAll<HTMLElement>('[data-k]').forEach((el) => {
+      const k = el.dataset.k as string
+      if (el.classList.contains('flow-chiprow')) values[k] = Array.from(el.querySelectorAll<HTMLElement>('.flow-chip.on')).map((c) => c.dataset.v as string)
+      else values[k] = (el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value
     })
-    this.dialog.querySelectorAll<HTMLElement>('.flow-chip').forEach((c) => {
-      c.onclick = () => {
-        c.classList.toggle('on')
-        this.autosave()
+    if (!String(values.name || '').trim()) {
+      this.toast('Give it a name first')
+      const nameEl = this.dialog.querySelector<HTMLInputElement>('[data-k="name"]')
+      if (nameEl) nameEl.focus()
+      return
+    }
+    const btn = this.dialog.querySelector<HTMLButtonElement>('[data-create]')
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = 'Creating…'
+    }
+    const draftId = n.id
+    const p = this.pos.get(draftId)
+    const realId = await this.cb.create(n.type, values)
+    if (!realId) {
+      if (btn) {
+        btn.disabled = false
+        btn.textContent = 'Create'
       }
-    })
+      return // create() surfaced its own error
+    }
+    // create() reloaded data → the real node already rendered at an auto-layout
+    // spot. Drop the draft and move the real node to where the draft sat.
+    this.editing = null
+    this.modal.classList.add('hidden')
+    window.removeEventListener('keydown', this.onKey)
+    this.discardDraft(draftId)
+    if (p) {
+      this.pos.set(realId, p)
+      const el = this.nodeEls.get(realId)
+      if (el) {
+        el.style.left = p.x + 'px'
+        el.style.top = p.y + 'px'
+      }
+      this.renderWires()
+      this.savePositions()
+    }
   }
 
   // Debounced commit of all fields in the open dialog. onEdit is partial-safe,
@@ -452,7 +553,7 @@ export class FlowCanvas {
   private autosave(): void {
     window.clearTimeout(this.saveT)
     this.saveT = window.setTimeout(() => {
-      const n = this.model.nodes.find((x) => x.id === this.editing)
+      const n = this.nodes().find((x) => x.id === this.editing)
       if (!n) return
       this.commit(n)
       const badge = this.dialog.querySelector<HTMLElement>('[data-saved]')
@@ -630,13 +731,13 @@ export class FlowCanvas {
   }
 
   private fit(): void {
-    if (!this.model.nodes.length) return
+    if (!this.nodes().length) return
     const pad = 56
     let minX = Infinity
     let minY = Infinity
     let maxX = -Infinity
     let maxY = -Infinity
-    for (const n of this.model.nodes) {
+    for (const n of this.nodes()) {
       const p = this.pos.get(n.id) as Pos
       minX = Math.min(minX, p.x)
       minY = Math.min(minY, p.y)
@@ -676,11 +777,81 @@ export class FlowCanvas {
         b.style.setProperty('--nc', cvar(type))
         b.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(type)} 15%, var(--color-surface-raised, #fff))`)
         b.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(type)} 40%, var(--color-border-default, #ccc))`)
+        const creatable = !!this.cb.draftFor(type)
+        b.classList.toggle('draggable', creatable)
         b.innerHTML = `<span class="chip">${svgIcon(type)}</span><span>${TYPES[type].label}</span>`
-        b.onclick = () => this.cb.onAdd(type)
+        if (creatable) this.wirePaletteDrag(b, type)
+        else b.onclick = () => this.cb.onAdd(type)
         rail.appendChild(b)
       }
     }
+  }
+
+  // A palette item for a creatable type: click drops a draft at canvas centre;
+  // drag drops it where released. Either way the draft opens for editing.
+  private wirePaletteDrag(b: HTMLElement, type: FNodeType): void {
+    b.onpointerdown = (e) => {
+      e.preventDefault()
+      const sx = e.clientX
+      const sy = e.clientY
+      let ghost: HTMLElement | null = null
+      const move = (ev: PointerEvent): void => {
+        if (!ghost && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6) {
+          ghost = document.createElement('div')
+          ghost.className = 'flow-ghost'
+          ghost.style.setProperty('--nc', cvar(type))
+          ghost.innerHTML = `<span class="flow-nic">${svgIcon(type)}</span>${TYPES[type].label}`
+          document.body.appendChild(ghost)
+        }
+        if (ghost) {
+          ghost.style.left = ev.clientX + 'px'
+          ghost.style.top = ev.clientY + 'px'
+        }
+      }
+      const up = (ev: PointerEvent): void => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+        if (ghost) ghost.remove()
+        const r = this.canvas.getBoundingClientRect()
+        const dropped = ghost !== null
+        const over = ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom
+        // click (no drag) → drop at centre; drag → drop where released (if over canvas)
+        const world =
+          dropped && over
+            ? { x: (ev.clientX - r.left - this.view.x) / this.view.k - NW / 2, y: (ev.clientY - r.top - this.view.y) / this.view.k - 40 }
+            : { x: (r.width / 2 - this.view.x) / this.view.k - NW / 2, y: (r.height / 2 - this.view.y) / this.view.k - 40 }
+        if (!dropped || over) this.createDraft(type, world)
+      }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', up)
+    }
+  }
+
+  // Drop an unsaved draft node, wire it to the agent where applicable, and open
+  // its create dialog.
+  private createDraft(type: FNodeType, pos: Pos): void {
+    const spec = this.cb.draftFor(type)
+    if (!spec) return
+    const id = 'draft:' + type + ':' + ++this.draftSeq
+    const n: FNode = { id, type, title: spec.title, ins: spec.ins, outs: spec.outs, fields: spec.fields, draft: true, canDelete: true }
+    this.pos.set(id, pos)
+    this.drafts.push(n)
+    if (spec.outPort && spec.agentPort && this.node('agent')) this.draftWires.push({ from: [id, spec.outPort], to: ['agent', spec.agentPort] })
+    this.syncNodes()
+    this.renderWires()
+    this.openEditor(id)
+  }
+
+  private discardDraft(id: string): void {
+    this.drafts = this.drafts.filter((d) => d.id !== id)
+    this.draftWires = this.draftWires.filter((w) => w.from[0] !== id && w.to[0] !== id)
+    this.pos.delete(id)
+    const el = this.nodeEls.get(id)
+    if (el) {
+      el.remove()
+      this.nodeEls.delete(id)
+    }
+    this.renderWires()
   }
 
   private buildLegend(el: HTMLElement): void {

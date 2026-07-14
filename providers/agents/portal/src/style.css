@@ -447,3 +447,16 @@ kedge-provider-agents .flow-btn.danger { color: var(--flow-output); }
 kedge-provider-agents .flow-toast { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%) translateY(20px); z-index: 9; background: var(--color-text-primary, #123); color: var(--color-surface-raised, #fff); padding: 9px 15px; border-radius: 10px; font-size: 13px; font-weight: 550; opacity: 0; transition: all .25s; box-shadow: 0 12px 30px rgba(0,0,0,.3); pointer-events: none; max-width: 60%; text-align: center; }
 kedge-provider-agents .flow-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 kedge-provider-agents .flow-root .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* drag-to-create: draggable palette items, drag ghost, draft nodes */
+kedge-provider-agents .flow-palnode.draggable { cursor: grab; touch-action: none; }
+kedge-provider-agents .flow-palnode.draggable:active { cursor: grabbing; }
+kedge-provider-agents .flow-ghost { position: fixed; z-index: 40; transform: translate(-50%, -50%); pointer-events: none;
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px 7px 8px; border-radius: 11px; font-size: 12.5px; font-weight: 600;
+  background: var(--color-surface-raised, #fff); color: var(--color-text-primary, #123); border: 1px solid var(--nc, var(--color-border-strong));
+  box-shadow: 0 10px 30px rgba(20,40,80,.28); opacity: .96; }
+kedge-provider-agents .flow-ghost .flow-nic { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; color: var(--nc); background: color-mix(in srgb, var(--nc) 16%, var(--color-surface-raised)); }
+kedge-provider-agents .flow-ghost .flow-nic svg { width: 13px; height: 13px; }
+kedge-provider-agents .flow-node.draft { border-style: dashed; border-color: color-mix(in srgb, var(--nc) 55%, var(--color-border-default)); box-shadow: 0 6px 22px color-mix(in srgb, var(--nc) 20%, transparent); }
+kedge-provider-agents .flow-node.draft .flow-ntitle { color: var(--color-text-muted, #889); font-style: italic; }
+kedge-provider-agents .flow-wire.draft, kedge-provider-agents .flow-node.draft .flow-port { opacity: .7; }

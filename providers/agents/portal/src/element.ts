@@ -10,7 +10,7 @@
 // sidebar footer — they live outside any single agent.
 
 import { FlowCanvas } from './flow'
-import type { FlowModel, FNode, FNodeType, FWire, FlowCallbacks } from './flow'
+import type { FlowModel, FNode, FNodeType, FWire, FlowCallbacks, DraftSpec } from './flow'
 
 export interface KedgeContext {
   token?: string | null
@@ -1070,7 +1070,112 @@ export class AgentsElement extends HTMLElement {
         this._render()
       },
       onToast: (m) => this._flow?.toast(m),
+      draftFor: (t) => this._flowDraftFor(t),
+      create: (t, values) => this._flowCreate(t, values),
     }
+  }
+
+  // ---- flow: drag-to-create -------------------------------------------------
+
+  // The create-form spec for a draggable node type (null = not a standalone
+  // object). Schedule/trigger/model wire straight into the agent; a connection
+  // stands alone until you wire it.
+  private _flowDraftFor(t: FNodeType): DraftSpec | null {
+    const nameField = { key: 'name', label: 'Name', kind: 'text' as const, placeholder: 'lowercase-with-dashes', hint: 'a-z, 0-9 and dashes' }
+    if (t === 'schedule')
+      return {
+        title: 'new schedule',
+        ins: [],
+        outs: ['fire'],
+        outPort: 'fire',
+        agentPort: 'input',
+        fields: [
+          nameField,
+          { key: 'schedule', label: 'Cron', kind: 'text', mono: true, value: '0 9 * * *', placeholder: '0 9 * * *', hint: '5-field cron · crontab.guru' },
+          { key: 'timeZone', label: 'Timezone', kind: 'text', placeholder: 'Europe/Vilnius' },
+          { key: 'task', label: 'Task', kind: 'textarea', placeholder: 'Summarise today’s open PRs and post to my channel.' },
+        ],
+      }
+    if (t === 'trigger')
+      return {
+        title: 'new trigger',
+        ins: ['src'],
+        outs: ['fire'],
+        outPort: 'fire',
+        agentPort: 'input',
+        fields: [
+          nameField,
+          { key: 'source', label: 'Source', kind: 'select', value: 'webhook', options: ['webhook', 'github', 'channel'].map((v) => ({ value: v, label: v })) },
+          { key: 'connectionRef', label: 'Connection', kind: 'select', value: '', options: [{ value: '', label: '— none —' }, ...this._connections.map((c) => ({ value: c.metadata.name, label: c.metadata.name }))] },
+          { key: 'task', label: 'Task on fire', kind: 'textarea', placeholder: 'Triage the incoming event.' },
+        ],
+      }
+    if (t === 'model')
+      return {
+        title: 'new model',
+        ins: [],
+        outs: ['infer'],
+        outPort: 'infer',
+        agentPort: 'model',
+        fields: [
+          nameField,
+          { key: 'provider', label: 'Provider', kind: 'select', value: 'openai', options: ['openai', 'anthropic', 'custom'].map((v) => ({ value: v, label: v })) },
+          { key: 'baseURL', label: 'Base URL', kind: 'text', mono: true, placeholder: 'https://api.openai.com/v1' },
+          { key: 'model', label: 'Model', kind: 'text', mono: true, placeholder: 'gpt-4o' },
+          { key: 'apiKey', label: 'API key', kind: 'text', mono: true, placeholder: 'sk-…', hint: 'stored as a Secret' },
+        ],
+      }
+    if (t === 'connection')
+      return {
+        title: 'new connection',
+        ins: ['notify'],
+        outs: ['events'],
+        fields: [
+          nameField,
+          { key: 'type', label: 'Type', kind: 'select', value: 'github', options: Object.keys(CONN_CATEGORY).map((v) => ({ value: v, label: v })) },
+          { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'optional' },
+        ],
+      }
+    return null // chat / tools / notify / delegate are not standalone objects
+  }
+
+  // Write the object a draft describes; return its real flow-node id on success.
+  private async _flowCreate(t: FNodeType, values: Record<string, string | string[]>): Promise<string | null> {
+    const s = (k: string): string => String(values[k] ?? '').trim()
+    const name = s('name')
+    if (!/^[a-z0-9-]+$/.test(name)) {
+      this._flow?.toast('Name must be lowercase letters, numbers and dashes')
+      return null
+    }
+    const agent = this._selected as string
+    try {
+      if (t === 'schedule') {
+        await this._send('POST', '/api/schedules', { name, agentRef: agent, type: 'cron', schedule: s('schedule'), timeZone: s('timeZone'), task: s('task') })
+        await this._loadSchedules()
+        return 'sched:' + name
+      }
+      if (t === 'trigger') {
+        await this._send('POST', '/api/triggers', { name, agentRef: agent, source: s('source') || 'webhook', connectionRef: s('connectionRef'), task: s('task') })
+        await this._loadTriggers()
+        return 'trig:' + name
+      }
+      if (t === 'model') {
+        await this._send('POST', '/api/credentials', { name, provider: s('provider'), baseURL: s('baseURL'), model: s('model'), apiKey: s('apiKey') })
+        await this._send('PUT', `/api/agents/${encodeURIComponent(agent)}`, { modelCredential: name })
+        await this._loadCredentials()
+        await this._loadAgents()
+        return 'model:' + name
+      }
+      if (t === 'connection') {
+        await this._send('POST', '/api/connections', { name, type: s('type'), displayName: s('displayName') })
+        await this._loadConnections()
+        return 'conn:' + name
+      }
+    } catch (e) {
+      this._flow?.toast('Create failed: ' + (e as Error).message)
+      return null
+    }
+    return null
   }
 
   private _flowModel(): FlowModel {
@@ -1212,17 +1317,17 @@ export class AgentsElement extends HTMLElement {
 
     // connections (real wiring hubs: events → triggers, notify ← agent)
     for (const c of this._connections) {
-      if (!usedConns.has(c.metadata.name)) continue
       const cn = c.metadata.name
       const isChannel = CONN_CATEGORY[c.spec.type] === 'channel'
       const id = 'conn:' + cn
+      const used = usedConns.has(cn)
       nodes.push({
         id,
         type: 'connection',
         title: cn,
         ins: isChannel ? ['notify'] : [],
         outs: ['events'],
-        sub: `<span class="mono">${escapeHTML(c.spec.type)}</span>${c.status?.oauthConnected ? ' · connected' : ''}`,
+        sub: `<span class="mono">${escapeHTML(c.spec.type)}</span>${c.status?.oauthConnected ? ' · connected' : used ? '' : ' · unwired'}`,
         status: c.status?.oauthConnected || c.status?.phase === 'Ready' ? ['ok', 'connected'] : ['warn', c.status?.phase || 'setup'],
         fields: [
           { key: 'type', label: 'Type', kind: 'static', value: c.spec.type },

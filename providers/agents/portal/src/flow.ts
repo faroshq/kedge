@@ -112,12 +112,15 @@ export class FlowCanvas {
   private world!: HTMLElement
   private svg!: SVGSVGElement
   private canvas!: HTMLElement
-  private insp!: HTMLElement
+  private modal!: HTMLElement
+  private dialog!: HTMLElement
   private toastEl!: HTMLElement
   private nodeEls = new Map<string, HTMLElement>()
   private pos = new Map<string, Pos>()
   private view = { x: 60, y: 20, k: 0.85 }
   private sel: string | null = null
+  private editing: string | null = null // node whose edit dialog is open
+  private saveT = 0
   private loadedKey = ''
   private needFit = false
   private hiWire = -1
@@ -135,12 +138,14 @@ export class FlowCanvas {
         <button data-z="out">−</button><span class="flow-zval mono">100%</span><button data-z="in">+</button><button data-z="fit" title="Fit to view">⤢</button>
       </div>
       <div class="flow-legend"></div>
-      <div class="flow-insp hidden"></div>
+      <div class="flow-modal hidden"><div class="flow-modal-bg"></div><div class="flow-dialog" role="dialog" aria-modal="true"></div></div>
       <div class="flow-toast"></div>`
     this.canvas = root.querySelector('.flow-canvas') as HTMLElement
     this.world = root.querySelector('.flow-world') as HTMLElement
     this.svg = root.querySelector('.flow-wires') as SVGSVGElement
-    this.insp = root.querySelector('.flow-insp') as HTMLElement
+    this.modal = root.querySelector('.flow-modal') as HTMLElement
+    this.dialog = root.querySelector('.flow-dialog') as HTMLElement
+    ;(this.modal.querySelector('.flow-modal-bg') as HTMLElement).onclick = () => this.closeEditor()
     this.toastEl = root.querySelector('.flow-toast') as HTMLElement
     this.buildRail(root.querySelector('.flow-rail') as HTMLElement)
     this.buildLegend(root.querySelector('.flow-legend') as HTMLElement)
@@ -163,7 +168,10 @@ export class FlowCanvas {
     this.layout()
     this.syncNodes()
     this.renderWires()
-    this.renderInspector()
+    // A per-field auto-save reloads data and re-renders; keep the dialog open
+    // (and refreshed) if the edited node still exists.
+    if (this.editing && this.model.nodes.some((n) => n.id === this.editing)) this.renderModal()
+    else if (this.editing) this.closeEditor()
     this.applyView()
     if (this.needFit && this.model.nodes.length) {
       // Defer the initial fit one frame: called synchronously right after the
@@ -248,10 +256,12 @@ export class FlowCanvas {
     el.classList.toggle('sel', this.sel === n.id)
     const tags = (n.tags || []).map((t) => `<span class="flow-tag acc">${esc(t)}</span>`).join('')
     const st = n.status ? `<div class="flow-statusline"><span class="flow-led ${n.status[0]}"></span>${esc(n.status[1])}</div>` : ''
+    const editable = (n.fields || []).some((f) => f.kind !== 'static')
     el.innerHTML = `
       <div class="flow-nhead">
         <span class="flow-nic">${svgIcon(n.type)}</span>
         <span class="flow-nmeta"><span class="flow-ntype">${TYPES[n.type].label}</span><span class="flow-ntitle">${esc(n.title)}</span></span>
+        ${editable ? '<button class="flow-editbtn" title="Edit" aria-label="Edit">✎</button>' : ''}
       </div>
       <div class="flow-nbody">
         ${n.sub ? `<p class="flow-nsub">${n.sub}</p>` : ''}
@@ -265,9 +275,22 @@ export class FlowCanvas {
     el.style.top = p.y + 'px'
     const head = el.querySelector('.flow-nhead') as HTMLElement
     head.onpointerdown = (e) => this.startDragNode(e, n)
+    const editBtn = el.querySelector('.flow-editbtn') as HTMLElement | null
+    if (editBtn) {
+      // Pointerdown-stop keeps the header-drag from swallowing the click.
+      editBtn.onpointerdown = (e) => e.stopPropagation()
+      editBtn.onclick = (e) => {
+        e.stopPropagation()
+        this.openEditor(n.id)
+      }
+    }
     el.onpointerdown = (e) => {
       if ((e.target as HTMLElement).classList.contains('flow-port')) return
       this.select(n.id)
+    }
+    el.ondblclick = (e) => {
+      if ((e.target as HTMLElement).classList.contains('flow-port')) return
+      this.openEditor(n.id)
     }
     if (fresh) {
       el.classList.add('enter')
@@ -334,70 +357,110 @@ export class FlowCanvas {
     this.renderWires()
   }
 
-  // ---- selection + inspector ------------------------------------------------
+  // ---- selection ------------------------------------------------------------
   private select(id: string): void {
     this.sel = id
     for (const [k, el] of this.nodeEls) el.classList.toggle('sel', k === id)
-    this.renderInspector()
   }
   private deselect(): void {
     this.sel = null
     for (const el of this.nodeEls.values()) el.classList.remove('sel')
-    this.insp.classList.add('hidden')
   }
 
-  private renderInspector(): void {
-    const n = this.model.nodes.find((x) => x.id === this.sel)
-    if (!n) {
-      this.insp.classList.add('hidden')
-      return
-    }
-    this.insp.classList.remove('hidden')
-    this.insp.style.setProperty('--nc', cvar(n.type))
-    this.insp.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(n.type)} 15%, var(--color-surface-raised, #fff))`)
-    this.insp.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(n.type)} 40%, var(--color-border-default, #ccc))`)
+  // ---- edit dialog (centered, auto-saving) ----------------------------------
+  private onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') this.closeEditor()
+  }
+  private openEditor(id: string): void {
+    this.select(id)
+    this.editing = id
+    this.renderModal()
+    this.modal.classList.remove('hidden')
+    window.addEventListener('keydown', this.onKey)
+    // focus the first editable control for keyboard users
+    const first = this.dialog.querySelector<HTMLElement>('input, textarea, select')
+    if (first) first.focus()
+  }
+  private closeEditor(): void {
+    this.editing = null
+    this.modal.classList.add('hidden')
+    window.removeEventListener('keydown', this.onKey)
+  }
+
+  private renderModal(): void {
+    const n = this.model.nodes.find((x) => x.id === this.editing)
+    if (!n) return this.closeEditor()
+    this.dialog.style.setProperty('--nc', cvar(n.type))
+    this.dialog.style.setProperty('--nc-soft', `color-mix(in srgb, ${cvar(n.type)} 15%, var(--color-surface-raised, #fff))`)
+    this.dialog.style.setProperty('--nc-line', `color-mix(in srgb, ${cvar(n.type)} 40%, var(--color-border-default, #ccc))`)
     const cables = this.model.wires
       .filter((w) => w.from[0] === n.id || w.to[0] === n.id)
       .map((w) => {
         const out = w.from[0] === n.id
-        const otherId = out ? w.to[0] : w.from[0]
-        const other = this.model.nodes.find((x) => x.id === otherId)
+        const other = this.model.nodes.find((x) => x.id === (out ? w.to[0] : w.from[0]))
         const src = this.model.nodes.find((x) => x.id === w.from[0])
         const col = src ? cvar(src.type) : 'var(--color-border-strong)'
-        return `<div class="flow-wireitem"><span class="sw" style="background:${col}"></span><span class="dir">${out ? 'OUT →' : '← IN'}</span> ${esc(other?.title || otherId)}</div>`
+        return `<div class="flow-wireitem"><span class="sw" style="background:${col}"></span><span class="dir">${out ? 'OUT →' : '← IN'}</span> ${esc(other?.title || '')}</div>`
       })
-      .join('') || `<div class="flow-wireitem muted">no cables yet — drag from a port</div>`
+      .join('') || `<div class="flow-wireitem muted">no cables yet — drag from a port on the canvas</div>`
     const fields = (n.fields || []).map((f) => this.fieldHTML(f)).join('')
-    const hasForm = (n.fields || []).some((f) => f.kind !== 'static')
-    this.insp.innerHTML = `
-      <div class="flow-insp-head">
+    const editable = (n.fields || []).some((f) => f.kind !== 'static')
+    this.dialog.innerHTML = `
+      <div class="flow-dialog-head">
         <span class="flow-nic">${svgIcon(n.type)}</span>
         <span class="t"><span class="flow-ntype">${TYPES[n.type].label}</span><div class="flow-ntitle">${esc(n.title)}</div></span>
-        <button class="x" data-x>✕</button>
+        <span class="flow-saved" data-saved>saved ✓</span>
+        <button class="flow-x" data-x aria-label="Close">✕</button>
       </div>
-      <div class="flow-insp-body">
-        ${fields}
+      <div class="flow-dialog-body">
+        ${fields || '<p class="flow-nsub">Nothing to edit here — this node is wired from the canvas.</p>'}
         <div class="flow-field"><label>Cables</label><div class="flow-wirelist">${cables}</div></div>
       </div>
-      <div class="flow-insp-foot">
-        ${n.type === 'chat' ? '<button class="flow-btn primary" data-chat>Open chat</button>' : ''}
-        ${hasForm ? '<button class="flow-btn primary" data-save>Save</button>' : ''}
-        ${n.canRun ? '<button class="flow-btn" data-run>▶ Test</button>' : ''}
-        ${n.canDelete ? '<button class="flow-btn danger" data-del>Remove</button>' : ''}
+      <div class="flow-dialog-foot">
+        ${editable ? '<span class="flow-autonote">Changes save automatically</span>' : '<span></span>'}
+        <div class="flow-dialog-actions">
+          ${n.type === 'chat' ? '<button class="flow-btn primary" data-chat>Open chat</button>' : ''}
+          ${n.canRun ? '<button class="flow-btn" data-run>▶ Test</button>' : ''}
+          ${n.canDelete ? '<button class="flow-btn danger" data-del>Remove</button>' : ''}
+        </div>
       </div>`
-    ;(this.insp.querySelector('[data-x]') as HTMLElement).onclick = () => this.deselect()
-    const chatBtn = this.insp.querySelector('[data-chat]') as HTMLElement | null
+    ;(this.dialog.querySelector('[data-x]') as HTMLElement).onclick = () => this.closeEditor()
+    const chatBtn = this.dialog.querySelector('[data-chat]') as HTMLElement | null
     if (chatBtn) chatBtn.onclick = () => this.cb.onOpenChat()
-    const runBtn = this.insp.querySelector('[data-run]') as HTMLElement | null
+    const runBtn = this.dialog.querySelector('[data-run]') as HTMLElement | null
     if (runBtn) runBtn.onclick = () => this.cb.onRun(n.id)
-    const delBtn = this.insp.querySelector('[data-del]') as HTMLElement | null
-    if (delBtn) delBtn.onclick = () => this.cb.onDelete(n.id)
-    const saveBtn = this.insp.querySelector('[data-save]') as HTMLElement | null
-    if (saveBtn) saveBtn.onclick = () => this.commit(n)
-    // chip toggles
-    this.insp.querySelectorAll<HTMLElement>('.flow-chip').forEach((c) => {
-      c.onclick = () => c.classList.toggle('on')
+    const delBtn = this.dialog.querySelector('[data-del]') as HTMLElement | null
+    if (delBtn)
+      delBtn.onclick = () => {
+        this.closeEditor()
+        this.cb.onDelete(n.id)
+      }
+    // auto-save: commit on blur/change of any control, and on chip toggle
+    this.dialog.querySelectorAll<HTMLElement>('input, textarea, select').forEach((el) => {
+      el.addEventListener('change', () => this.autosave())
     })
+    this.dialog.querySelectorAll<HTMLElement>('.flow-chip').forEach((c) => {
+      c.onclick = () => {
+        c.classList.toggle('on')
+        this.autosave()
+      }
+    })
+  }
+
+  // Debounced commit of all fields in the open dialog. onEdit is partial-safe,
+  // so only the keys present here are patched.
+  private autosave(): void {
+    window.clearTimeout(this.saveT)
+    this.saveT = window.setTimeout(() => {
+      const n = this.model.nodes.find((x) => x.id === this.editing)
+      if (!n) return
+      this.commit(n)
+      const badge = this.dialog.querySelector<HTMLElement>('[data-saved]')
+      if (badge) {
+        badge.classList.add('show')
+        window.setTimeout(() => badge.classList.remove('show'), 1600)
+      }
+    }, 350)
   }
 
   private fieldHTML(f: FieldSpec): string {
@@ -419,7 +482,7 @@ export class FlowCanvas {
 
   private commit(n: FNode): void {
     const values: Record<string, string | string[]> = {}
-    this.insp.querySelectorAll<HTMLElement>('[data-k]').forEach((el) => {
+    this.dialog.querySelectorAll<HTMLElement>('[data-k]').forEach((el) => {
       const k = el.dataset.k as string
       if (el.classList.contains('flow-chiprow')) {
         values[k] = Array.from(el.querySelectorAll<HTMLElement>('.flow-chip.on')).map((c) => c.dataset.v as string)

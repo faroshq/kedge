@@ -1258,18 +1258,35 @@ export class AgentsElement extends HTMLElement {
   }
 
   private async _flowEdit(id: string, values: Record<string, string | string[]>): Promise<void> {
-    const str = (v: string | string[] | undefined): string => (Array.isArray(v) ? v.join(',') : v || '')
+    const str = (v: string | string[]): string => (Array.isArray(v) ? v.join(',') : v)
+    // Build a patch from only the keys actually present, so a single-field
+    // (auto-)save never blanks the fields it didn't include.
+    const patch: Record<string, unknown> = {}
+    const take = (k: string, as = k): void => {
+      if (k in values) patch[as] = str(values[k])
+    }
     if (id === 'agent') {
-      await this._updateAgent({ displayName: str(values.displayName), systemPrompt: str(values.systemPrompt), autonomy: str(values.autonomy) })
+      take('displayName')
+      take('systemPrompt')
+      take('autonomy')
+      if (Object.keys(patch).length) await this._updateAgent(patch)
     } else if (id.startsWith('sched:')) {
-      await this._updateSchedule(id.slice(6), { schedule: str(values.schedule), timeZone: str(values.timeZone), task: str(values.task) })
+      take('schedule')
+      take('timeZone')
+      take('task')
+      if (Object.keys(patch).length) await this._updateSchedule(id.slice(6), patch)
     } else if (id.startsWith('trig:')) {
-      await this._updateTrigger(id.slice(5), { source: str(values.source), connectionRef: str(values.connectionRef), task: str(values.task) })
+      take('source')
+      take('connectionRef')
+      take('task')
+      if (Object.keys(patch).length) await this._updateTrigger(id.slice(5), patch)
     } else if (id.startsWith('model:')) {
-      await this._updateAgent({ modelCredential: str(values.modelCredential) }, 'Model reassigned.')
+      if ('modelCredential' in values) await this._updateAgent({ modelCredential: str(values.modelCredential) }, 'Model reassigned.')
     } else if (id === 'tools') {
-      const fams = ['core', ...((values.families as string[]) || [])]
-      await this._updateAgent({ interactiveFamilies: fams, backgroundFamilies: fams.filter((f) => f === 'core' || f === 'web') })
+      if ('families' in values) {
+        const fams = ['core', ...((values.families as string[]) || [])]
+        await this._updateAgent({ interactiveFamilies: fams, backgroundFamilies: fams.filter((f) => f === 'core' || f === 'web') })
+      }
     }
   }
 

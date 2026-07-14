@@ -75,8 +75,8 @@ interface ChatMessage {
   error?: boolean
 }
 
-type AgentTab = 'chat' | 'schedules' | 'triggers' | 'channels' | 'settings'
-type SharedView = 'models' | 'connections' | 'inbox'
+type AgentTab = 'chat' | 'overview' | 'settings'
+type SharedView = 'models' | 'connections' | 'toolsets' | 'inbox'
 
 const PROVIDER_PRESETS: { id: string; label: string; baseURL: string; modelHint: string }[] = [
   { id: 'openai', label: 'OpenAI', baseURL: 'https://api.openai.com/v1', modelHint: 'gpt-4o' },
@@ -310,9 +310,7 @@ const CONN_DEFS: ConnTypeDef[] = [
 
 const AGENT_TABS: [AgentTab, string][] = [
   ['chat', 'Chat'],
-  ['schedules', 'Schedules'],
-  ['triggers', 'Triggers'],
-  ['channels', 'Channels'],
+  ['overview', 'Overview'],
   ['settings', 'Settings'],
 ]
 
@@ -326,16 +324,13 @@ export class AgentsElement extends HTMLElement {
   private _connections: Connection[] = []
   private _triggers: Trigger[] = []
   private _toolsets: Toolset[] = []
+  private _toolsetEdit: string | null = null
   private _inbox: InboxItem[] = []
   private _credentials: Credential[] = []
   private _connType: string | null = null
   private _connMode = ''
   private _connEdit: string | null = null
   private _oauthApps = new Set<string>()
-  private _trigEdit: string | null = null
-  private _schedEdit: string | null = null
-  private _schedType = 'cron'
-  private _schedFreq = 'daily'
   private _messages: ChatMessage[] = []
   private _streaming = false
   private _error: string | null = null
@@ -534,10 +529,6 @@ export class AgentsElement extends HTMLElement {
     this._selected = name
     this._shared = null
     this._agentTab = 'chat'
-    this._trigEdit = null
-    this._schedEdit = null
-    this._schedType = 'cron'
-    this._schedFreq = 'daily'
     this._messages = []
     this._error = null
     this._render()
@@ -581,7 +572,7 @@ export class AgentsElement extends HTMLElement {
       this._shared = null
       const tab = parts[2] as AgentTab
       this._agentTab = AGENT_TABS.some(([id]) => id === tab) ? tab : 'chat'
-    } else if (parts[0] === 'models' || parts[0] === 'connections' || parts[0] === 'inbox') {
+    } else if (parts[0] === 'models' || parts[0] === 'connections' || parts[0] === 'toolsets' || parts[0] === 'inbox') {
       this._shared = parts[0]
       this._selected = null
     } else {
@@ -729,16 +720,6 @@ export class AgentsElement extends HTMLElement {
 
   // ---- schedule / trigger actions (agent-scoped) ---------------------------
 
-  private async _createSchedule(body: Record<string, unknown>): Promise<void> {
-    try {
-      await this._send('POST', '/api/schedules', body)
-      this._note = 'Schedule created.'
-      await this._loadSchedules()
-    } catch (e) {
-      this._note = 'Create failed: ' + (e as Error).message
-      this._render()
-    }
-  }
   private async _deleteSchedule(name: string): Promise<void> {
     try {
       await this._send('DELETE', `/api/schedules/${encodeURIComponent(name)}`)
@@ -752,7 +733,6 @@ export class AgentsElement extends HTMLElement {
     try {
       await this._send('PUT', `/api/schedules/${encodeURIComponent(name)}`, patch)
       this._note = note
-      this._schedEdit = null
       await this._loadSchedules()
     } catch (e) {
       this._note = 'Update failed: ' + (e as Error).message
@@ -769,16 +749,6 @@ export class AgentsElement extends HTMLElement {
       this._note = `Run failed: ${(e as Error).message}`
     }
     this._render()
-  }
-  private async _createTrigger(body: Record<string, unknown>): Promise<void> {
-    try {
-      await this._send('POST', '/api/triggers', body)
-      this._note = 'Trigger created.'
-      await this._loadTriggers()
-    } catch (e) {
-      this._note = 'Create failed: ' + (e as Error).message
-      this._render()
-    }
   }
   private async _deleteTrigger(name: string): Promise<void> {
     try {
@@ -804,7 +774,6 @@ export class AgentsElement extends HTMLElement {
     try {
       await this._send('PUT', `/api/triggers/${encodeURIComponent(name)}`, patch)
       this._note = note
-      this._trigEdit = null
       await this._loadTriggers()
     } catch (e) {
       this._note = 'Update failed: ' + (e as Error).message
@@ -893,7 +862,14 @@ export class AgentsElement extends HTMLElement {
 
     let inner: string
     if (this._shared) {
-      const panel = this._shared === 'models' ? this._renderModels() : this._shared === 'connections' ? this._renderConnections() : this._renderInbox()
+      const panel =
+        this._shared === 'models'
+          ? this._renderModels()
+          : this._shared === 'connections'
+            ? this._renderConnections()
+            : this._shared === 'toolsets'
+              ? this._renderToolsets()
+              : this._renderInbox()
       inner = `<div class="agents-page">${this._renderBack()}${panel}</div>`
     } else if (this._selected) {
       inner = this._renderAgentDetail()
@@ -915,6 +891,7 @@ export class AgentsElement extends HTMLElement {
 
     if (this._shared === 'models') this._wireModels()
     else if (this._shared === 'connections') this._wireConnections()
+    else if (this._shared === 'toolsets') this._wireToolsets()
     else if (this._shared === 'inbox') this._wireInbox()
     else if (this._selected) this._wireAgentDetail()
     else this._wireHome()
@@ -958,6 +935,7 @@ export class AgentsElement extends HTMLElement {
           <div class="agents-home-actions">
             <button class="secondary" data-shared="models">⚙ Models${this._credentials.length ? ` · ${this._credentials.length}` : ''}</button>
             <button class="secondary" data-shared="connections">🔌 Connections${this._connections.length ? ` · ${this._connections.length}` : ''}</button>
+            <button class="secondary" data-shared="toolsets">🧰 Toolsets${this._toolsets.length ? ` · ${this._toolsets.length}` : ''}</button>
             <button class="secondary" data-shared="inbox">📥 Inbox${pending ? ` · ${pending}` : ''}</button>
           </div>
         </header>
@@ -989,17 +967,7 @@ export class AgentsElement extends HTMLElement {
     const a = this._agent()
     if (!a) return `<div class="agents-empty"><p class="muted">Agent not found.</p></div>`
     const flow = this._agentView === 'flow'
-    const listBody = flow
-      ? ''
-      : this._agentTab === 'chat'
-        ? this._renderChat(a)
-        : this._agentTab === 'schedules'
-          ? this._renderSchedules(a)
-          : this._agentTab === 'triggers'
-            ? this._renderTriggers(a)
-            : this._agentTab === 'channels'
-              ? this._renderChannels(a)
-              : this._renderSettings(a)
+    const listBody = flow ? '' : this._agentTab === 'chat' ? this._renderChat(a) : this._agentTab === 'overview' ? this._renderOverview(a) : this._renderSettings(a)
     return `
       <div class="agents-detail ${flow ? 'is-flow' : ''}">
         <div class="agents-detail-head">
@@ -1049,10 +1017,88 @@ export class AgentsElement extends HTMLElement {
       }),
     )
     if (this._agentTab === 'chat') this._wireChat()
-    else if (this._agentTab === 'schedules') this._wireSchedules()
-    else if (this._agentTab === 'triggers') this._wireTriggers()
-    else if (this._agentTab === 'channels') this._wireChannels()
+    else if (this._agentTab === 'overview') this._wireOverview()
     else this._wireSettings()
+  }
+
+  // ---- agent: overview (read + quick actions; edit in Flow) ----------------
+
+  private _renderOverview(a: Agent): string {
+    const name = a.metadata.name
+    const scheds = this._schedules.filter((s) => s.spec.agentRef === name)
+    const trigs = this._triggers.filter((t) => t.spec.agentRef === name)
+    const model = a.spec?.models?.chat
+    const notify = a.spec?.defaultNotifyConnection
+    const fams = (a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges']).filter((f) => f !== 'core')
+    const toolsets = Array.from(new Set([...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])]))
+    const badge = (s: string) => `<span class="agents-badge">${escapeHTML(s)}</span>`
+    const schedRows = scheds.length
+      ? scheds
+          .map((s) => {
+            const when = s.spec.type === 'wakeup' ? s.spec.runAt || '' : s.spec.schedule || ''
+            const next = s.status?.disabledReason ? `⚠ ${escapeHTML(s.status.disabledReason)}` : s.spec.suspend ? 'paused' : s.status?.nextRun ? 'next ' + this._fmtTime(s.status.nextRun) : 'armed'
+            return `<tr><td><strong>${escapeHTML(s.metadata.name)}</strong></td><td class="mono">${escapeHTML(when)}</td><td class="muted">${next}</td>
+              <td class="agents-row-actions"><button class="agents-iconbtn" data-runsched="${escapeHTML(s.metadata.name)}" title="Run now">▶</button><button class="agents-iconbtn agents-iconbtn-danger" data-delsched="${escapeHTML(s.metadata.name)}" title="Delete">🗑</button></td></tr>`
+          })
+          .join('')
+      : `<tr><td colspan="4" class="muted">No schedules — add one in the Flow view.</td></tr>`
+    const trigRows = trigs.length
+      ? trigs
+          .map(
+            (t) =>
+              `<tr><td><strong>${escapeHTML(t.metadata.name)}</strong></td><td class="mono">${escapeHTML(t.spec.source)}${t.spec.connectionRef ? ' · ' + escapeHTML(t.spec.connectionRef) : ''}</td><td class="muted">${t.spec.suspend ? 'paused' : t.status?.lastFired ? 'last ' + this._fmtTime(t.status.lastFired) : 'armed'}</td>
+              <td class="agents-row-actions"><button class="agents-iconbtn" data-runtrig="${escapeHTML(t.metadata.name)}" title="Fire now">▶</button><button class="agents-iconbtn agents-iconbtn-danger" data-deltrig="${escapeHTML(t.metadata.name)}" title="Delete">🗑</button></td></tr>`,
+          )
+          .join('')
+      : `<tr><td colspan="4" class="muted">No triggers — add one in the Flow view.</td></tr>`
+    return `
+      <div class="agents-page">
+        <div class="agents-info">◆ Wiring is edited visually in the <strong>Flow</strong> view. <button class="agents-linkbtn" data-openflow>Open Flow</button></div>
+        <div class="agents-overview-grid">
+          <div class="agents-ov-card">
+            <div class="agents-ov-k">Model</div>
+            <div class="agents-ov-v ${model ? '' : 'warn'}">${model ? escapeHTML(model) : 'none set'}</div>
+          </div>
+          <div class="agents-ov-card">
+            <div class="agents-ov-k">Notify channel</div>
+            <div class="agents-ov-v ${notify ? '' : 'muted'}">${notify ? escapeHTML(notify) : 'none'}</div>
+          </div>
+          <div class="agents-ov-card">
+            <div class="agents-ov-k">Autonomy</div>
+            <div class="agents-ov-v">${escapeHTML(a.spec?.autonomy || 'ask')}</div>
+          </div>
+          <div class="agents-ov-card">
+            <div class="agents-ov-k">Built-in tools</div>
+            <div class="agents-ov-v">${fams.length ? fams.map(badge).join(' ') : '<span class="muted">core only</span>'}</div>
+          </div>
+          <div class="agents-ov-card">
+            <div class="agents-ov-k">Toolsets</div>
+            <div class="agents-ov-v">${toolsets.length ? toolsets.map(badge).join(' ') : '<span class="muted">none linked</span>'}</div>
+          </div>
+        </div>
+        <h3>Schedules</h3>
+        <table class="agents-table"><thead><tr><th>Name</th><th>When</th><th>Status</th><th class="agents-th-actions"></th></tr></thead><tbody>${schedRows}</tbody></table>
+        <h3>Triggers</h3>
+        <table class="agents-table"><thead><tr><th>Name</th><th>Source</th><th>Status</th><th class="agents-th-actions"></th></tr></thead><tbody>${trigRows}</tbody></table>
+      </div>`
+  }
+  private _wireOverview(): void {
+    this.querySelector<HTMLElement>('[data-openflow]')?.addEventListener('click', () => {
+      this._agentView = 'flow'
+      this._render()
+    })
+    this.querySelectorAll<HTMLElement>('[data-runsched]').forEach((el) => el.addEventListener('click', () => void this._runSchedule(el.dataset.runsched!)))
+    this.querySelectorAll<HTMLElement>('[data-delsched]').forEach((el) =>
+      el.addEventListener('click', () => {
+        if (confirm(`Delete schedule ${el.dataset.delsched}?`)) void this._deleteSchedule(el.dataset.delsched!)
+      }),
+    )
+    this.querySelectorAll<HTMLElement>('[data-runtrig]').forEach((el) => el.addEventListener('click', () => void this._runTrigger(el.dataset.runtrig!)))
+    this.querySelectorAll<HTMLElement>('[data-deltrig]').forEach((el) =>
+      el.addEventListener('click', () => {
+        if (confirm(`Delete trigger ${el.dataset.deltrig}?`)) void this._deleteTrigger(el.dataset.deltrig!)
+      }),
+    )
   }
 
   // ---- flow canvas ----------------------------------------------------------
@@ -1648,335 +1694,6 @@ export class AgentsElement extends HTMLElement {
     if (log) log.scrollTop = log.scrollHeight
   }
 
-  // ---- agent: schedules ----------------------------------------------------
-
-  private _renderSchedules(a: Agent): string {
-    const mine = this._schedules.filter((s) => s.spec.agentRef === a.metadata.name)
-    const editing = this._schedEdit ? mine.find((s) => s.metadata.name === this._schedEdit) : undefined
-    const notifyConn = a.spec?.defaultNotifyConnection || ''
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-    const typeLabels: Record<string, string> = { cron: 'Repeating', heartbeat: 'Heartbeat', wakeup: 'One-time' }
-    const channelBanner = notifyConn
-      ? `<div class="agents-info">🔔 Output is delivered to <strong>${escapeHTML(notifyConn)}</strong>. Change it on the <strong>Channels</strong> tab.</div>`
-      : `<div class="agents-warn-banner">🔕 No notify channel set — scheduled output won't reach you. Set one on the <strong>Channels</strong> tab.</div>`
-    const type = this._schedType
-    const freq = this._schedFreq
-    const typeHelp: Record<string, string> = {
-      cron: 'Runs your task on a repeating schedule and delivers the result to your channel.',
-      heartbeat: 'Reviews a standing checklist on a repeating pulse — only pings you when something needs attention (quiet otherwise).',
-      wakeup: 'Runs once at a specific date & time, then it’s done.',
-    }
-    const typeSelect = `<label>What kind?<select name="type" data-schedtype>${Object.entries(typeLabels)
-      .map(([v, l]) => `<option value="${v}" ${v === type ? 'selected' : ''}>${l}</option>`)
-      .join('')}</select></label>`
-    const freqSelect = `<label>How often?<select name="freq" data-schedfreq>${[
-      ['hourly', 'Every hour'],
-      ['daily', 'Every day'],
-      ['weekly', 'Every week'],
-      ['custom', 'Custom (cron)'],
-    ]
-      .map(([v, l]) => `<option value="${v}" ${v === freq ? 'selected' : ''}>${l}</option>`)
-      .join('')}</select></label>`
-    const timeField = `<label>At what time?<input type="time" name="time" value="09:00" /></label>`
-    const dowField = `<label>On which day?<select name="dow"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></label>`
-    let scheduleFields = ''
-    if (type === 'wakeup') {
-      scheduleFields = `<label>Run at<input type="datetime-local" name="runAtLocal" /></label>`
-    } else {
-      scheduleFields = freqSelect
-      if (freq === 'daily') scheduleFields += timeField
-      else if (freq === 'weekly') scheduleFields += dowField + timeField
-      else if (freq === 'custom')
-        scheduleFields += `<label>Cron expression<input name="schedule" placeholder="0 8 * * *" /><span class="agents-hint">5-field cron. <a href="https://crontab.guru" target="_blank" rel="noopener">crontab.guru</a> helps.</span></label>`
-    }
-    const taskLabel = type === 'heartbeat' ? 'Checklist' : 'Task'
-    const taskPlaceholder =
-      type === 'heartbeat' ? 'Check for failing CI and unanswered mentions; only ping me if something needs action.' : 'Summarize today’s open PRs and post the summary to my channel.'
-    return `
-      <div class="agents-panel">
-        <p class="muted">Have ${escapeHTML(a.metadata.name)} run on its own on a timer. ▶ <strong>Run now</strong> executes a schedule immediately as a test (and delivers to your channel), so you don’t have to wait for the timer.</p>
-        ${channelBanner}
-        <table class="agents-table">
-          <thead><tr><th>Name</th><th>Kind</th><th>When</th><th>Next run</th><th class="agents-th-actions">Actions</th></tr></thead>
-          <tbody>
-            ${
-              mine.length
-                ? mine
-                    .map(
-                      (s) => `<tr>
-                        <td><span class="agents-cell-name">${escapeHTML(s.metadata.name)}</span>${s.spec.suspend ? '<span class="agents-badge agents-badge-muted">suspended</span>' : ''}${s.status?.disabledReason ? ` <span class="agents-warn-dot" title="${escapeHTML(s.status.disabledReason)}">●</span>` : ''}</td>
-                        <td><span class="agents-badge">${escapeHTML(typeLabels[s.spec.type] || s.spec.type)}</span></td>
-                        <td>${s.spec.type === 'wakeup' ? escapeHTML(s.spec.runAt || '—') : `<code>${escapeHTML(s.spec.schedule || '—')}</code>`}${s.spec.timeZone ? ` <span class="muted">${escapeHTML(s.spec.timeZone)}</span>` : ''}</td>
-                        <td class="muted">${s.status?.nextRun ? escapeHTML(s.status.nextRun) : '—'}</td>
-                        <td class="agents-row-actions">
-                          <button class="agents-iconbtn" data-editsched="${escapeHTML(s.metadata.name)}" title="Edit">✏️</button>
-                          <button class="agents-iconbtn" data-run="${escapeHTML(s.metadata.name)}" title="Run now (test)">▶</button>
-                          <button class="agents-iconbtn" data-suspendsched="${escapeHTML(s.metadata.name)}" data-suspend="${s.spec.suspend ? '0' : '1'}" title="${s.spec.suspend ? 'Resume' : 'Pause'}">${s.spec.suspend ? '⏵' : '⏸'}</button>
-                          <button class="agents-iconbtn agents-iconbtn-danger" data-delsched="${escapeHTML(s.metadata.name)}" title="Delete">🗑</button>
-                        </td>
-                      </tr>`,
-                    )
-                    .join('')
-                : `<tr class="agents-empty-row"><td colspan="5"><span class="agents-empty">⏰ No schedules yet — create one below.</span></td></tr>`
-            }
-          </tbody>
-        </table>
-        ${editing ? this._renderScheduleEditForm(editing) : `<form class="agents-sched-form">
-          <h4>New schedule</h4>
-          <div class="agents-grid2">
-            <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="daily-digest" /></label>
-            ${typeSelect}
-          </div>
-          <p class="agents-hint">${typeHelp[type]}</p>
-          <div class="agents-grid2">
-            ${scheduleFields}
-          </div>
-          ${type !== 'wakeup' && freq !== 'custom' ? `<p class="agents-hint">Times are in your local zone (${escapeHTML(tz)}).</p>` : ''}
-          <label>${taskLabel}<textarea name="task" rows="2" placeholder="${escapeHTML(taskPlaceholder)}"></textarea></label>
-          <button>Create schedule</button>
-        </form>`}
-      </div>`
-  }
-  private _renderScheduleEditForm(s: Schedule): string {
-    const isWakeup = s.spec.type === 'wakeup'
-    const isHeartbeat = s.spec.type === 'heartbeat'
-    const taskLabel = isHeartbeat ? 'Checklist' : 'Task'
-    const taskVal = isHeartbeat ? s.spec.checklist || '' : s.spec.task || ''
-    // datetime-local wants "YYYY-MM-DDTHH:MM" in local time.
-    const runAtLocal = s.spec.runAt ? new Date(s.spec.runAt).toISOString().slice(0, 16) : ''
-    const when = isWakeup
-      ? `<label>Run at<input type="datetime-local" name="runAtLocal" value="${escapeHTML(runAtLocal)}" /></label>`
-      : `<label>Cron expression<input name="schedule" value="${escapeHTML(s.spec.schedule || '')}" /><span class="agents-hint">5-field cron. <a href="https://crontab.guru" target="_blank" rel="noopener">crontab.guru</a> helps.</span></label>
-         <label>Time zone (IANA, optional)<input name="timeZone" value="${escapeHTML(s.spec.timeZone || '')}" placeholder="UTC" /></label>`
-    return `<form class="agents-sched-form" data-edit="${escapeHTML(s.metadata.name)}" data-edittype="${escapeHTML(s.spec.type)}">
-        <h4>Edit schedule <code>${escapeHTML(s.metadata.name)}</code></h4>
-        <div class="agents-grid2">${when}</div>
-        <label>${taskLabel}<textarea name="task" rows="3">${escapeHTML(taskVal)}</textarea></label>
-        <label class="agents-check"><input type="checkbox" name="suspend" ${s.spec.suspend ? 'checked' : ''} /> Suspended (paused)</label>
-        <div class="agents-form-actions"><button>Save changes</button><button type="button" class="secondary" data-schedcancel>Cancel</button></div>
-      </form>`
-  }
-  private _wireSchedules(): void {
-    this.querySelectorAll<HTMLElement>('[data-run]').forEach((el) => el.addEventListener('click', () => void this._runSchedule(el.dataset.run!)))
-    this.querySelectorAll<HTMLElement>('[data-delsched]').forEach((el) =>
-      el.addEventListener('click', () => {
-        if (confirm(`Delete schedule ${el.dataset.delsched}?`)) void this._deleteSchedule(el.dataset.delsched!)
-      }),
-    )
-    this.querySelectorAll<HTMLElement>('[data-editsched]').forEach((el) =>
-      el.addEventListener('click', () => {
-        this._schedEdit = el.dataset.editsched!
-        this._render()
-      }),
-    )
-    this.querySelector<HTMLElement>('[data-schedcancel]')?.addEventListener('click', () => {
-      this._schedEdit = null
-      this._render()
-    })
-    this.querySelectorAll<HTMLElement>('[data-suspendsched]').forEach((el) =>
-      el.addEventListener('click', () => {
-        const on = el.dataset.suspend === '1'
-        void this._updateSchedule(el.dataset.suspendsched!, { suspend: on }, on ? 'Schedule paused.' : 'Schedule resumed.')
-      }),
-    )
-    this.querySelector<HTMLSelectElement>('[data-schedtype]')?.addEventListener('change', (e) => {
-      this._schedType = (e.target as HTMLSelectElement).value
-      this._render()
-    })
-    this.querySelector<HTMLSelectElement>('[data-schedfreq]')?.addEventListener('change', (e) => {
-      this._schedFreq = (e.target as HTMLSelectElement).value
-      this._render()
-    })
-    const f = this.querySelector<HTMLFormElement>('.agents-sched-form')
-    f?.addEventListener('submit', (e) => {
-      e.preventDefault()
-      const g = (n: string) => (f.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name=${n}]`)?.value || '').trim()
-      const editName = f.dataset.edit
-      if (editName) {
-        const editType = f.dataset.edittype
-        const suspend = f.querySelector<HTMLInputElement>('[name=suspend]')?.checked || false
-        const patch: Record<string, unknown> = { suspend }
-        if (editType === 'wakeup') {
-          const local = g('runAtLocal')
-          if (local) patch.runAt = new Date(local).toISOString()
-        } else {
-          patch.schedule = g('schedule')
-          patch.timeZone = g('timeZone')
-        }
-        if (editType === 'heartbeat') patch.checklist = g('task')
-        else patch.task = g('task')
-        void this._updateSchedule(editName, patch)
-        return
-      }
-      const type = this._schedType
-      const body: Record<string, unknown> = { name: g('name'), agentRef: this._selected, type }
-      if (type === 'wakeup') {
-        const local = g('runAtLocal')
-        if (local) body.runAt = new Date(local).toISOString()
-        body.task = g('task')
-      } else {
-        const freq = this._schedFreq
-        if (freq === 'custom') {
-          body.schedule = g('schedule')
-        } else {
-          const [hh, mm] = (g('time') || '09:00').split(':').map((n) => parseInt(n, 10))
-          if (freq === 'hourly') body.schedule = '0 * * * *'
-          else if (freq === 'weekly') body.schedule = `${mm} ${hh} * * ${g('dow') || '1'}`
-          else body.schedule = `${mm} ${hh} * * *`
-          body.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-        }
-        if (type === 'heartbeat') body.checklist = g('task')
-        else body.task = g('task')
-      }
-      void this._createSchedule(body)
-    })
-  }
-
-  // ---- agent: triggers -----------------------------------------------------
-
-  private _renderTriggers(a: Agent): string {
-    const mine = this._triggers.filter((t) => t.spec.agentRef === a.metadata.name)
-    const editing = this._trigEdit ? mine.find((t) => t.metadata.name === this._trigEdit) : undefined
-    const sourceOpts = (sel: string) =>
-      ['webhook', 'github', 'channel', 'connection']
-        .map((s) => `<option value="${s}" ${s === sel ? 'selected' : ''}>${s}</option>`)
-        .join('')
-    const connOptions = (sel: string) =>
-      `<option value="">— none —</option>` +
-      this._connections.map((c) => `<option value="${escapeHTML(c.metadata.name)}" ${c.metadata.name === sel ? 'selected' : ''}>${escapeHTML(c.metadata.name)} (${escapeHTML(c.spec.type)})</option>`).join('')
-    const rows = mine
-      .map(
-        (t) => `<tr class="${this._trigEdit === t.metadata.name ? 'is-editing' : ''}">
-                        <td><span class="agents-cell-name">${escapeHTML(t.metadata.name)}</span>${t.spec.suspend ? '<span class="agents-badge agents-badge-muted">suspended</span>' : ''}</td>
-                        <td><span class="agents-badge">${escapeHTML(t.spec.source)}</span></td>
-                        <td>${escapeHTML(t.spec.connectionRef || '—')}</td>
-                        <td class="agents-hook-cell">${
-                          t.status?.webhookPath
-                            ? `<code class="agents-url" title="${escapeHTML(location.origin + t.status.webhookPath)}">${escapeHTML(midTrim(location.origin + t.status.webhookPath))}</code><button class="agents-iconbtn agents-iconbtn-sm" data-copyhook="${escapeHTML(t.status.webhookPath)}" title="Copy full webhook URL">📋</button>`
-                            : '<span class="muted">—</span>'
-                        }</td>
-                        <td class="agents-cell-task muted">${escapeHTML((t.spec.task || '—').slice(0, 48))}${(t.spec.task || '').length > 48 ? '…' : ''}</td>
-                        <td class="agents-row-actions">
-                          <button class="agents-iconbtn" data-edittrig="${escapeHTML(t.metadata.name)}" title="Edit">✏️</button>
-                          <button class="agents-iconbtn" data-firetrig="${escapeHTML(t.metadata.name)}" title="Fire now">▶</button>
-                          <button class="agents-iconbtn" data-suspendtrig="${escapeHTML(t.metadata.name)}" data-suspend="${t.spec.suspend ? '0' : '1'}" title="${t.spec.suspend ? 'Resume' : 'Pause'}">${t.spec.suspend ? '⏵' : '⏸'}</button>
-                          <button class="agents-iconbtn agents-iconbtn-danger" data-deltrig="${escapeHTML(t.metadata.name)}" title="Delete">🗑</button>
-                        </td>
-                      </tr>`,
-      )
-      .join('')
-    const form = editing
-      ? `<form class="agents-trig-form" data-edit="${escapeHTML(editing.metadata.name)}">
-          <h4>Edit trigger <code>${escapeHTML(editing.metadata.name)}</code></h4>
-          <div class="agents-grid2">
-            <label>Source<select name="source">${sourceOpts(editing.spec.source)}</select></label>
-            <label>Connection<select name="connectionRef">${connOptions(editing.spec.connectionRef || '')}</select></label>
-          </div>
-          <label>Task<textarea name="task" rows="3">${escapeHTML(editing.spec.task || '')}</textarea></label>
-          <label class="agents-check"><input type="checkbox" name="suspend" ${editing.spec.suspend ? 'checked' : ''} /> Suspended (paused)</label>
-          <div class="agents-form-actions"><button>Save changes</button><button type="button" class="secondary" data-trigcancel>Cancel</button></div>
-        </form>`
-      : `<form class="agents-trig-form">
-          <h4>New trigger</h4>
-          <div class="agents-grid2">
-            <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="on-issue" /></label>
-            <label>Source<select name="source">${sourceOpts('webhook')}</select></label>
-            <label>Connection<select name="connectionRef">${connOptions('')}</select></label>
-          </div>
-          <label>Task<textarea name="task" rows="2" placeholder="Triage the incoming GitHub issue and label it."></textarea></label>
-          <button>Create trigger</button>
-        </form>`
-    return `
-      <div class="agents-panel">
-        <p class="muted">Run ${a.metadata.name} when an event happens. Webhook triggers get a hub-routed URL; github/channel triggers subscribe through a connection. Use ▶ to test, ✏️ to edit.</p>
-        <table class="agents-table">
-          <thead><tr><th>Name</th><th>Source</th><th>Connection</th><th>Webhook URL</th><th>Task</th><th class="agents-th-actions">Actions</th></tr></thead>
-          <tbody>
-            ${mine.length ? rows : `<tr class="agents-empty-row"><td colspan="6"><span class="agents-empty">⚡ No triggers yet — create one below.</span></td></tr>`}
-          </tbody>
-        </table>
-        ${form}
-      </div>`
-  }
-  private _wireTriggers(): void {
-    this.querySelectorAll<HTMLElement>('[data-firetrig]').forEach((el) => el.addEventListener('click', () => void this._runTrigger(el.dataset.firetrig!)))
-    this.querySelectorAll<HTMLElement>('[data-edittrig]').forEach((el) =>
-      el.addEventListener('click', () => {
-        this._trigEdit = el.dataset.edittrig!
-        this._render()
-      }),
-    )
-    this.querySelector<HTMLElement>('[data-trigcancel]')?.addEventListener('click', () => {
-      this._trigEdit = null
-      this._render()
-    })
-    this.querySelectorAll<HTMLElement>('[data-suspendtrig]').forEach((el) =>
-      el.addEventListener('click', () => {
-        const on = el.dataset.suspend === '1'
-        void this._updateTrigger(el.dataset.suspendtrig!, { suspend: on }, on ? 'Trigger paused.' : 'Trigger resumed.')
-      }),
-    )
-    this.querySelectorAll<HTMLElement>('[data-deltrig]').forEach((el) =>
-      el.addEventListener('click', () => {
-        if (confirm(`Delete trigger ${el.dataset.deltrig}?`)) void this._deleteTrigger(el.dataset.deltrig!)
-      }),
-    )
-    this.querySelectorAll<HTMLElement>('[data-copyhook]').forEach((el) =>
-      el.addEventListener('click', () => {
-        const url = location.origin + el.dataset.copyhook!
-        void navigator.clipboard?.writeText(url)
-        this._note = 'Webhook URL copied to clipboard.'
-        this._render()
-      }),
-    )
-    const f = this.querySelector<HTMLFormElement>('.agents-trig-form')
-    f?.addEventListener('submit', (e) => {
-      e.preventDefault()
-      const g = (n: string) => (f.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name=${n}]`)?.value || '').trim()
-      const editName = f.dataset.edit
-      if (editName) {
-        const suspend = f.querySelector<HTMLInputElement>('[name=suspend]')?.checked || false
-        void this._updateTrigger(editName, { source: g('source'), connectionRef: g('connectionRef'), task: g('task'), suspend })
-      } else {
-        void this._createTrigger({ name: g('name'), agentRef: this._selected, source: g('source'), connectionRef: g('connectionRef'), task: g('task') })
-      }
-    })
-  }
-
-  // ---- agent: channels -----------------------------------------------------
-
-  private _renderChannels(a: Agent): string {
-    const messaging = this._connections.filter((c) => ['telegram', 'slack', 'smtp', 'discord'].includes(c.spec.type))
-    const notify = a.spec?.defaultNotifyConnection || ''
-    const opts = `<option value="">— none —</option>` + messaging.map((c) => `<option value="${escapeHTML(c.metadata.name)}" ${c.metadata.name === notify ? 'selected' : ''}>${escapeHTML(c.metadata.name)} (${escapeHTML(c.spec.type)})</option>`).join('')
-    const conn = messaging.find((c) => c.metadata.name === notify)
-    return `
-      <div class="agents-panel agents-form-panel">
-        <p class="muted">This agent's channel is where scheduled/heartbeat output and approval requests are delivered — and, for Telegram/Slack, where you can chat with it inbound. Connections are shared; manage them under <strong>🔌 Connections</strong>.</p>
-        <label>Notify / chat channel
-          <select name="notify" data-set-notify>${opts}</select>
-        </label>
-        ${
-          conn
-            ? `<div class="agents-channel-actions">
-                 ${['telegram', 'slack'].includes(conn.spec.type) ? `<button data-inbound="${escapeHTML(conn.metadata.name)}">Enable inbound chat</button>` : ''}
-                 <button class="secondary" data-testconn="${escapeHTML(conn.metadata.name)}">Send test message</button>
-               </div>
-               ${conn.status?.webhookPath ? `<p class="muted">Inbound webhook: <code>${escapeHTML(conn.status.webhookPath)}</code> — from the channel use <code>/new</code>, <code>/status</code>, <code>/inbox</code>, <code>/approve N</code>.</p>` : ''}`
-            : notify
-              ? `<p class="muted">The selected connection no longer exists — pick another.</p>`
-              : `<p class="muted">No channel set. Create a Telegram/Slack/SMTP connection first, then select it here.</p>`
-        }
-      </div>`
-  }
-  private _wireChannels(): void {
-    this.querySelector<HTMLSelectElement>('[data-set-notify]')?.addEventListener('change', (e) => {
-      void this._updateAgent({ notifyConnection: (e.target as HTMLSelectElement).value }, 'Channel updated.')
-    })
-    this.querySelectorAll<HTMLElement>('[data-inbound]').forEach((el) => el.addEventListener('click', () => void this._enableInbound(el.dataset.inbound!)))
-    this.querySelectorAll<HTMLElement>('[data-testconn]').forEach((el) => el.addEventListener('click', () => void this._testConnection(el.dataset.testconn!)))
-  }
-
   // ---- agent: settings -----------------------------------------------------
 
   private _renderSettings(a: Agent): string {
@@ -2007,7 +1724,9 @@ export class AgentsElement extends HTMLElement {
               <input name="budgetUSD" inputmode="decimal" value="${escapeHTML(a.spec?.budget?.usdLimit || '')}" placeholder="e.g. 20" />
             </label>
           </div>
-          ${this._renderToolsMatrix(a)}
+          <fieldset class="agents-tools"><legend>Tools</legend>
+            <p class="agents-hint">Tools &amp; toolsets are wired in the <strong>Flow</strong> view. See the <strong>Overview</strong> tab for a summary.</p>
+          </fieldset>
           ${
             others.length
               ? `<fieldset class="agents-delegates"><legend>Can delegate to</legend>${others
@@ -2022,44 +1741,14 @@ export class AgentsElement extends HTMLElement {
         </form>
       </div>`
   }
-  private _renderToolsMatrix(a: Agent): string {
-    // core is always on (memory/notify/schedule/ask) — not shown as a toggle.
-    const fams: { id: string; icon: string; label: string; desc: string }[] = [
-      { id: 'web', icon: '🔧', label: 'Web search & fetch', desc: 'Search the web and read pages.' },
-      { id: 'github', icon: '🐙', label: 'GitHub', desc: 'Issues, PRs, code — via github connections.' },
-      { id: 'mcp', icon: '🔌', label: 'MCP servers', desc: 'Tools from your mcp connections.' },
-      { id: 'edges', icon: '🌐', label: 'Cluster edges', desc: 'Act on Kubernetes edges as you.' },
-    ]
-    // Fall back to the same defaults the backend applies when unset, so the
-    // checkboxes reflect what the agent actually gets today.
-    const inter = new Set(a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges'])
-    const bg = new Set(a.spec?.tools?.background?.families || ['core', 'web'])
-    const rows = fams
-      .map(
-        (fam) => `<tr>
-          <td><span class="agents-tool-name">${fam.icon} ${escapeHTML(fam.label)}</span><span class="agents-hint">${escapeHTML(fam.desc)}</span></td>
-          <td class="agents-tool-cell"><input type="checkbox" name="tool-interactive" value="${fam.id}" ${inter.has(fam.id) ? 'checked' : ''} /></td>
-          <td class="agents-tool-cell"><input type="checkbox" name="tool-background" value="${fam.id}" ${bg.has(fam.id) ? 'checked' : ''} /></td>
-        </tr>`,
-      )
-      .join('')
-    return `<fieldset class="agents-tools">
-        <legend>Tools</legend>
-        <p class="agents-hint">What ${escapeHTML(a.metadata.name)} can use. <strong>In chat</strong> = when you talk to it; <strong>In automation</strong> = crons &amp; triggers (kept tighter by default). Core memory/notify is always on. You still tell it what to do in the task, e.g. “search the web for X and summarize.”</p>
-        <table class="agents-table agents-tools-table">
-          <thead><tr><th>Capability</th><th class="agents-tool-cell">In chat</th><th class="agents-tool-cell">In automation</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </fieldset>`
-  }
   private _wireSettings(): void {
     const f = this.querySelector<HTMLFormElement>('.agents-settings-form')
     f?.addEventListener('submit', (e) => {
       e.preventDefault()
       const g = (n: string) => (f.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name=${n}]`)?.value || '').trim()
       const delegates = Array.from(f.querySelectorAll<HTMLInputElement>('input[name=delegate]:checked')).map((el) => el.value)
-      const interactiveFamilies = Array.from(f.querySelectorAll<HTMLInputElement>('input[name=tool-interactive]:checked')).map((el) => el.value)
-      const backgroundFamilies = Array.from(f.querySelectorAll<HTMLInputElement>('input[name=tool-background]:checked')).map((el) => el.value)
+      // Tool families/toolsets are edited in Flow — not sent here, so this save
+      // never clobbers them.
       void this._updateAgent({
         displayName: g('displayName'),
         modelCredential: g('modelCredential'),
@@ -2067,8 +1756,6 @@ export class AgentsElement extends HTMLElement {
         autonomy: g('autonomy'),
         budgetUSD: g('budgetUSD'),
         delegates,
-        interactiveFamilies,
-        backgroundFamilies,
       })
     })
   }
@@ -2135,6 +1822,125 @@ export class AgentsElement extends HTMLElement {
       const g = (n: string) => (form.querySelector<HTMLInputElement>(`input[name=${n}]`)?.value || '').trim()
       void this._createCredential({ name: g('name'), provider: 'openai-compatible', baseURL: baseURL.value.trim(), model: model.value.trim(), apiKey: g('apiKey') })
     })
+  }
+
+  // ---- shared: toolsets ----------------------------------------------------
+
+  private _renderToolsets(): string {
+    const KNOWN = ['web', 'github', 'mcp', 'edges']
+    const toolConns = this._connections.filter((c) => CONN_CATEGORY[c.spec.type] === 'tool')
+    const usedByCount = (name: string): number =>
+      this._agents.filter((a) => [...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])].includes(name)).length
+    const rows =
+      this._toolsets.length === 0
+        ? `<tr><td colspan="5" class="muted">No toolsets yet — create one below or in the Flow view.</td></tr>`
+        : this._toolsets
+            .map((t) => {
+              const fams = (t.spec.families || []).filter((f) => f !== 'core')
+              const conns = t.spec.connections || []
+              const used = usedByCount(t.metadata.name)
+              return `<tr>
+                <td><strong>${escapeHTML(t.spec.displayName || t.metadata.name)}</strong>${t.spec.displayName ? `<span class="agents-hint"> ${escapeHTML(t.metadata.name)}</span>` : ''}</td>
+                <td>${fams.length ? fams.map((f) => `<span class="agents-badge">${escapeHTML(f)}</span>`).join(' ') : '<span class="muted">—</span>'}</td>
+                <td>${conns.length ? conns.map((c) => `<span class="agents-badge">${escapeHTML(c)}</span>`).join(' ') : '<span class="muted">—</span>'}</td>
+                <td class="muted">${used} agent${used === 1 ? '' : 's'}</td>
+                <td class="agents-row-actions">
+                  <button class="agents-iconbtn" data-edittoolset="${escapeHTML(t.metadata.name)}" title="Edit">✏️</button>
+                  <button class="agents-iconbtn agents-iconbtn-danger" data-deltoolset="${escapeHTML(t.metadata.name)}" title="Delete">🗑</button>
+                </td>
+              </tr>`
+            })
+            .join('')
+    const editing = this._toolsets.find((t) => t.metadata.name === this._toolsetEdit)
+    const famChecks = (on: Set<string>): string =>
+      KNOWN.map((f) => `<label class="agents-check"><input type="checkbox" name="family" value="${f}" ${on.has(f) ? 'checked' : ''} /> ${f}</label>`).join('')
+    const connChecks = (on: Set<string>): string =>
+      toolConns.length
+        ? toolConns
+            .map(
+              (c) => `<label class="agents-check"><input type="checkbox" name="connection" value="${escapeHTML(c.metadata.name)}" ${on.has(c.metadata.name) ? 'checked' : ''} /> ${escapeHTML(c.metadata.name)} <span class="agents-hint">${escapeHTML(c.spec.type)}</span></label>`,
+            )
+            .join('')
+        : `<span class="muted">No tool connections yet — add MCP/GitHub tools in the Flow view or Connections.</span>`
+    const form = editing
+      ? `<form class="agents-toolset-form" data-edit="${escapeHTML(editing.metadata.name)}">
+          <h4>Edit toolset <code>${escapeHTML(editing.metadata.name)}</code></h4>
+          <label>Display name<input name="displayName" value="${escapeHTML(editing.spec.displayName || '')}" /></label>
+          <fieldset class="agents-tools"><legend>Built-in families</legend><div class="agents-checkrow">${famChecks(new Set(editing.spec.families || []))}</div></fieldset>
+          <fieldset class="agents-tools"><legend>Tool connections</legend><div class="agents-checkrow">${connChecks(new Set(editing.spec.connections || []))}</div></fieldset>
+          <div class="agents-form-actions"><button>Save</button><button type="button" class="secondary" data-toolsetcancel>Cancel</button></div>
+        </form>`
+      : `<form class="agents-toolset-form">
+          <h4>New toolset</h4>
+          <div class="agents-grid2">
+            <label>Name<input name="name" required pattern="[a-z0-9-]+" placeholder="dev-tools" /></label>
+            <label>Display name<input name="displayName" placeholder="optional" /></label>
+          </div>
+          <fieldset class="agents-tools"><legend>Built-in families</legend><div class="agents-checkrow">${famChecks(new Set())}</div></fieldset>
+          <fieldset class="agents-tools"><legend>Tool connections</legend><div class="agents-checkrow">${connChecks(new Set())}</div></fieldset>
+          <button>Create toolset</button>
+        </form>`
+    return `
+      <div class="agents-panel agents-form-panel">
+        <h3>Toolsets</h3>
+        <p class="muted">Shared bundles of tools — built-in families plus tool connections — that agents link. Define once, attach to many agents (in each agent's Flow, drag the toolset onto the agent).</p>
+        <table class="agents-table">
+          <thead><tr><th>Name</th><th>Families</th><th>Tools</th><th>Used by</th><th class="agents-th-actions">Actions</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${form}
+      </div>`
+  }
+  private _wireToolsets(): void {
+    this.querySelectorAll<HTMLElement>('[data-edittoolset]').forEach((el) =>
+      el.addEventListener('click', () => {
+        this._toolsetEdit = el.dataset.edittoolset!
+        this._render()
+      }),
+    )
+    this.querySelector<HTMLElement>('[data-toolsetcancel]')?.addEventListener('click', () => {
+      this._toolsetEdit = null
+      this._render()
+    })
+    this.querySelectorAll<HTMLElement>('[data-deltoolset]').forEach((el) =>
+      el.addEventListener('click', () => {
+        if (confirm(`Delete toolset ${el.dataset.deltoolset}? Agents linking it will lose those tools.`)) void this._deleteToolset(el.dataset.deltoolset!)
+      }),
+    )
+    const form = this.querySelector<HTMLFormElement>('.agents-toolset-form')
+    form?.addEventListener('submit', (e) => {
+      e.preventDefault()
+      const families = ['core', ...Array.from(form.querySelectorAll<HTMLInputElement>('input[name=family]:checked')).map((i) => i.value)]
+      const connections = Array.from(form.querySelectorAll<HTMLInputElement>('input[name=connection]:checked')).map((i) => i.value)
+      const displayName = (form.querySelector<HTMLInputElement>('input[name=displayName]')?.value || '').trim()
+      const editName = form.dataset.edit
+      if (editName) {
+        void this._updateToolset(editName, { displayName, families, connections })
+        this._toolsetEdit = null
+      } else {
+        const name = (form.querySelector<HTMLInputElement>('input[name=name]')?.value || '').trim()
+        if (name) void this._createToolset({ name, displayName, families, connections })
+      }
+    })
+  }
+  private async _createToolset(body: Record<string, unknown>): Promise<void> {
+    try {
+      await this._send('POST', '/api/toolsets', body)
+      this._note = 'Toolset created.'
+      await this._loadToolsets()
+    } catch (e) {
+      this._note = 'Create failed: ' + (e as Error).message
+      this._render()
+    }
+  }
+  private async _deleteToolset(name: string): Promise<void> {
+    try {
+      await this._send('DELETE', `/api/toolsets/${encodeURIComponent(name)}`)
+      await this._loadToolsets()
+    } catch (e) {
+      this._note = 'Delete failed: ' + (e as Error).message
+      this._render()
+    }
   }
 
   // ---- shared: connections -------------------------------------------------
@@ -2269,6 +2075,8 @@ export class AgentsElement extends HTMLElement {
                         <td class="agents-cell-task muted">${escapeHTML(c.spec.baseURL || c.spec.channel || '—')}</td>
                         <td class="agents-row-actions">
                           <button class="agents-iconbtn" data-editconn="${escapeHTML(c.metadata.name)}" title="Edit">✏️</button>
+                          ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-testconn="${escapeHTML(c.metadata.name)}" title="Send a test message">📨</button>` : ''}
+                          ${connCategory(c.spec.type) === 'channel' ? `<button class="agents-iconbtn" data-inbound="${escapeHTML(c.metadata.name)}" title="${c.status?.webhookPath ? 'Inbound enabled' : 'Enable inbound chat'}">⇄</button>` : ''}
                           ${c.spec.auth === 'oauth' ? `<button class="agents-iconbtn" data-oauth="${escapeHTML(c.metadata.name)}" title="${c.status?.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}">🔗</button>` : ''}
                           <button class="agents-iconbtn agents-iconbtn-danger" data-delconn="${escapeHTML(c.metadata.name)}" title="Delete">🗑</button>
                         </td>
@@ -2289,6 +2097,8 @@ export class AgentsElement extends HTMLElement {
       }),
     )
     this.querySelectorAll<HTMLElement>('[data-oauth]').forEach((el) => el.addEventListener('click', () => void this._oauthConnect(el.dataset.oauth!)))
+    this.querySelectorAll<HTMLElement>('[data-testconn]').forEach((el) => el.addEventListener('click', () => void this._testConnection(el.dataset.testconn!)))
+    this.querySelectorAll<HTMLElement>('[data-inbound]').forEach((el) => el.addEventListener('click', () => void this._enableInbound(el.dataset.inbound!)))
     // Edit an existing connection.
     this.querySelectorAll<HTMLElement>('[data-editconn]:not(form)').forEach((el) =>
       el.addEventListener('click', () => {
@@ -2392,10 +2202,3 @@ function escapeHTML(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
 }
 
-// midTrim keeps both ends of a long string with an ellipsis in the middle, so a
-// webhook URL stays recognizable (host + token tail) without wrapping.
-function midTrim(s: string, max = 40): string {
-  if (s.length <= max) return s
-  const keep = Math.floor((max - 1) / 2)
-  return s.slice(0, keep) + '…' + s.slice(s.length - keep)
-}

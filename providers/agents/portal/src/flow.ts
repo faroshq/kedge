@@ -14,6 +14,7 @@ export type FNodeType =
   | 'connection'
   | 'model'
   | 'tools'
+  | 'toolset'
   | 'output'
   | 'delegate'
 
@@ -99,13 +100,14 @@ const TYPES: Record<FNodeType, TypeDef> = {
   agent: { label: 'Agent', color: '--flow-agent', icon: '<path d="M12 2.5 3.5 7v10L12 21.5 20.5 17V7z"/><circle cx="12" cy="12" r="3.2"/>' },
   model: { label: 'Model', color: '--flow-model', icon: '<rect x="5.5" y="5.5" width="13" height="13" rx="2.5"/><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"/>' },
   tools: { label: 'Tools', color: '--flow-tools', icon: '<path d="M14.5 6.5a3.8 3.8 0 0 1-5 5l-5.5 5.5 2.5 2.5 5.5-5.5a3.8 3.8 0 0 0 5-5l-2.3 2.3-2.2-.5-.5-2.2z"/>' },
+  toolset: { label: 'Toolset', color: '--flow-toolset', icon: '<path d="M12 2.5 3 7l9 4.5L21 7z"/><path d="M3 12l9 4.5L21 12M3 16.5 12 21l9-4.5"/>' },
   output: { label: 'Notify', color: '--flow-output', icon: '<path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.8 1.8H4.2z"/><path d="M10 20.3a2 2 0 0 0 4 0"/>' },
   delegate: { label: 'Delegate', color: '--flow-delegate', icon: '<circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="17.5" cy="9" r="2.2"/><path d="M6 8.2v7.6M6 12h5.5a4 4 0 0 0 4-4"/>' },
 }
 
 const RAIL: [string, FNodeType[]][] = [
   ['In', ['schedule', 'trigger', 'chat']],
-  ['Brain', ['model', 'tools']],
+  ['Brain', ['model', 'tools', 'toolset']],
   ['Out', ['output', 'delegate']],
   ['IO', ['connection']],
 ]
@@ -234,7 +236,7 @@ export class FlowCanvas {
           ? 'connection'
           : t === 'output' || t === 'delegate'
             ? 'out'
-            : t === 'model' || t === 'tools'
+            : t === 'model' || t === 'tools' || t === 'toolset'
               ? 'brain'
               : 'source'
     const step = (n: FNode): number => Math.max(140, PORT0 + Math.max(n.ins.length, n.outs.length) * PORTGAP + 58)

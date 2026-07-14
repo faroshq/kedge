@@ -31,7 +31,7 @@ interface Agent {
     defaultNotifyConnection?: string
     delegates?: string[]
     budget?: { window?: string; usdLimit?: string; tokenLimit?: number }
-    tools?: { interactive?: { families?: string[] }; background?: { families?: string[] } }
+    tools?: { interactive?: { families?: string[]; toolsets?: string[] }; background?: { families?: string[]; toolsets?: string[] } }
   }
 }
 interface Credential {
@@ -55,6 +55,11 @@ interface Trigger {
   metadata: { name: string }
   spec: { agentRef: string; source: string; connectionRef?: string; task?: string; suspend?: boolean }
   status?: { lastFired?: string; webhookPath?: string }
+}
+interface Toolset {
+  metadata: { name: string }
+  spec: { displayName?: string; description?: string; families?: string[]; connections?: string[]; requireApproval?: string[] }
+  status?: { usedBy?: number }
 }
 interface InboxItem {
   id: string
@@ -320,6 +325,7 @@ export class AgentsElement extends HTMLElement {
   private _schedules: Schedule[] = []
   private _connections: Connection[] = []
   private _triggers: Trigger[] = []
+  private _toolsets: Toolset[] = []
   private _inbox: InboxItem[] = []
   private _credentials: Credential[] = []
   private _connType: string | null = null
@@ -385,6 +391,7 @@ export class AgentsElement extends HTMLElement {
     void this._loadAgents()
     void this._loadCredentials()
     void this._loadConnections()
+    void this._loadToolsets()
     void this._loadSchedules()
     void this._loadTriggers()
     void this._loadInbox()
@@ -487,6 +494,15 @@ export class AgentsElement extends HTMLElement {
       this._connections = (await this._get<{ items?: Connection[] }>('/api/connections')).items || []
     } catch {
       /* non-fatal */
+    }
+    this._render()
+  }
+  private async _loadToolsets(): Promise<void> {
+    if (!this._hasWorkspace()) return
+    try {
+      this._toolsets = (await this._get<{ items?: Toolset[] }>('/api/toolsets')).items || []
+    } catch {
+      /* backend may predate toolsets — non-fatal */
     }
     this._render()
   }
@@ -1136,7 +1152,26 @@ export class AgentsElement extends HTMLElement {
           { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'optional' },
         ],
       }
-    return null // chat / tools / notify / delegate are not standalone objects
+    if (t === 'toolset')
+      return {
+        title: 'new toolset',
+        ins: ['conn'],
+        outs: ['use'],
+        outPort: 'use',
+        agentPort: 'tools',
+        fields: [
+          nameField,
+          { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'e.g. dev-tools' },
+          {
+            key: 'families',
+            label: 'Families',
+            kind: 'chips',
+            chips: ['web', 'github', 'mcp', 'edges'].map((f) => ({ value: f, label: f, on: false })),
+            hint: 'A shared bundle. Wire connections into it after creating.',
+          },
+        ],
+      }
+    return null // chat / tools (built-in) / notify / delegate are not standalone objects
   }
 
   // Write the object a draft describes; return its real flow-node id on success.
@@ -1171,11 +1206,29 @@ export class AgentsElement extends HTMLElement {
         await this._loadConnections()
         return 'conn:' + name
       }
+      if (t === 'toolset') {
+        const families = ['core', ...((values.families as string[]) || [])]
+        await this._send('POST', '/api/toolsets', { name, displayName: s('displayName'), families })
+        // link the new toolset to this agent's interactive tools
+        await this._linkToolset(agent, name)
+        await this._loadToolsets()
+        await this._loadAgents()
+        return 'toolset:' + name
+      }
     } catch (e) {
       this._flow?.toast('Create failed: ' + (e as Error).message)
       return null
     }
     return null
+  }
+
+  // _linkToolset adds a toolset name to an agent's interactive tool policy
+  // (idempotent), preserving the rest of the list.
+  private async _linkToolset(agent: string, toolset: string): Promise<void> {
+    const a = this._agents.find((x) => x.metadata.name === agent)
+    const cur = a?.spec?.tools?.interactive?.toolsets || []
+    if (cur.includes(toolset)) return
+    await this._send('PUT', `/api/agents/${encodeURIComponent(agent)}`, { interactiveToolsets: [...cur, toolset] })
   }
 
   private _flowModel(): FlowModel {
@@ -1290,14 +1343,14 @@ export class AgentsElement extends HTMLElement {
       wires.push({ from: [id, 'infer'], to: ['agent', 'model'] })
     }
 
-    // tools
+    // built-in tools (the agent's own inline families — always present)
     const known = ['core', 'web', 'github', 'mcp', 'edges']
     const inter = new Set(a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges'])
     const fams = known.filter((f) => f !== 'core' && inter.has(f))
     nodes.push({
       id: 'tools',
       type: 'tools',
-      title: 'toolset',
+      title: 'built-in tools',
       ins: [],
       outs: ['use'],
       tags: fams.length ? fams : undefined,
@@ -1309,11 +1362,38 @@ export class AgentsElement extends HTMLElement {
           label: 'Capability families',
           kind: 'chips',
           chips: known.filter((f) => f !== 'core').map((f) => ({ value: f, label: f, on: inter.has(f) })),
-          hint: 'Applies to chat + automation. Core memory/notify is always on.',
+          hint: 'This agent’s own families. Core memory/notify is always on.',
         },
       ],
     })
     wires.push({ from: ['tools', 'use'], to: ['agent', 'tools'] })
+
+    // toolsets (shared bundles; all render, linked ones wire into agent.tools)
+    const linked = new Set([...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])])
+    for (const ts of this._toolsets) {
+      const tn = ts.metadata.name
+      const id = 'toolset:' + tn
+      const tfams = ts.spec.families || []
+      const tconns = ts.spec.connections || []
+      nodes.push({
+        id,
+        type: 'toolset',
+        title: ts.spec.displayName || tn,
+        ins: ['conn'],
+        outs: ['use'],
+        tags: tfams.length ? tfams.filter((f) => f !== 'core') : undefined,
+        sub: ts.spec.description ? escapeHTML(ts.spec.description) : `<span class="mono">shared</span>${tconns.length ? ` · ${tconns.length} connection${tconns.length === 1 ? '' : 's'}` : ''}`,
+        status: linked.has(tn) ? ['ok', 'linked'] : ['off', 'available'],
+        canDelete: true,
+        fields: [
+          { key: 'displayName', label: 'Display name', kind: 'text', value: ts.spec.displayName || tn },
+          { key: 'families', label: 'Families', kind: 'chips', chips: known.filter((f) => f !== 'core').map((f) => ({ value: f, label: f, on: tfams.includes(f) })) },
+          { key: 'connections', label: 'Connections', kind: 'static', value: tconns.join(', ') || '— drag a connection’s events port here —' },
+        ],
+      })
+      if (linked.has(tn)) wires.push({ from: [id, 'use'], to: ['agent', 'tools'] })
+      for (const cn of tconns) if (this._connections.some((c) => c.metadata.name === cn)) wires.push({ from: ['conn:' + cn, 'events'], to: [id, 'conn'] })
+    }
 
     // connections (real wiring hubs: events → triggers, notify ← agent)
     for (const c of this._connections) {
@@ -1392,6 +1472,22 @@ export class AgentsElement extends HTMLElement {
         const fams = ['core', ...((values.families as string[]) || [])]
         await this._updateAgent({ interactiveFamilies: fams, backgroundFamilies: fams.filter((f) => f === 'core' || f === 'web') })
       }
+    } else if (id.startsWith('toolset:')) {
+      const tp: Record<string, unknown> = {}
+      if ('displayName' in values) tp.displayName = str(values.displayName)
+      if ('families' in values) tp.families = ['core', ...((values.families as string[]) || [])]
+      if (Object.keys(tp).length) await this._updateToolset(id.slice(8), tp)
+    }
+  }
+
+  private async _updateToolset(name: string, patch: Record<string, unknown>): Promise<void> {
+    try {
+      await this._send('PUT', `/api/toolsets/${encodeURIComponent(name)}`, patch)
+      this._note = 'Toolset updated.'
+      await this._loadToolsets()
+    } catch (e) {
+      this._note = 'Update failed: ' + (e as Error).message
+      this._render()
     }
   }
 
@@ -1411,7 +1507,22 @@ export class AgentsElement extends HTMLElement {
     if (fromNode === 'agent' && toNode.startsWith('conn:') && toPort === 'notify') {
       return void this._updateAgent({ notifyConnection: toNode.slice(5) }, 'Notify channel set.')
     }
-    this._flow?.toast('These ports don’t connect — try schedule/trigger → agent, or model → agent.')
+    // toolset.use → agent.tools : link the shared toolset to this agent
+    if (fromNode.startsWith('toolset:') && toNode === 'agent' && toPort === 'tools') {
+      await this._linkToolset(this._selected as string, fromNode.slice(8))
+      this._note = 'Toolset linked.'
+      await this._loadAgents()
+      return
+    }
+    // connection.events → toolset.conn : add this connection to the toolset
+    if (fromNode.startsWith('conn:') && toNode.startsWith('toolset:') && toPort === 'conn') {
+      const ts = this._toolsets.find((x) => x.metadata.name === toNode.slice(8))
+      const cur = ts?.spec.connections || []
+      const cn = fromNode.slice(5)
+      if (!cur.includes(cn)) return void this._updateToolset(toNode.slice(8), { connections: [...cur, cn] })
+      return
+    }
+    this._flow?.toast('These ports don’t connect — try schedule/trigger → agent, model → agent, or toolset → agent.')
   }
 
   private _flowAdd(type: FNodeType): void {
@@ -1446,6 +1557,14 @@ export class AgentsElement extends HTMLElement {
       const a = this._agent()
       const next = (a?.spec?.delegates || []).filter((d) => d !== id.slice(9))
       await this._updateAgent({ delegates: next }, 'Delegate removed.')
+    } else if (id.startsWith('toolset:')) {
+      // Unlink the shared toolset from this agent; the toolset object stays for
+      // other agents. (Delete the object itself from the Toolsets list.)
+      const ts = id.slice(8)
+      const a = this._agent()
+      const inter = (a?.spec?.tools?.interactive?.toolsets || []).filter((t) => t !== ts)
+      const bg = (a?.spec?.tools?.background?.toolsets || []).filter((t) => t !== ts)
+      await this._updateAgent({ interactiveToolsets: inter, backgroundToolsets: bg }, 'Toolset unlinked.')
     }
   }
 

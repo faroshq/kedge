@@ -1299,6 +1299,13 @@ export class AgentsElement extends HTMLElement {
         { key: 'displayName', label: 'Display name', kind: 'text', value: a.spec?.displayName || name },
         { key: 'systemPrompt', label: 'System prompt', kind: 'textarea', value: a.spec?.systemPrompt || '', placeholder: 'You are a concise assistant that…' },
         { key: 'autonomy', label: 'Autonomy', kind: 'select', value: a.spec?.autonomy || 'ask', options: ['suggest', 'ask', 'auto'].map((v) => ({ value: v, label: v })) },
+        {
+          key: 'families',
+          label: 'Built-in tools',
+          kind: 'chips',
+          chips: ['web', 'github', 'mcp', 'edges'].map((f) => ({ value: f, label: f, on: new Set(a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges']).has(f) })),
+          hint: 'Capabilities this agent has directly. Link a Toolset for shared bundles.',
+        },
       ],
     })
 
@@ -1384,30 +1391,10 @@ export class AgentsElement extends HTMLElement {
       wires.push({ from: [id, 'infer'], to: ['agent', 'model'] })
     }
 
-    // built-in tools (the agent's own inline families — always present)
+    // The agent's own built-in families live on the Agent node's settings
+    // (see fields above) — not a separate bundle node — so "Tool" and "Toolset"
+    // stay the only two tool concepts on the canvas.
     const known = ['core', 'web', 'github', 'mcp', 'edges']
-    const inter = new Set(a.spec?.tools?.interactive?.families || ['core', 'web', 'github', 'mcp', 'edges'])
-    const fams = known.filter((f) => f !== 'core' && inter.has(f))
-    nodes.push({
-      id: 'tools',
-      type: 'tools',
-      title: 'built-in tools',
-      ins: [],
-      outs: ['use'],
-      tags: fams.length ? fams : undefined,
-      sub: fams.length ? undefined : 'no extra tools granted',
-      status: fams.length ? ['ok', fams.length + ' families'] : ['off', 'core only'],
-      fields: [
-        {
-          key: 'families',
-          label: 'Capability families',
-          kind: 'chips',
-          chips: known.filter((f) => f !== 'core').map((f) => ({ value: f, label: f, on: inter.has(f) })),
-          hint: 'This agent’s own families. Core memory/notify is always on.',
-        },
-      ],
-    })
-    wires.push({ from: ['tools', 'use'], to: ['agent', 'tools'] })
 
     // toolsets (shared bundles; all render, linked ones wire into agent.tools)
     const linked = new Set([...(a.spec?.tools?.interactive?.toolsets || []), ...(a.spec?.tools?.background?.toolsets || [])])
@@ -1501,6 +1488,11 @@ export class AgentsElement extends HTMLElement {
       take('displayName')
       take('systemPrompt')
       take('autonomy')
+      if ('families' in values) {
+        const fams = ['core', ...((values.families as string[]) || [])]
+        patch.interactiveFamilies = fams
+        patch.backgroundFamilies = fams.filter((f) => f === 'core' || f === 'web')
+      }
       if (Object.keys(patch).length) await this._updateAgent(patch)
     } else if (id.startsWith('sched:')) {
       take('schedule')
@@ -1514,11 +1506,6 @@ export class AgentsElement extends HTMLElement {
       if (Object.keys(patch).length) await this._updateTrigger(id.slice(5), patch)
     } else if (id.startsWith('model:')) {
       if ('modelCredential' in values) await this._updateAgent({ modelCredential: str(values.modelCredential) }, 'Model reassigned.')
-    } else if (id === 'tools') {
-      if ('families' in values) {
-        const fams = ['core', ...((values.families as string[]) || [])]
-        await this._updateAgent({ interactiveFamilies: fams, backgroundFamilies: fams.filter((f) => f === 'core' || f === 'web') })
-      }
     } else if (id.startsWith('toolset:')) {
       const tp: Record<string, unknown> = {}
       if ('displayName' in values) tp.displayName = str(values.displayName)

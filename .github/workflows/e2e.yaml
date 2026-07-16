@@ -23,6 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/free-disk-space
+
       - uses: actions/setup-go@v5
         with:
           go-version: v1.26.1
@@ -42,6 +44,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v5
         with:
@@ -109,6 +113,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/free-disk-space
+
       - uses: actions/setup-go@v5
         with:
           go-version: v1.26.1
@@ -166,6 +172,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v5
         with:
@@ -235,6 +243,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v5
         with:

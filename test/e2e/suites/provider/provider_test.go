@@ -47,12 +47,6 @@ const workspacePath = "root:kedge:providers:quickstart"
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
 // providersWorkspaceClient returns a dynamic client targeting
-// root:kedge:providers (the parent workspace holding the provider
-// sub-workspace objects).
-func providersWorkspaceClient(t *testing.T) dynamic.Interface {
-	return kcpDynamic(t, "root:kedge:providers", adminToken)
-}
-
 // systemProvidersClient returns a dynamic client targeting
 // root:kedge:system:providers — where Provider + CatalogEntry live since the
 // provider bootstrap refactor.

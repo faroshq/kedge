@@ -30,7 +30,6 @@ import (
 
 	"github.com/faroshq/faros-kedge/pkg/hub"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-
 	// First-party provider registrations. Each package's init() calls
 	// providers.RegisterBuiltin, so the catalog controller can find them
 	// without a central data list. Adding a new builtin = new blank import

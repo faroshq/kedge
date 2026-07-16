@@ -52,12 +52,13 @@ import (
 
 	"k8s.io/client-go/informers"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	agentReconciler "github.com/faroshq/faros-kedge/pkg/agent/reconciler"
 	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
 	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // AgentConfig holds the locally persisted agent configuration. It is written

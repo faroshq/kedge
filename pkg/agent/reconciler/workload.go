@@ -270,7 +270,7 @@ func convertToDeployment(vw *workloadView, placement *placementView) (*appsv1.De
 	case vw.Spec.Simple != nil:
 		podSpec = buildPodSpecFromSimple(vw.Spec.Simple)
 	default:
-		return nil, fmt.Errorf("Workload must have either simple or template spec")
+		return nil, fmt.Errorf("workload must have either simple or template spec")
 	}
 
 	replicas := int32(1)

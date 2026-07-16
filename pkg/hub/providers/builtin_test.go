@@ -38,9 +38,9 @@ import (
 // provider (or the app-studio fixture in controller_test.go).
 const (
 	fixtureAggregator = "test-aggregator" // pure aggregator, no Requires
-	fixtureEdgeA      = "test-edge-a"      // standalone, no deps
-	fixtureEdgeB      = "test-edge-b"      // standalone, declares a child
-	fixtureNeedsA     = "test-needs-a"     // Requires fixtureEdgeA
+	fixtureEdgeA      = "test-edge-a"     // standalone, no deps
+	fixtureEdgeB      = "test-edge-b"     // standalone, declares a child
+	fixtureNeedsA     = "test-needs-a"    // Requires fixtureEdgeA
 )
 
 var registerFixturesOnce sync.Once

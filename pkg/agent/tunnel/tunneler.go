@@ -36,8 +36,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
 	"github.com/faroshq/provider-sdk/revdial"
+
+	"github.com/faroshq/faros-kedge/pkg/apiurl"
 )
 
 // StartProxyTunnel establishes a reverse tunnel to the hub server.

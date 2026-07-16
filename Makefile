@@ -702,6 +702,22 @@ e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructur
 	}
 	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
+## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
+## Covers the control-plane + auth surface of the decoupled edges provider:
+## provisioning + CatalogEntry Ready, the /api/providers DTO, tenant Enable via
+## APIBinding + KubernetesCluster/LinuxServer CR CRUD, and the edge-proxy
+## authorization boundary (403 without grant -> 502 with grant, through the hub
+## backend proxy). The data-plane tunnel (kubectl/ssh streaming) needs a live
+## agent + edge target and is out of scope here. Shares the embedded-kcp etcd
+## port 2380 with the other subprocess suites — do not run them concurrently.
+E2E_EDGES_TIMEOUT ?= 15m
+e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
+	@test -z "$$(lsof -ti :19463 :16463 :18088 :2380 2>/dev/null)" || { \
+		echo "ports 19463/16463/18088/2380 are in use; stop any running kedge-hub/edges-provider first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
 ## Tilt-cluster suite: runs against an ALREADY-RUNNING operator-deployed,
 ## multi-shard Tilt stack (start it in another terminal with `make tilt-cluster`).
 ## Unlike the other e2e suites it does NOT spawn its own processes — it connects

@@ -33,6 +33,9 @@ jobs:
       - name: Run quickstart provider e2e
         run: make e2e-provider
 
+      - name: Run edges provider e2e
+        run: make e2e-edges
+
   e2e-standalone:
     name: Standalone (embedded kcp + static token)
     runs-on: ubuntu-latest

@@ -78,7 +78,7 @@ spec:
       crd: {}
   - group: kedge.faros.sh
     name: mcpservers
-    schema: v260608-d570146.mcpservers.kedge.faros.sh
+    schema: v260716-d4e8aa2.mcpservers.kedge.faros.sh
     storage:
       crd: {}
   - group: kedge.faros.sh

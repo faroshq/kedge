@@ -1278,6 +1278,9 @@ local_resource(
 #          and mint a long-lived token, then declare a Service against it
 #          (portal → Services → Add service, or the example manifest in
 #          providers/edges/contrib/manifests/homeassistant/).
+#          NOTE: the Service (svc) path dials cluster DNS, so it needs the agent
+#          INSIDE the cluster — stop `edge-kube-agent` and use
+#          `edge-kube-agent-incluster` instead, or the probe 502s.
 #        - server edge: install HA on the host; the agent discovers it and the
 #          Service appears on its own — only the token needs attaching.
 #
@@ -1304,6 +1307,32 @@ local_resource(
 local_resource(
     'edge-kube-agent',
     serve_cmd='make dev-run-edge TYPE=kubernetes',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['edges'],
+)
+
+# Same agent, but as a Deployment INSIDE the edge cluster — the way the
+# kedge-agent chart runs it in production.
+#
+# Use this instead of `edge-kube-agent` when you need the Service (svc) path:
+# a Service on a kube edge is dialled over cluster DNS
+# (home-assistant.home.svc), which only resolves from inside the cluster. The
+# host-run agent serves the k8s subresource fine but 502s on svc.
+#
+# Before clicking:
+#   - stop `edge-kube-agent` — two agents for one edge fight over the tunnel;
+#   - re-run `edge-kube-create` if a join token was already redeemed (the hub
+#     clears it on first use, and this needs a fresh one).
+#
+# Networking: the hub is a ClusterIP in the kcp-tilt cluster, so the make target
+# exposes it via a NodePort and points the agent at the kcp-tilt node IP — both
+# clusters' nodes share the `kind` docker network. Only works in this Tiltfile;
+# the embedded-kcp ./Tiltfile has no kcp-tilt cluster to reach.
+local_resource(
+    'edge-kube-agent-incluster',
+    cmd='make dev-edge-agent-incluster',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kedge-hub'],

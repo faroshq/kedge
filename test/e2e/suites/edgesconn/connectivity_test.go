@@ -41,6 +41,7 @@ import (
 var (
 	kubernetesClusterGVR  = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
 	linuxServerGVR        = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
+	workloadGVR           = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "workloads"}
 	apiBindingGVR         = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
 	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
@@ -83,8 +84,9 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	// the local system:serviceaccount:default:provider.
 	grantEdgeProxy(t, tenantAdmin)
 
-	// 4. Register the KubernetesCluster via the CLI (new edges.kedge.faros.sh group).
-	runCLI(t, kubeconfig, kedgeBin, "edge", "create", edgeName, "--type", "kubernetes")
+	// 4. Register the KubernetesCluster via the CLI (new edges.kedge.faros.sh
+	// group). Label it so the workload subtest's edgeSelector can target it.
+	runCLI(t, kubeconfig, kedgeBin, "edge", "create", edgeName, "--type", "kubernetes", "--labels", "app="+edgeName)
 	t.Cleanup(func() {
 		_ = tenantAdmin.Resource(kubernetesClusterGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
 	})
@@ -108,6 +110,47 @@ func TestKubectlThroughTunnel(t *testing.T) {
 		t.Fatalf("kubectl get nodes through tunnel did not return a control-plane node:\n%s", out)
 	}
 	t.Logf("kubectl get nodes through the tunnel:\n%s", out)
+
+	// 10. Workload plane: a Workload with an edgeSelector matching this edge
+	// should be scheduled (provider scheduler → Placement) and materialized by
+	// the agent's workload reconciler as a Deployment on the edge cluster.
+	t.Run("workload deploys to the edge", func(t *testing.T) {
+		wl := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "edges.kedge.faros.sh/v1alpha1",
+			"kind":       "Workload",
+			"metadata":   map[string]any{"name": "conn-wl", "namespace": "default"},
+			"spec": map[string]any{
+				"simple":   map[string]any{"image": "registry.k8s.io/pause:3.9"},
+				"replicas": int64(1),
+				"placement": map[string]any{
+					"edgeSelector": map[string]any{"matchLabels": map[string]any{"app": edgeName}},
+				},
+			},
+		}}
+		if _, err := tenantAdmin.Resource(workloadGVR).Namespace("default").Create(ctxWithTimeout(t, 10*time.Second), wl, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create Workload: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = tenantAdmin.Resource(workloadGVR).Namespace("default").Delete(context.Background(), "conn-wl", metav1.DeleteOptions{})
+		})
+
+		// The scheduler creates a Placement, the agent creates a Deployment in
+		// the edge cluster's default namespace whose pod goes Running.
+		var last string
+		if !waitFor(t, 3*time.Minute, func() (bool, string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", edgeKubeconfig,
+				"get", "pods", "-n", "default", "--insecure-skip-tls-verify",
+				"--field-selector=status.phase=Running", "-o", "name")
+			b, _ := cmd.CombinedOutput()
+			last = string(b)
+			return strings.TrimSpace(last) != "", last
+		}) {
+			t.Fatalf("workload never produced a Running pod on the edge; last:\n%s", last)
+		}
+		t.Logf("workload deployed a Running pod on the edge:\n%s", last)
+	})
 }
 
 // --- steps ---

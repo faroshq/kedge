@@ -117,7 +117,7 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
-	@for r in kubernetesclusters linuxservers workloads placements; do \
+	@for r in kubernetesclusters linuxservers workloads placements services; do \
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.kedge.faros.sh.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.kedge.faros.sh.yaml; \
 	done

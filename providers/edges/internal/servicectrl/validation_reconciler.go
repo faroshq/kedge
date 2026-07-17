@@ -97,6 +97,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	if isKube(es) && (es.Spec.TargetRef == nil || es.Spec.TargetRef.Name == "" || es.Spec.TargetRef.Namespace == "") {
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "MissingTargetRef",
 			"spec.targetRef is required when spec.edgeRef.kind is KubernetesCluster")
+		setNotProbed(es, "spec.targetRef is missing, so the service was never reached")
 		es.Status.Phase = "Unreachable"
 		return r.commit(ctx, c, orig, es, validationResyncInterval)
 	}
@@ -106,6 +107,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	dialer, ok := r.connManager.Load(key)
 	if !ok {
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "EdgeDisconnected", "no live tunnel to the edge")
+		setNotProbed(es, "the edge is disconnected, so the service was never reached")
 		return r.commit(ctx, c, orig, es, 30*time.Second)
 	}
 
@@ -126,6 +128,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	resp, err := haclient.Do(ctx, dialer, target, http.MethodGet, "/api/config", nil)
 	if err != nil {
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "ProbeFailed", err.Error())
+		setNotProbed(es, "the service could not be reached, so the token was never checked")
 		es.Status.Phase = "Unreachable"
 		return r.commit(ctx, c, orig, es, validationResyncInterval)
 	}
@@ -151,6 +154,7 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		es.Status.Phase = "Unreachable"
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionFalse, "ProbeFailed",
 			fmt.Sprintf("service returned %d", resp.StatusCode))
+		setNotProbed(es, fmt.Sprintf("service returned %d, so the token was never checked", resp.StatusCode))
 	}
 
 	logger.V(4).Info("validated service", "phase", es.Status.Phase)

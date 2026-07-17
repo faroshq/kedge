@@ -42,3 +42,15 @@ func setCondition(conditions *[]metav1.Condition, condType string, status metav1
 func equalStatus(a, b *edgesv1alpha1.ServiceStatus) bool {
 	return reflect.DeepEqual(a, b)
 }
+
+// setNotProbed records that the token could not be checked because the service
+// was never reached.
+//
+// Without this, CredentialsValid keeps whatever a previous reconcile decided —
+// most damagingly the "no authSecretRef configured" verdict set before the user
+// attached a token, which then sits there claiming there are no credentials
+// while a Secret is plainly referenced in the spec. Unknown is the honest
+// answer: we have a token, we just haven't been able to try it.
+func setNotProbed(es *edgesv1alpha1.Service, message string) {
+	setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionUnknown, "NotProbed", message)
+}

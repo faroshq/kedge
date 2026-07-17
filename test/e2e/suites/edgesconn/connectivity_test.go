@@ -40,6 +40,7 @@ import (
 
 var (
 	kubernetesClusterGVR  = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	linuxServerGVR        = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
 	apiBindingGVR         = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
 	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
@@ -89,16 +90,16 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	})
 
 	// 5. Wait for the token controller to issue status.joinToken.
-	joinToken := waitForJoinToken(t, tenantAdmin, edgeName)
+	joinToken := waitForJoinToken(t, tenantAdmin, kubernetesClusterGVR, edgeName)
 
 	// 6. Stand up a kind cluster as the agent's backing cluster.
 	createKindCluster(t, kindName, kindKubeconfig)
 
 	// 7. Run the agent against the tunnel.
-	startAgent(t, joinToken, tenantWS, edgeName, kindKubeconfig)
+	startAgent(t, edgeName, joinToken, tenantWS, "--type", "kubernetes", "--kubeconfig", kindKubeconfig)
 
 	// 8. Wait for the edge to report connected.
-	waitForConnected(t, tenantAdmin, edgeName)
+	waitForConnected(t, tenantAdmin, kubernetesClusterGVR, edgeName)
 
 	// 9. THE PROOF: fetch the edge kubeconfig and list nodes through the tunnel.
 	runCLI(t, kubeconfig, kedgeBin, "kubeconfig", "edge", edgeName, "--output", edgeKubeconfig)
@@ -193,11 +194,11 @@ func grantEdgeProxy(t *testing.T, tenant dynamic.Interface) {
 	}
 }
 
-func waitForJoinToken(t *testing.T, tenant dynamic.Interface, edgeName string) string {
+func waitForJoinToken(t *testing.T, tenant dynamic.Interface, gvr schema.GroupVersionResource, edgeName string) string {
 	t.Helper()
 	var token string
 	if !waitFor(t, 60*time.Second, func() (bool, string) {
-		got, err := tenant.Resource(kubernetesClusterGVR).Get(ctxWithTimeout(t, 5*time.Second), edgeName, metav1.GetOptions{})
+		got, err := tenant.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), edgeName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -232,19 +233,19 @@ func createKindCluster(t *testing.T, name, kubeconfig string) {
 	})
 }
 
-func startAgent(t *testing.T, joinToken, tenantWS, edgeName, kindKubeconfig string) {
+func startAgent(t *testing.T, edgeName, joinToken, tenantWS string, extra ...string) {
 	t.Helper()
 	logf, _ := os.Create(filepath.Join(t.TempDir(), "agent.log"))
-	cmd := exec.Command(kedgeBin, "agent", "run",
+	args := append([]string{
+		"agent", "run",
 		"--hub-url", hubURL,
 		"--hub-insecure-skip-tls-verify",
 		"--token", joinToken,
 		"--tunnel-url", hubURL,
 		"--edge-name", edgeName,
-		"--kubeconfig", kindKubeconfig,
 		"--cluster", tenantWS,
-		"--type", "kubernetes",
-	)
+	}, extra...)
+	cmd := exec.Command(kedgeBin, args...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -255,10 +256,10 @@ func startAgent(t *testing.T, joinToken, tenantWS, edgeName, kindKubeconfig stri
 	t.Cleanup(func() { killGroup(cmd) })
 }
 
-func waitForConnected(t *testing.T, tenant dynamic.Interface, edgeName string) {
+func waitForConnected(t *testing.T, tenant dynamic.Interface, gvr schema.GroupVersionResource, edgeName string) {
 	t.Helper()
 	if !waitFor(t, 3*time.Minute, func() (bool, string) {
-		got, err := tenant.Resource(kubernetesClusterGVR).Get(ctxWithTimeout(t, 5*time.Second), edgeName, metav1.GetOptions{})
+		got, err := tenant.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), edgeName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}

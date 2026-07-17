@@ -79,8 +79,9 @@ func TestSSHThroughTunnel(t *testing.T) {
 	// 6. Server-mode agent proxying to the embedded sshd.
 	startAgent(t, edgeName, joinToken, tenantWS, "--type", "server", "--ssh-proxy-port", strconv.Itoa(sshPort))
 
-	// 7. Wait for the edge to report connected.
+	// 7. Wait for the edge to report connected + the join token to be cleared.
 	waitForConnected(t, tenantAdmin, linuxServerGVR, edgeName)
+	waitForJoinTokenCleared(t, tenantAdmin, linuxServerGVR, edgeName)
 
 	// 8. THE PROOF: run a command over SSH through the tunnel.
 	out := sshThroughTunnel(t, kubeconfig, edgeName, marker)

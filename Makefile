@@ -452,6 +452,34 @@ dev-run-ssh-server:
   --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
 
+## --- Home Assistant on the kube edge (dev) ----------------------------------
+# Deploys HA into the same kind cluster the kubernetes edge agent serves, so the
+# edges provider's Service kind (spec.targetRef → home-assistant.home.svc:8123)
+# has something real to proxy to. See
+# providers/edges/contrib/manifests/homeassistant/README.md.
+HA_MANIFESTS  ?= providers/edges/contrib/manifests/homeassistant
+HA_NAMESPACE  ?= home
+HA_KUBECONFIG ?= .kubeconfig-kedge-agent
+
+dev-deploy-homeassistant: ## Deploy Home Assistant into the kedge-agent kind cluster
+	hack/scripts/ensure-kind-cluster.sh
+	kubectl --kubeconfig=$(HA_KUBECONFIG) apply -k $(HA_MANIFESTS)
+	@echo "Waiting for Home Assistant (first boot pulls a ~1.5GB image)..."
+	kubectl --kubeconfig=$(HA_KUBECONFIG) -n $(HA_NAMESPACE) \
+		rollout status deploy/home-assistant --timeout=600s
+	@echo "Home Assistant is up at home-assistant.$(HA_NAMESPACE).svc:8123 (in-cluster)."
+	@echo "Onboard it: make dev-homeassistant-forward → http://localhost:8123"
+
+dev-homeassistant-forward: ## Port-forward Home Assistant to localhost:8123 (onboarding + token)
+	@echo "Home Assistant → http://localhost:8123 (profile → Security → Long-lived access tokens)"
+	kubectl --kubeconfig=$(HA_KUBECONFIG) -n $(HA_NAMESPACE) \
+		port-forward svc/home-assistant 8123:8123
+
+dev-undeploy-homeassistant: ## Remove Home Assistant (keeps the PVC's data unless you delete the ns)
+	kubectl --kubeconfig=$(HA_KUBECONFIG) delete -k $(HA_MANIFESTS) --ignore-not-found
+
+.PHONY: dev-deploy-homeassistant dev-homeassistant-forward dev-undeploy-homeassistant
+
 GRAPHQL_GRPC_ADDR ?= localhost:50051
 GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
 GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:kedge:providers

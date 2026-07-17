@@ -319,40 +319,34 @@ export async function deleteEdgeService(name: string): Promise<void> {
 // The secret key is "token" (e.g. a Home Assistant long-lived access token).
 export async function connectEdgeService(name: string, token: string): Promise<void> {
   const secretName = `kedge-edges-svc-${name}`
-  // 1. Create (or replace) the Secret holding the token.
-  await graphql(
-    `mutation CreateSecret($namespace: String!, $object: CoreV1Secret_Input!) {
-       core { v1 { createSecret(namespace: $namespace, object: $object) { metadata { name } } } }
-     }`,
-    {
-      namespace: EDGE_SVC_SECRET_NS,
-      object: {
-        metadata: { name: secretName, namespace: EDGE_SVC_SECRET_NS },
-        stringData: { token },
-      },
-    },
-  ).catch(async (e: ErrorResponse) => {
-    // If it already exists, update it in place.
-    if (e?.reason === 'GraphQLError' || e?.reason === 'HTTPError') {
-      await graphql(
-        `mutation UpdateSecret($namespace: String!, $name: String!, $object: CoreV1Secret_Input!) {
-           core { v1 { updateSecret(namespace: $namespace, name: $name, object: $object) { metadata { name } } } }
-         }`,
-        {
-          namespace: EDGE_SVC_SECRET_NS,
-          name: secretName,
-          object: {
-            metadata: { name: secretName, namespace: EDGE_SVC_SECRET_NS },
-            stringData: { token },
-          },
-        },
-      )
-      return
-    }
-    throw e
+
+  // 1. Upsert the Secret holding the token.
+  //
+  // applyYaml is a server-side apply on the gateway's ROOT mutation, so it is
+  // idempotent — re-pasting a token just overwrites the old one, no
+  // create-then-update-on-error dance.
+  //
+  // The manifest is emitted as JSON rather than YAML on purpose: YAML is a
+  // superset of JSON, so the gateway parses it either way, and JSON.stringify
+  // settles every quoting question about whatever characters the token holds.
+  // Hand-built YAML would need escaping rules we'd get wrong eventually.
+  //
+  // The kedge-system namespace already exists in the tenant workspace — the
+  // edges RBAC reconciler creates it when an edge registers, which always
+  // precedes a Service.
+  await graphql(`mutation ApplySecret($yaml: String!) { applyYaml(yaml: $yaml) }`, {
+    yaml: JSON.stringify({
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: secretName, namespace: EDGE_SVC_SECRET_NS },
+      type: 'Opaque',
+      stringData: { token },
+    }),
   })
 
-  // 2. Patch the EdgeService to reference the secret.
+  // 2. Point the Service at the Secret. updateService issues a JSON merge
+  //    patch, so spec.authSecretRef is added without disturbing the rest of the
+  //    spec (edgeRef/type/port).
   await graphql(
     `mutation SetAuth($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
        edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }

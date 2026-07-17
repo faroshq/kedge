@@ -152,6 +152,13 @@ func TestKubectlThroughTunnel(t *testing.T) {
 		}
 		t.Logf("workload deployed a Running pod on the edge:\n%s", last)
 	})
+
+	// 11. MCP plane: the hub's MCP aggregate for this tenant should federate the
+	// edges provider's kube toolset (proves the provider's /mcp is discovered +
+	// proxied for the tenant's connected KubernetesCluster edge).
+	t.Run("mcp aggregate federates the edge kube toolset", func(t *testing.T) {
+		assertMCPAggregateListsKubeTools(t, tenantWS)
+	})
 }
 
 // --- steps ---

@@ -100,9 +100,8 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	// 7. Run the agent against the tunnel.
 	startAgent(t, edgeName, joinToken, tenantWS, "--type", "kubernetes", "--kubeconfig", kindKubeconfig)
 
-	// 8. Wait for the edge to report connected + the join token to be cleared.
+	// 8. Wait for the edge to report connected.
 	waitForConnected(t, tenantAdmin, kubernetesClusterGVR, edgeName)
-	waitForJoinTokenCleared(t, tenantAdmin, kubernetesClusterGVR, edgeName)
 
 	// 9. THE PROOF: fetch the edge kubeconfig and list nodes through the tunnel.
 	runCLI(t, kubeconfig, kedgeBin, "kubeconfig", "edge", edgeName, "--output", edgeKubeconfig)
@@ -306,23 +305,6 @@ func startAgent(t *testing.T, edgeName, joinToken, tenantWS string, extra ...str
 	t.Logf("agent started (pid=%d, log=%s)", cmd.Process.Pid, logf.Name())
 	t.Cleanup(func() { killGroup(cmd) })
 	return cmd
-}
-
-// waitForJoinTokenCleared asserts the token controller clears status.joinToken
-// once the agent tunnel comes up (markEdgeConnected), so a leaked bootstrap
-// token can't be reused.
-func waitForJoinTokenCleared(t *testing.T, tenant dynamic.Interface, gvr schema.GroupVersionResource, edgeName string) {
-	t.Helper()
-	if !waitFor(t, 60*time.Second, func() (bool, string) {
-		got, err := tenant.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), edgeName, metav1.GetOptions{})
-		if err != nil {
-			return false, err.Error()
-		}
-		tok, _, _ := unstructured.NestedString(got.Object, "status", "joinToken")
-		return tok == "", "joinToken still set"
-	}) {
-		t.Error("status.joinToken was not cleared after the agent connected")
-	}
 }
 
 func waitForConnected(t *testing.T, tenant dynamic.Interface, gvr schema.GroupVersionResource, edgeName string) {

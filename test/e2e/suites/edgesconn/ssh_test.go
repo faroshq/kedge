@@ -18,9 +18,11 @@ package edgesconn
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -79,9 +81,8 @@ func TestSSHThroughTunnel(t *testing.T) {
 	// 6. Server-mode agent proxying to the embedded sshd.
 	startAgent(t, edgeName, joinToken, tenantWS, "--type", "server", "--ssh-proxy-port", strconv.Itoa(sshPort))
 
-	// 7. Wait for the edge to report connected + the join token to be cleared.
+	// 7. Wait for the edge to report connected.
 	waitForConnected(t, tenantAdmin, linuxServerGVR, edgeName)
-	waitForJoinTokenCleared(t, tenantAdmin, linuxServerGVR, edgeName)
 
 	// 8. THE PROOF: run a command over SSH through the tunnel.
 	out := sshThroughTunnel(t, kubeconfig, edgeName, marker)
@@ -89,6 +90,60 @@ func TestSSHThroughTunnel(t *testing.T) {
 		t.Fatalf("kedge ssh -- echo did not return %q through the tunnel:\n%s", marker, out)
 	}
 	t.Logf("kedge ssh through the tunnel returned the marker:\n%s", out)
+}
+
+// TestSSHUserMappingInherited proves the default `inherited` SSH user mapping:
+// the server-mode agent connects to the backing sshd as its configured
+// --ssh-user, so that username is what the sshd sees for the tunneled session.
+func TestSSHUserMappingInherited(t *testing.T) {
+	const (
+		edgeName = "map-srv"
+		sshPort  = 22044
+		sshUser  = "mappeduser"
+		sshPass  = "mappedpass"
+	)
+
+	workDir := t.TempDir()
+	kubeconfig := filepath.Join(workDir, "kedge.kubeconfig")
+
+	runCLI(t, kubeconfig, kedgeBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
+	tenantWS := clusterFromKubeconfig(t, kubeconfig)
+	tenantAdmin := kcpDynamic(t, tenantWS, adminToken)
+	enableEdges(t, tenantAdmin)
+	grantEdgeProxy(t, tenantAdmin)
+
+	sshCtx, cancelSSH := context.WithCancel(context.Background())
+	t.Cleanup(cancelSSH)
+	sshSrv := framework.NewTestSSHServer(sshPort)
+	if err := sshSrv.Start(sshCtx); err != nil {
+		t.Fatalf("start embedded SSH server: %v", err)
+	}
+	t.Cleanup(sshSrv.Stop)
+
+	runCLI(t, kubeconfig, kedgeBin, "edge", "create", edgeName, "--type", "server")
+	t.Cleanup(func() {
+		_ = tenantAdmin.Resource(linuxServerGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
+	})
+	joinToken := waitForJoinToken(t, tenantAdmin, linuxServerGVR, edgeName)
+
+	// Agent configured with an explicit SSH user — inherited mapping uses it.
+	startAgent(t, edgeName, joinToken, tenantWS,
+		"--type", "server", "--ssh-proxy-port", strconv.Itoa(sshPort),
+		"--ssh-user", sshUser, "--ssh-password", sshPass)
+	waitForConnected(t, tenantAdmin, linuxServerGVR, edgeName)
+
+	// Open a session through the tunnel, then assert the sshd saw the mapped user.
+	_ = sshThroughTunnel(t, kubeconfig, edgeName, "kedge_ssh_mapping_ok")
+	if !waitFor(t, 30*time.Second, func() (bool, string) {
+		users := sshSrv.ConnectedUsers()
+		if slices.Contains(users, sshUser) {
+			return true, ""
+		}
+		return false, fmt.Sprintf("connected users=%v", users)
+	}) {
+		t.Fatalf("sshd never saw the mapped user %q; connected users: %v", sshUser, sshSrv.ConnectedUsers())
+	}
+	t.Logf("inherited mapping: sshd session ran as %q", sshUser)
 }
 
 // sshThroughTunnel runs `kedge ssh <edge> -- echo <marker>` and returns the

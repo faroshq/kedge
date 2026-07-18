@@ -30,10 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
-
-	"github.com/faroshq/provider-edges/internal/kcpurl"
 )
 
 // rootMCPImpl is advertised on `initialize` for the provider aggregate endpoint.
@@ -88,15 +85,17 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 	srv := mcp.NewServer(rootMCPImpl, &mcp.ServerOptions{Instructions: instructions})
 
 	// 1. Home Assistant tools from Ready home-assistant Services (on either
-	//    connectable kind — the view resolves its own conn resource).
-	for _, es := range p.listReadyHomeAssistant(ctx, cluster) {
+	//    connectable kind — the view resolves its own conn resource). Both the
+	//    list and the per-tool Secret reads act as the caller (token), since the
+	//    provider SA has no direct RBAC on Service objects in tenant workspaces.
+	for _, es := range p.listReadyHomeAssistant(ctx, cluster, token) {
 		key := edgeConnKey(es.view.connResource(), cluster, es.view.Spec.EdgeRef.Name)
 		dialer, ok := p.edgeConnManager.Load(key)
 		if !ok {
 			continue
 		}
 		prefix := sanitizeToolPrefix(es.name) + "_"
-		p.registerHomeAssistantTools(srv, prefix, cluster, es.view, dialer)
+		p.registerHomeAssistantTools(srv, prefix, cluster, token, es.view, dialer)
 	}
 
 	// 2. Federate the kube toolset in-process.
@@ -112,14 +111,14 @@ type readyHAService struct {
 	view *serviceView
 }
 
-// listReadyHomeAssistant lists Ready home-assistant Services in the tenant.
-func (p *Server) listReadyHomeAssistant(ctx context.Context, cluster string) []readyHAService {
+// listReadyHomeAssistant lists Ready home-assistant Services in the tenant,
+// reading as the caller (token) — the provider SA has no direct RBAC on Service
+// objects in tenant workspaces (see userClusterConfig).
+func (p *Server) listReadyHomeAssistant(ctx context.Context, cluster, token string) []readyHAService {
 	if p.kcpConfig == nil || cluster == "" {
 		return nil
 	}
-	clusterConfig := rest.CopyConfig(p.kcpConfig)
-	clusterConfig.Host = kcpurl.ClusterURL(clusterConfig.Host, cluster)
-	dynClient, err := dynamic.NewForConfig(clusterConfig)
+	dynClient, err := dynamic.NewForConfig(p.userClusterConfig(cluster, token))
 	if err != nil {
 		return nil
 	}

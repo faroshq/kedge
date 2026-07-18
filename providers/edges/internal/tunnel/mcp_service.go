@@ -45,7 +45,9 @@ const haStatesDefaultLimit = 100
 // buildServiceMCPHandler serves the per-Service MCP endpoint (streamable
 // HTTP, stateless). The tool bundle is keyed by spec.type; "home-assistant"
 // gets the HA tools, everything else gets none (proxy-only).
-func (p *Server) buildServiceMCPHandler(cluster, name string, svc *serviceView, dialer haclient.Dialer) http.Handler {
+// kcpToken is the caller's kcp bearer token, threaded through so the service's
+// own auth token can be read from its Secret as the caller (see userClusterConfig).
+func (p *Server) buildServiceMCPHandler(cluster, name, kcpToken string, svc *serviceView, dialer haclient.Dialer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Normalize Host to loopback to satisfy the MCP SDK's DNS-rebinding
 		// guard (this endpoint is reached only through the hub's authenticated
@@ -53,7 +55,7 @@ func (p *Server) buildServiceMCPHandler(cluster, name string, svc *serviceView, 
 		r.Host = "localhost"
 		handler := mcp.NewStreamableHTTPHandler(
 			func(req *http.Request) *mcp.Server {
-				return p.buildServiceMCPServer(cluster, name, svc, dialer)
+				return p.buildServiceMCPServer(cluster, name, kcpToken, svc, dialer)
 			},
 			&mcp.StreamableHTTPOptions{Stateless: true},
 		)
@@ -62,7 +64,7 @@ func (p *Server) buildServiceMCPHandler(cluster, name string, svc *serviceView, 
 }
 
 // buildServiceMCPServer constructs the MCP server for one Service.
-func (p *Server) buildServiceMCPServer(cluster, name string, svc *serviceView, dialer haclient.Dialer) *mcp.Server {
+func (p *Server) buildServiceMCPServer(cluster, name, kcpToken string, svc *serviceView, dialer haclient.Dialer) *mcp.Server {
 	instructions := fmt.Sprintf(
 		"You are connected to the kedge Service %q (type %q) in tenant workspace %q. "+
 			"Tools here drive a real service running next to an edge agent. "+
@@ -72,7 +74,7 @@ func (p *Server) buildServiceMCPServer(cluster, name string, svc *serviceView, d
 	srv := mcp.NewServer(serviceMCPImpl, &mcp.ServerOptions{Instructions: instructions})
 
 	if svc.Spec.Type == "home-assistant" {
-		p.registerHomeAssistantTools(srv, "", cluster, svc, dialer)
+		p.registerHomeAssistantTools(srv, "", cluster, kcpToken, svc, dialer)
 	}
 	return srv
 }
@@ -105,12 +107,12 @@ type haEntityState struct {
 // registerHomeAssistantTools registers the HA tools on srv. prefix is prepended
 // to each tool name (used by the aggregate to disambiguate multiple services);
 // pass "" for the per-service endpoint.
-func (p *Server) registerHomeAssistantTools(srv *mcp.Server, prefix, cluster string, svc *serviceView, dialer haclient.Dialer) {
+func (p *Server) registerHomeAssistantTools(srv *mcp.Server, prefix, cluster, kcpToken string, svc *serviceView, dialer haclient.Dialer) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        prefix + "ha_states",
 		Description: "List Home Assistant entity states (trimmed to entity_id, state, friendly_name). Optionally filter by domain.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in haStatesInput) (*mcp.CallToolResult, any, error) {
-		return p.haStates(ctx, cluster, svc, dialer, in)
+		return p.haStates(ctx, cluster, kcpToken, svc, dialer, in)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -120,7 +122,7 @@ func (p *Server) registerHomeAssistantTools(srv *mcp.Server, prefix, cluster str
 		if in.EntityID == "" {
 			return toolErr("entity_id is required"), nil, nil
 		}
-		return p.haPassthrough(ctx, cluster, svc, dialer, http.MethodGet, "/api/states/"+in.EntityID, nil)
+		return p.haPassthrough(ctx, cluster, kcpToken, svc, dialer, http.MethodGet, "/api/states/"+in.EntityID, nil)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -141,15 +143,15 @@ func (p *Server) registerHomeAssistantTools(srv *mcp.Server, prefix, cluster str
 		if err != nil {
 			return toolErr("encode body: " + err.Error()), nil, nil
 		}
-		return p.haPassthrough(ctx, cluster, svc, dialer,
+		return p.haPassthrough(ctx, cluster, kcpToken, svc, dialer,
 			http.MethodPost, "/api/services/"+in.Domain+"/"+in.Service, raw)
 	})
 }
 
 // haStates fetches /api/states and returns a trimmed, optionally domain-filtered
 // and limited list.
-func (p *Server) haStates(ctx context.Context, cluster string, svc *serviceView, dialer haclient.Dialer, in haStatesInput) (*mcp.CallToolResult, any, error) {
-	resp, err := p.haDo(ctx, cluster, svc, dialer, http.MethodGet, "/api/states", nil)
+func (p *Server) haStates(ctx context.Context, cluster, kcpToken string, svc *serviceView, dialer haclient.Dialer, in haStatesInput) (*mcp.CallToolResult, any, error) {
+	resp, err := p.haDo(ctx, cluster, kcpToken, svc, dialer, http.MethodGet, "/api/states", nil)
 	if err != nil {
 		return toolErr(err.Error()), nil, nil
 	}
@@ -187,12 +189,12 @@ func (p *Server) haStates(ctx context.Context, cluster string, svc *serviceView,
 }
 
 // haPassthrough issues a request to HA and returns the response body verbatim.
-func (p *Server) haPassthrough(ctx context.Context, cluster string, svc *serviceView, dialer haclient.Dialer, method, path string, body []byte) (*mcp.CallToolResult, any, error) {
+func (p *Server) haPassthrough(ctx context.Context, cluster, kcpToken string, svc *serviceView, dialer haclient.Dialer, method, path string, body []byte) (*mcp.CallToolResult, any, error) {
 	var rdr io.Reader
 	if body != nil {
 		rdr = strings.NewReader(string(body))
 	}
-	resp, err := p.haDo(ctx, cluster, svc, dialer, method, path, rdr)
+	resp, err := p.haDo(ctx, cluster, kcpToken, svc, dialer, method, path, rdr)
 	if err != nil {
 		return toolErr(err.Error()), nil, nil
 	}
@@ -208,9 +210,10 @@ func (p *Server) haPassthrough(ctx context.Context, cluster string, svc *service
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 }
 
-// haDo resolves the service token and issues one request via haclient.
-func (p *Server) haDo(ctx context.Context, cluster string, svc *serviceView, dialer haclient.Dialer, method, path string, body io.Reader) (*http.Response, error) {
-	token, err := p.readServiceToken(ctx, cluster, svc)
+// haDo resolves the service token (from the Service's Secret, read as the
+// caller) and issues one request via haclient.
+func (p *Server) haDo(ctx context.Context, cluster, kcpToken string, svc *serviceView, dialer haclient.Dialer, method, path string, body io.Reader) (*http.Response, error) {
+	token, err := p.readServiceToken(ctx, cluster, svc, kcpToken)
 	if err != nil {
 		return nil, fmt.Errorf("service credentials: %w", err)
 	}

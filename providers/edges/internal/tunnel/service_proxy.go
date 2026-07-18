@@ -145,10 +145,10 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 		}
 	}
 
-	svc, err := p.fetchService(ctx, cluster, name)
+	svc, err := p.fetchService(ctx, cluster, name, token)
 	if err != nil {
-		logger.Error(err, "fetching edgeservice", "cluster", cluster, "name", name)
-		http.Error(w, "edgeservice not found", http.StatusNotFound)
+		logger.Error(err, "fetching service", "cluster", cluster, "name", name)
+		http.Error(w, "service not found", http.StatusNotFound)
 		return
 	}
 
@@ -163,9 +163,9 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 
 	switch subresource {
 	case "proxy":
-		p.serviceHTTPProxy(ctx, w, r, cluster, svc, dialer, rest)
+		p.serviceHTTPProxy(ctx, w, r, cluster, token, svc, dialer, rest)
 	case "mcp":
-		p.buildServiceMCPHandler(cluster, name, svc, dialer).ServeHTTP(w, r)
+		p.buildServiceMCPHandler(cluster, name, token, svc, dialer).ServeHTTP(w, r)
 	default:
 		http.Error(w, "unknown subresource", http.StatusNotFound)
 	}
@@ -181,12 +181,12 @@ const (
 
 // serviceHTTPProxy reverse-proxies an HTTP request to the host-local service
 // through the agent's /svc handler, injecting the auth token provider-side.
-func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r *http.Request, cluster string, svc *serviceView, dialer interface {
+func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r *http.Request, cluster, kcpToken string, svc *serviceView, dialer interface {
 	Dial(context.Context) (net.Conn, error)
 }, rest string) {
 	logger := klog.FromContext(ctx)
 
-	token, err := p.readServiceToken(ctx, cluster, svc)
+	token, err := p.readServiceToken(ctx, cluster, svc, kcpToken)
 	if err != nil {
 		logger.Error(err, "reading service auth token")
 		http.Error(w, "service credentials unavailable", http.StatusBadGateway)
@@ -265,14 +265,31 @@ func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter
 	<-errc
 }
 
-// fetchService loads a Service CR from the tenant workspace using a
-// cluster-scoped dynamic client (same pattern as fetchSSHCredentials).
-func (p *Server) fetchService(ctx context.Context, cluster, name string) (*serviceView, error) {
+// userClusterConfig returns a rest.Config scoped to a tenant workspace that
+// authenticates as the CALLER, not the provider SA.
+//
+// This is deliberate. The provider SA is not granted direct (non-virtual-
+// workspace) RBAC on Service objects in tenant workspaces — only on the
+// connectable kinds — so reading a Service with p.kcpConfig 403s. The caller
+// owns the workspace and can always read their own Services and the Secret they
+// attached, so we read as them. It also avoids a confused-deputy: the provider
+// never reads tenant objects on its own authority here. AnonymousClientConfig
+// keeps the server URL + CA trust but strips the SA credentials before we set
+// the bearer token.
+func (p *Server) userClusterConfig(cluster, token string) *rest.Config {
+	cfg := rest.AnonymousClientConfig(p.kcpConfig)
+	cfg.Host = kcpurl.ClusterURL(p.kcpConfig.Host, cluster)
+	cfg.BearerToken = token
+	return cfg
+}
+
+// fetchService loads a Service CR from the tenant workspace, reading as the
+// caller (see userClusterConfig).
+func (p *Server) fetchService(ctx context.Context, cluster, name, token string) (*serviceView, error) {
 	if p.kcpConfig == nil {
 		return nil, fmt.Errorf("no kcp config")
 	}
-	clusterConfig := rest.CopyConfig(p.kcpConfig)
-	clusterConfig.Host = kcpurl.ClusterURL(clusterConfig.Host, cluster)
+	clusterConfig := p.userClusterConfig(cluster, token)
 
 	dynClient, err := dynamic.NewForConfig(clusterConfig)
 	if err != nil {
@@ -302,15 +319,17 @@ func (p *Server) fetchService(ctx context.Context, cluster, name string) (*servi
 	return view, nil
 }
 
-// readServiceToken reads the "token" key from the Service's authSecretRef.
-// Returns "" (no error) when no secret is configured — proxy-only services.
-func (p *Server) readServiceToken(ctx context.Context, cluster string, svc *serviceView) (string, error) {
+// readServiceToken reads the "token" key from the Service's authSecretRef,
+// reading as the caller (see userClusterConfig). token is the caller's kcp
+// bearer token; the returned string is the service's own auth token (e.g. a
+// Home Assistant long-lived access token). Returns "" (no error) when no secret
+// is configured — proxy-only services.
+func (p *Server) readServiceToken(ctx context.Context, cluster string, svc *serviceView, token string) (string, error) {
 	ref := svc.Spec.AuthSecretRef
 	if ref == nil {
 		return "", nil
 	}
-	clusterConfig := rest.CopyConfig(p.kcpConfig)
-	clusterConfig.Host = kcpurl.ClusterURL(clusterConfig.Host, cluster)
+	clusterConfig := p.userClusterConfig(cluster, token)
 	k8sClient, err := kubernetes.NewForConfig(clusterConfig)
 	if err != nil {
 		return "", fmt.Errorf("creating cluster-scoped k8s client: %w", err)

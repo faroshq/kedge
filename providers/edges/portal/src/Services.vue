@@ -18,6 +18,14 @@ const PRESETS: ServicePreset[] = [
   { type: 'sonarr', label: 'Sonarr', port: 8989, tokenHint: 'API key (Settings → General)' },
   { type: 'radarr', label: 'Radarr', port: 7878, tokenHint: 'API key (Settings → General)' },
   { type: 'grafana', label: 'Grafana', port: 3000, tokenHint: 'Service-account / API token' },
+  { type: 'grafana-loki', label: 'Grafana Loki', port: 3100, tokenHint: 'Bearer token (optional)' },
+  { type: 'prometheus', label: 'Prometheus', port: 9090, tokenHint: 'Bearer token (optional — often none)' },
+  { type: 'jellyfin', label: 'Jellyfin', port: 8096, tokenHint: 'API key (Dashboard → API Keys)' },
+  { type: 'plex', label: 'Plex', port: 32400, tokenHint: 'X-Plex-Token' },
+  { type: 'portainer', label: 'Portainer', port: 9000, tokenHint: 'Access token (X-API-Key)' },
+  { type: 'adguard', label: 'AdGuard Home', port: 80, tokenHint: 'Web credentials as "username:password"' },
+  { type: 'proxmox', label: 'Proxmox VE', port: 8006, tokenHint: 'API token "USER@REALM!ID=UUID" — set scheme https' },
+  { type: 'pihole', label: 'Pi-hole', port: 80, tokenHint: 'Web-interface password (Pi-hole v6)' },
   { type: 'generic', label: 'Generic (proxy only)', port: 80, tokenHint: 'Bearer token (optional)' },
 ]
 function presetFor(t?: string): ServicePreset | undefined {

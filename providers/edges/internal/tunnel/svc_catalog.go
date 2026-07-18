@@ -24,6 +24,8 @@ package tunnel
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,10 +51,13 @@ func snippet(b []byte) string {
 type authKind int
 
 const (
-	authBearer         authKind = iota // Authorization: Bearer <token>   (Grafana)
-	authAPIKeyHeader                   // <headerName>: <token>            (*arr apps: X-Api-Key)
-	authAPIKeyQuery                    // ?<param>=<token>
-	authQBittorrent                    // POST /api/v2/auth/login -> SID cookie
+	authBearer       authKind = iota // Authorization: Bearer <token>   (Grafana, Prometheus)
+	authAPIKeyHeader                 // <headerName>: <token>            (*arr apps: X-Api-Key; Jellyfin, Plex, Portainer)
+	authAPIKeyQuery                  // ?<param>=<token>
+	authQBittorrent                  // POST /api/v2/auth/login -> SID cookie
+	authBasic                        // Authorization: Basic base64("user:pass")   (AdGuard Home)
+	authProxmox                      // Authorization: PVEAPIToken=<token>          (Proxmox VE API token)
+	authPihole                       // POST /api/auth {password} -> SID; sent as X-FTL-SID (Pi-hole v6)
 )
 
 // catToolInput is the single, generic tool input. A tool's description tells the
@@ -73,11 +78,13 @@ type catTool struct {
 
 // svcDef is a catalog entry: how to auth + which operations to expose.
 type svcDef struct {
-	displayName string
-	defaultPort int32
-	auth        authKind
-	authParam   string // header name (authAPIKeyHeader) or query key (authAPIKeyQuery)
-	tools       []catTool
+	displayName   string
+	defaultPort   int32
+	auth          authKind
+	authParam     string            // header name (authAPIKeyHeader) or query key (authAPIKeyQuery)
+	tokenOptional bool              // service may be unauthenticated (e.g. Prometheus) — don't require a token
+	extraHeaders  map[string]string // always-sent headers, e.g. Accept: application/json for Plex
+	tools         []catTool
 }
 
 // svcCatalog is the registry of data-driven service types. Keys are the
@@ -128,6 +135,81 @@ var svcCatalog = map[string]svcDef{
 			{"delete", "Delete torrents. Form {\"hashes\":\"<hash>\",\"deleteFiles\":\"false\"}.", http.MethodPost, "/api/v2/torrents/delete"},
 		},
 	},
+	"jellyfin": {
+		displayName: "Jellyfin", defaultPort: 8096, auth: authAPIKeyHeader, authParam: "X-Emby-Token",
+		tools: []catTool{
+			{"sessions", "List active playback sessions.", http.MethodGet, "/Sessions"},
+			{"system", "Server system info/version.", http.MethodGet, "/System/Info"},
+			{"search", "Search the library. Pass query {\"searchTerm\":\"dune\"}.", http.MethodGet, "/Search/Hints"},
+		},
+	},
+	"plex": {
+		// Plex speaks XML by default; ask for JSON. Token is the X-Plex-Token.
+		displayName: "Plex", defaultPort: 32400, auth: authAPIKeyHeader, authParam: "X-Plex-Token",
+		extraHeaders: map[string]string{"Accept": "application/json"},
+		tools: []catTool{
+			{"sessions", "List what's currently playing.", http.MethodGet, "/status/sessions"},
+			{"libraries", "List library sections.", http.MethodGet, "/library/sections"},
+			{"identity", "Server identity/version.", http.MethodGet, "/identity"},
+		},
+	},
+	"portainer": {
+		displayName: "Portainer", defaultPort: 9000, auth: authAPIKeyHeader, authParam: "X-API-Key",
+		tools: []catTool{
+			{"endpoints", "List environments (endpoints).", http.MethodGet, "/api/endpoints"},
+			{"stacks", "List deployed stacks.", http.MethodGet, "/api/stacks"},
+			{"status", "Portainer status/version.", http.MethodGet, "/api/status"},
+		},
+	},
+	"prometheus": {
+		// Often unauthenticated behind the tunnel; token (Bearer) is optional.
+		displayName: "Prometheus", defaultPort: 9090, auth: authBearer, tokenOptional: true,
+		tools: []catTool{
+			{"query", "Instant query. Pass query {\"query\":\"up\"}.", http.MethodGet, "/api/v1/query"},
+			{"query_range", "Range query. Query: {\"query\":\"rate(...)\",\"start\":\"...\",\"end\":\"...\",\"step\":\"60\"}.", http.MethodGet, "/api/v1/query_range"},
+			{"targets", "List scrape targets and their health.", http.MethodGet, "/api/v1/targets"},
+			{"alerts", "List active alerts.", http.MethodGet, "/api/v1/alerts"},
+		},
+	},
+	"grafana-loki": {
+		displayName: "Grafana Loki", defaultPort: 3100, auth: authBearer, tokenOptional: true,
+		tools: []catTool{
+			{"query", "LogQL instant query. Query {\"query\":\"{app=\\\"x\\\"}\"}.", http.MethodGet, "/loki/api/v1/query"},
+			{"query_range", "LogQL range query. Query {\"query\":\"...\",\"start\":\"...\",\"end\":\"...\"}.", http.MethodGet, "/loki/api/v1/query_range"},
+			{"labels", "List log stream labels.", http.MethodGet, "/loki/api/v1/labels"},
+		},
+	},
+	"adguard": {
+		// AdGuard Home uses HTTP Basic auth; token Secret holds "user:password".
+		displayName: "AdGuard Home", defaultPort: 80, auth: authBasic,
+		tools: []catTool{
+			{"status", "Protection status + version.", http.MethodGet, "/control/status"},
+			{"stats", "DNS query stats (top clients/domains, counts).", http.MethodGet, "/control/stats"},
+			{"filtering", "Filtering (blocklists) status.", http.MethodGet, "/control/filtering/status"},
+			{"protection", "Toggle protection. Body {\"enabled\":false,\"duration\":0}.", http.MethodPost, "/control/protection"},
+		},
+	},
+	"proxmox": {
+		// Proxmox VE: token Secret holds an API token "USER@REALM!TOKENID=UUID".
+		// Almost always https + self-signed — set the Service spec.scheme=https.
+		displayName: "Proxmox VE", defaultPort: 8006, auth: authProxmox,
+		tools: []catTool{
+			{"nodes", "List cluster nodes.", http.MethodGet, "/api2/json/nodes"},
+			{"resources", "List cluster resources (VMs, storage, nodes).", http.MethodGet, "/api2/json/cluster/resources"},
+			{"cluster_status", "Cluster/quorum status.", http.MethodGet, "/api2/json/cluster/status"},
+		},
+	},
+	"pihole": {
+		// Pi-hole v6 REST API: token Secret holds the web-password; we exchange it
+		// for a session SID (see piholeLogin) sent as X-FTL-SID.
+		displayName: "Pi-hole", defaultPort: 80, auth: authPihole,
+		tools: []catTool{
+			{"summary", "Query/blocking summary stats.", http.MethodGet, "/api/stats/summary"},
+			{"blocking", "Blocking enabled/disabled status.", http.MethodGet, "/api/dns/blocking"},
+			{"disable", "Pause blocking. Body {\"blocking\":false,\"timer\":300}.", http.MethodPost, "/api/dns/blocking"},
+			{"top_domains", "Top permitted/blocked domains.", http.MethodGet, "/api/stats/top_domains"},
+		},
+	},
 }
 
 // catalogServiceType reports whether a Service type is served by the catalog.
@@ -161,30 +243,45 @@ func (p *Server) callCatalogTool(ctx context.Context, cluster, kcpToken string, 
 	if err != nil {
 		return toolErr("service credentials: " + err.Error()), nil, nil
 	}
-	if token == "" {
+	if token == "" && !def.tokenOptional {
 		return toolErr("no auth token configured for this service (set spec.authSecretRef)"), nil, nil
 	}
 
 	header := http.Header{}
+	for k, v := range def.extraHeaders {
+		header.Set(k, v)
+	}
 	q := url.Values{}
 	for k, v := range in.Query {
 		q.Set(k, v)
 	}
 
-	switch def.auth {
-	case authBearer:
-		header.Set("Authorization", "Bearer "+token)
-	case authAPIKeyHeader:
-		header.Set(def.authParam, token)
-	case authAPIKeyQuery:
-		q.Set(def.authParam, token)
-	case authQBittorrent:
-		sid, err := p.qbitLogin(ctx, cluster, svc, dialer, token)
-		if err != nil {
-			return toolErr("qBittorrent login failed: " + err.Error()), nil, nil
+	if token != "" {
+		switch def.auth {
+		case authBearer:
+			header.Set("Authorization", "Bearer "+token)
+		case authAPIKeyHeader:
+			header.Set(def.authParam, token)
+		case authAPIKeyQuery:
+			q.Set(def.authParam, token)
+		case authBasic:
+			header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(token)))
+		case authProxmox:
+			header.Set("Authorization", "PVEAPIToken="+token)
+		case authQBittorrent:
+			sid, err := p.qbitLogin(ctx, cluster, svc, dialer, token)
+			if err != nil {
+				return toolErr("qBittorrent login failed: " + err.Error()), nil, nil
+			}
+			header.Set("Cookie", "SID="+sid)
+			header.Set("Referer", (haclient.Target{Scheme: svc.scheme(), Host: svc.targetHost(), Port: svc.Spec.Port}).SvcTarget())
+		case authPihole:
+			sid, err := p.piholeLogin(ctx, cluster, svc, dialer, token)
+			if err != nil {
+				return toolErr("Pi-hole login failed: " + err.Error()), nil, nil
+			}
+			header.Set("X-FTL-SID", sid)
 		}
-		header.Set("Cookie", "SID="+sid)
-		header.Set("Referer", (haclient.Target{Scheme: svc.scheme(), Host: svc.targetHost(), Port: svc.Spec.Port}).SvcTarget())
 	}
 
 	// Request body: form-encoded (qBittorrent actions) or raw JSON.
@@ -254,4 +351,38 @@ func (p *Server) qbitLogin(ctx context.Context, cluster string, svc *serviceView
 		}
 	}
 	return "", fmt.Errorf("no SID cookie in login response")
+}
+
+// piholeLogin performs Pi-hole v6's session login and returns the SID. The token
+// Secret holds the web-interface password. Returns an error if the app rejects
+// it (wrong password, or the API session limit is hit).
+func (p *Server) piholeLogin(ctx context.Context, cluster string, svc *serviceView, dialer haclient.Dialer, password string) (string, error) {
+	target := haclient.Target{Scheme: svc.scheme(), Host: svc.targetHost(), Port: svc.Spec.Port}
+	header := http.Header{"Content-Type": {"application/json"}}
+	reqBody, err := json.Marshal(map[string]string{"password": password})
+	if err != nil {
+		return "", err
+	}
+	resp, err := haclient.DoWith(ctx, dialer, target, http.MethodPost, "/api/auth", header, strings.NewReader(string(reqBody)))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("login rejected (%d): %s", resp.StatusCode, snippet(body))
+	}
+	var out struct {
+		Session struct {
+			Valid bool   `json:"valid"`
+			SID   string `json:"sid"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("decode login response: %w", err)
+	}
+	if !out.Session.Valid || out.Session.SID == "" {
+		return "", fmt.Errorf("login not valid: %s", snippet(body))
+	}
+	return out.Session.SID, nil
 }

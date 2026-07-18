@@ -158,6 +158,14 @@ spec:
                 - sonarr
                 - radarr
                 - grafana
+                - grafana-loki
+                - prometheus
+                - jellyfin
+                - plex
+                - portainer
+                - adguard
+                - proxmox
+                - pihole
                 - generic
                 type: string
             required:

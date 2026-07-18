@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260718-d25eaf2.services.edges.kedge.faros.sh
+  name: v260718-8d44183.services.edges.kedge.faros.sh
 spec:
   group: edges.kedge.faros.sh
   names:
@@ -154,6 +154,14 @@ spec:
               - sonarr
               - radarr
               - grafana
+              - grafana-loki
+              - prometheus
+              - jellyfin
+              - plex
+              - portainer
+              - adguard
+              - proxmox
+              - pihole
               - generic
               type: string
           required:

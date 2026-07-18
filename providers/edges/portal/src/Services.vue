@@ -10,27 +10,35 @@ import type { EdgeService, EdgeServiceDraft, Edge, ErrorResponse } from './types
 // Service catalog — mirrors the backend svcCatalog (providers/edges/internal/
 // tunnel/svc_catalog.go) + Home Assistant. Each entry seeds the default port and
 // tells the operator what credential the service expects.
-interface ServicePreset { type: string; label: string; port: number; tokenHint: string }
+interface ServicePreset { type: string; label: string; category: string; port: number; tokenHint: string }
 const PRESETS: ServicePreset[] = [
-  { type: 'home-assistant', label: 'Home Assistant', port: 8123, tokenHint: 'Long-lived access token' },
-  { type: 'qbittorrent', label: 'qBittorrent', port: 8080, tokenHint: 'WebUI credentials as "username:password"' },
-  { type: 'prowlarr', label: 'Prowlarr', port: 9696, tokenHint: 'API key (Settings → General)' },
-  { type: 'sonarr', label: 'Sonarr', port: 8989, tokenHint: 'API key (Settings → General)' },
-  { type: 'radarr', label: 'Radarr', port: 7878, tokenHint: 'API key (Settings → General)' },
-  { type: 'grafana', label: 'Grafana', port: 3000, tokenHint: 'Service-account / API token' },
-  { type: 'grafana-loki', label: 'Grafana Loki', port: 3100, tokenHint: 'Bearer token (optional)' },
-  { type: 'prometheus', label: 'Prometheus', port: 9090, tokenHint: 'Bearer token (optional — often none)' },
-  { type: 'jellyfin', label: 'Jellyfin', port: 8096, tokenHint: 'API key (Dashboard → API Keys)' },
-  { type: 'plex', label: 'Plex', port: 32400, tokenHint: 'X-Plex-Token' },
-  { type: 'portainer', label: 'Portainer', port: 9000, tokenHint: 'Access token (X-API-Key)' },
-  { type: 'adguard', label: 'AdGuard Home', port: 80, tokenHint: 'Web credentials as "username:password"' },
-  { type: 'proxmox', label: 'Proxmox VE', port: 8006, tokenHint: 'API token "USER@REALM!ID=UUID" — set scheme https' },
-  { type: 'pihole', label: 'Pi-hole', port: 80, tokenHint: 'Web-interface password (Pi-hole v6)' },
-  { type: 'generic', label: 'Generic (proxy only)', port: 80, tokenHint: 'Bearer token (optional)' },
+  { type: 'home-assistant', label: 'Home Assistant', category: 'Home & IoT', port: 8123, tokenHint: 'Long-lived access token' },
+  { type: 'adguard', label: 'AdGuard Home', category: 'Network', port: 80, tokenHint: 'Web credentials as "username:password"' },
+  { type: 'pihole', label: 'Pi-hole', category: 'Network', port: 80, tokenHint: 'Web-interface password (Pi-hole v6)' },
+  { type: 'grafana', label: 'Grafana', category: 'Observability', port: 3000, tokenHint: 'Service-account / API token' },
+  { type: 'grafana-loki', label: 'Grafana Loki', category: 'Observability', port: 3100, tokenHint: 'Bearer token (optional)' },
+  { type: 'prometheus', label: 'Prometheus', category: 'Observability', port: 9090, tokenHint: 'Bearer token (optional — often none)' },
+  { type: 'proxmox', label: 'Proxmox VE', category: 'Infra', port: 8006, tokenHint: 'API token "USER@REALM!ID=UUID" — set scheme https' },
+  { type: 'portainer', label: 'Portainer', category: 'Infra', port: 9000, tokenHint: 'Access token (X-API-Key)' },
+  { type: 'qbittorrent', label: 'qBittorrent', category: 'Media', port: 8080, tokenHint: 'WebUI credentials as "username:password"' },
+  { type: 'prowlarr', label: 'Prowlarr', category: 'Media', port: 9696, tokenHint: 'API key (Settings → General)' },
+  { type: 'sonarr', label: 'Sonarr', category: 'Media', port: 8989, tokenHint: 'API key (Settings → General)' },
+  { type: 'radarr', label: 'Radarr', category: 'Media', port: 7878, tokenHint: 'API key (Settings → General)' },
+  { type: 'jellyfin', label: 'Jellyfin', category: 'Media', port: 8096, tokenHint: 'API key (Dashboard → API Keys)' },
+  { type: 'plex', label: 'Plex', category: 'Media', port: 32400, tokenHint: 'X-Plex-Token' },
+  { type: 'generic', label: 'Generic (proxy only)', category: 'Other', port: 80, tokenHint: 'Bearer token (optional)' },
 ]
 function presetFor(t?: string): ServicePreset | undefined {
   return PRESETS.find((p) => p.type === t)
 }
+// Presets grouped by category, preserving first-seen category order, for
+// <optgroup> rendering in the type dropdown.
+const PRESET_GROUPS = PRESETS.reduce<{ category: string; items: ServicePreset[] }[]>((groups, p) => {
+  let g = groups.find((x) => x.category === p.category)
+  if (!g) { g = { category: p.category, items: [] }; groups.push(g) }
+  g.items.push(p)
+  return groups
+}, [])
 function onTypeChange() {
   const p = presetFor(draft.value.serviceType)
   if (p) draft.value.port = p.port
@@ -189,7 +197,9 @@ function phaseClass(p?: string): string {
         <label class="fld" style="flex: 1;">
           <span class="lbl">Type</span>
           <select v-model="draft.serviceType" class="input" @change="onTypeChange">
-            <option v-for="p in PRESETS" :key="p.type" :value="p.type">{{ p.label }}</option>
+            <optgroup v-for="g in PRESET_GROUPS" :key="g.category" :label="g.category">
+              <option v-for="p in g.items" :key="p.type" :value="p.type">{{ p.label }}</option>
+            </optgroup>
           </select>
         </label>
         <label class="fld" style="flex: 1;">

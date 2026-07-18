@@ -153,6 +153,11 @@ spec:
                   = proxy-only.
                 enum:
                 - home-assistant
+                - qbittorrent
+                - prowlarr
+                - sonarr
+                - radarr
+                - grafana
                 - generic
                 type: string
             required:

@@ -22,12 +22,19 @@ import (
 )
 
 // ServiceType selects the detector that discovers a service and the MCP
-// tool bundle exposed for it. "generic" is proxy-only (no tools).
-// +kubebuilder:validation:Enum=home-assistant;generic
+// tool bundle exposed for it. "home-assistant" and the catalog apps
+// (qbittorrent, prowlarr, sonarr, radarr, grafana) get bespoke tools;
+// "generic" is proxy-only (no tools).
+// +kubebuilder:validation:Enum=home-assistant;qbittorrent;prowlarr;sonarr;radarr;grafana;generic
 type ServiceType string
 
 const (
 	ServiceTypeHomeAssistant ServiceType = "home-assistant"
+	ServiceTypeQBittorrent   ServiceType = "qbittorrent"
+	ServiceTypeProwlarr      ServiceType = "prowlarr"
+	ServiceTypeSonarr        ServiceType = "sonarr"
+	ServiceTypeRadarr        ServiceType = "radarr"
+	ServiceTypeGrafana       ServiceType = "grafana"
 	ServiceTypeGeneric       ServiceType = "generic"
 )
 

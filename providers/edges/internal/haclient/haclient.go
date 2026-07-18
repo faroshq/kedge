@@ -60,11 +60,24 @@ func (t Target) SvcTarget() string {
 	return fmt.Sprintf("%s://%s:%d", t.Scheme, host, t.Port)
 }
 
-// Do issues one request to the service behind (dialer, target). path is the
-// service-local path (e.g. "/api/states"); it is sent to the agent as
-// "/svc<path>". A fresh tunnel connection is used per call. The caller owns
-// closing the returned response body.
+// Do issues one request to the service behind (dialer, target), injecting the
+// target's token as "Authorization: Bearer" (the Home Assistant / Grafana auth
+// style). path is the service-local path (e.g. "/api/states"); it is sent to
+// the agent as "/svc<path>". A fresh tunnel connection is used per call. The
+// caller owns closing the returned response body.
 func Do(ctx context.Context, dialer Dialer, target Target, method, path string, body io.Reader) (*http.Response, error) {
+	var h http.Header
+	if target.Token != "" {
+		h = http.Header{"Authorization": []string{"Bearer " + target.Token}}
+	}
+	return DoWith(ctx, dialer, target, method, path, h, body)
+}
+
+// DoWith is Do without the implicit Bearer header: the caller supplies whatever
+// auth headers the service needs (e.g. "X-Api-Key" for the *arr apps, a "Cookie"
+// for qBittorrent), and encodes any query into path. target.Token is used only
+// for the svc-target host:port. The caller owns closing the response body.
+func DoWith(ctx context.Context, dialer Dialer, target Target, method, path string, header http.Header, body io.Reader) (*http.Response, error) {
 	conn, err := dialer.Dial(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("dialing edge agent: %w", err)
@@ -77,8 +90,10 @@ func Do(ctx context.Context, dialer Dialer, target Target, method, path string, 
 		return nil, err
 	}
 	req.Header.Set(svcTargetHeader, target.SvcTarget())
-	if target.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+target.Token)
+	for k, vals := range header {
+		for _, v := range vals {
+			req.Header.Add(k, v)
+		}
 	}
 
 	if err := req.Write(conn); err != nil {

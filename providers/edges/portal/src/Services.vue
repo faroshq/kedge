@@ -7,6 +7,27 @@ import {
 } from './api'
 import type { EdgeService, EdgeServiceDraft, Edge, ErrorResponse } from './types'
 
+// Service catalog — mirrors the backend svcCatalog (providers/edges/internal/
+// tunnel/svc_catalog.go) + Home Assistant. Each entry seeds the default port and
+// tells the operator what credential the service expects.
+interface ServicePreset { type: string; label: string; port: number; tokenHint: string }
+const PRESETS: ServicePreset[] = [
+  { type: 'home-assistant', label: 'Home Assistant', port: 8123, tokenHint: 'Long-lived access token' },
+  { type: 'qbittorrent', label: 'qBittorrent', port: 8080, tokenHint: 'WebUI credentials as "username:password"' },
+  { type: 'prowlarr', label: 'Prowlarr', port: 9696, tokenHint: 'API key (Settings → General)' },
+  { type: 'sonarr', label: 'Sonarr', port: 8989, tokenHint: 'API key (Settings → General)' },
+  { type: 'radarr', label: 'Radarr', port: 7878, tokenHint: 'API key (Settings → General)' },
+  { type: 'grafana', label: 'Grafana', port: 3000, tokenHint: 'Service-account / API token' },
+  { type: 'generic', label: 'Generic (proxy only)', port: 80, tokenHint: 'Bearer token (optional)' },
+]
+function presetFor(t?: string): ServicePreset | undefined {
+  return PRESETS.find((p) => p.type === t)
+}
+function onTypeChange() {
+  const p = presetFor(draft.value.serviceType)
+  if (p) draft.value.port = p.port
+}
+
 const services = ref<EdgeService[]>([])
 const edges = ref<Edge[]>([])
 const loading = ref(true)
@@ -159,7 +180,9 @@ function phaseClass(p?: string): string {
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Type</span>
-          <input v-model="draft.serviceType" class="input" placeholder="home-assistant" />
+          <select v-model="draft.serviceType" class="input" @change="onTypeChange">
+            <option v-for="p in PRESETS" :key="p.type" :value="p.type">{{ p.label }}</option>
+          </select>
         </label>
         <label class="fld" style="flex: 1;">
           <span class="lbl">Port</span>
@@ -231,7 +254,7 @@ function phaseClass(p?: string): string {
                 </div>
 
                 <div class="es-head">Access token</div>
-                <div class="muted" style="margin-bottom: 6px;">Paste a long-lived token (e.g. Home Assistant) to make the service Ready. Stored as a Secret, never on the agent host.</div>
+                <div class="muted" style="margin-bottom: 6px;">{{ presetFor(s.serviceType)?.tokenHint ?? 'Access token' }} — makes the service Ready. Stored as a Secret, never on the agent host.</div>
                 <div class="row" style="gap: 8px;">
                   <input v-model="editToken" type="password" class="input" style="flex: 1;" placeholder="token" />
                   <button class="btn" :disabled="busy || !editToken.trim()" @click="onConnect(s)"><KeyRound :size="14" /> {{ s.hasCredentials ? 'Update token' : 'Set token' }}</button>

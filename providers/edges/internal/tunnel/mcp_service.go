@@ -76,8 +76,11 @@ func (p *Server) buildServiceMCPServer(cluster, name, kcpToken string, svc *serv
 	}
 	srv := mcp.NewServer(serviceMCPImpl, &mcp.ServerOptions{Instructions: instructions})
 
-	if svc.Spec.Type == "home-assistant" {
+	switch {
+	case svc.Spec.Type == "home-assistant":
 		p.registerHomeAssistantTools(srv, "", cluster, kcpToken, svc, dialer)
+	case catalogServiceType(svc.Spec.Type):
+		p.registerCatalogTools(srv, "", cluster, kcpToken, svc, dialer)
 	}
 	return srv
 }

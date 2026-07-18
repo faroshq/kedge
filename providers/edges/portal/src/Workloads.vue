@@ -305,20 +305,3 @@ function selectorText(s?: Record<string, string>): string {
     </div>
   </div>
 </template>
-
-<style scoped>
-.market { border: 1px solid var(--border, #2a2a35); border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
-.market-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; }
-.market-head h3 { margin: 0; font-size: 14px; }
-.market-body { padding: 4px 14px 14px; border-top: 1px solid var(--border, #2a2a35); }
-.market-cat { margin-top: 14px; }
-.market-cat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; margin-bottom: 8px; }
-.market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-.market-card { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border, #2a2a35); border-radius: 8px; padding: 12px; }
-.market-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.market-name { font-weight: 600; font-size: 13px; }
-.market-desc { margin: 0; font-size: 12px; opacity: 0.75; min-height: 32px; }
-.market-meta { font-size: 11px; }
-.chip { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--chip-bg, #2a2a35); opacity: 0.8; white-space: nowrap; }
-.btn.sm { padding: 4px 10px; font-size: 12px; align-self: flex-start; }
-</style>

@@ -83,6 +83,7 @@ export interface EdgeService {
   scheme?: string
   port?: number
   hasCredentials: boolean
+  instructions?: string
   phase?: string
   version?: string
   installType?: string
@@ -100,4 +101,5 @@ export interface EdgeServiceDraft {
   targetNamespace: string
   targetName: string
   port: number
+  instructions?: string
 }

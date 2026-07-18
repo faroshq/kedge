@@ -68,9 +68,12 @@ func (p *Server) buildServiceMCPServer(cluster, name, kcpToken string, svc *serv
 	instructions := fmt.Sprintf(
 		"You are connected to the kedge Service %q (type %q) in tenant workspace %q. "+
 			"Tools here drive a real service running next to an edge agent. "+
-			"ha_call_service actuates physical devices — treat it with care.",
+			"The call_service tool actuates physical devices — treat it with care.",
 		name, svc.Spec.Type, cluster,
 	)
+	if extra := strings.TrimSpace(svc.Spec.Instructions); extra != "" {
+		instructions += "\n\n" + extra
+	}
 	srv := mcp.NewServer(serviceMCPImpl, &mcp.ServerOptions{Instructions: instructions})
 
 	if svc.Spec.Type == "home-assistant" {
@@ -109,14 +112,14 @@ type haEntityState struct {
 // pass "" for the per-service endpoint.
 func (p *Server) registerHomeAssistantTools(srv *mcp.Server, prefix, cluster, kcpToken string, svc *serviceView, dialer haclient.Dialer) {
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        prefix + "ha_states",
+		Name:        prefix + "states",
 		Description: "List Home Assistant entity states (trimmed to entity_id, state, friendly_name). Optionally filter by domain.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in haStatesInput) (*mcp.CallToolResult, any, error) {
 		return p.haStates(ctx, cluster, kcpToken, svc, dialer, in)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        prefix + "ha_get_state",
+		Name:        prefix + "get_state",
 		Description: "Get the full state (including attributes) of one Home Assistant entity.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in haGetStateInput) (*mcp.CallToolResult, any, error) {
 		if in.EntityID == "" {
@@ -126,7 +129,7 @@ func (p *Server) registerHomeAssistantTools(srv *mcp.Server, prefix, cluster, kc
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        prefix + "ha_call_service",
+		Name:        prefix + "call_service",
 		Description: "Call a Home Assistant service (e.g. cover.open_cover) to actuate a device. This performs a real action.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in haCallServiceInput) (*mcp.CallToolResult, any, error) {
 		if in.Domain == "" || in.Service == "" {

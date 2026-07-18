@@ -26,6 +26,8 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/faroshq/provider-edges/internal/haclient"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -76,29 +78,57 @@ func (p *Server) buildRootMCPHandler() http.Handler {
 // buildRootMCPServer builds the merged aggregate server for one request.
 func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, kubeHandler http.Handler) *mcp.Server {
 	logger := klog.FromContext(ctx).WithName("root-mcp")
-	instructions := fmt.Sprintf(
-		"You are connected to the kedge edges provider MCP endpoint for tenant workspace %q. "+
-			"It exposes Kubernetes tools across connected KubernetesCluster edges and, for each Ready "+
-			"home-assistant Service, tools named \"<service>_ha_*\" (e.g. ha_call_service actuates devices).",
-		cluster,
-	)
-	srv := mcp.NewServer(rootMCPImpl, &mcp.ServerOptions{Instructions: instructions})
 
-	// 1. Home Assistant tools from Ready home-assistant Services (on either
-	//    connectable kind — the view resolves its own conn resource). Both the
-	//    list and the per-tool Secret reads act as the caller (token), since the
-	//    provider SA has no direct RBAC on Service objects in tenant workspaces.
-	for _, es := range p.listReadyHomeAssistant(ctx, cluster, token) {
+	// 1. Resolve which Ready home-assistant Services we can actually dial right
+	//    now (a Ready Service whose edge tunnel is down can't be driven). Done
+	//    before building instructions so each registered service can contribute
+	//    its spec.instructions to the endpoint's ambient guidance.
+	type haReg struct {
+		reg    readyHAService
+		prefix string
+		dialer haclient.Dialer
+	}
+	var toRegister []haReg
+	haServices := p.listReadyHomeAssistant(ctx, cluster, token)
+	logger.Info("home-assistant tool discovery", "cluster", cluster, "readyServices", len(haServices))
+	for _, es := range haServices {
 		key := edgeConnKey(es.view.connResource(), cluster, es.view.Spec.EdgeRef.Name)
 		dialer, ok := p.edgeConnManager.Load(key)
 		if !ok {
+			// The Service is Ready but its edge tunnel isn't connected right now,
+			// so we can't dial HA — skip its tools this round. Logged (not
+			// silent) so a missing-HA-tools report is diagnosable.
+			logger.Info("home-assistant tools skipped: no live edge dialer", "service", es.name, "edge", es.view.Spec.EdgeRef.Name, "connKey", key)
 			continue
 		}
-		prefix := sanitizeToolPrefix(es.name) + "_"
-		p.registerHomeAssistantTools(srv, prefix, cluster, token, es.view, dialer)
+		toRegister = append(toRegister, haReg{reg: es, prefix: sanitizeToolPrefix(es.name) + "_", dialer: dialer})
 	}
 
-	// 2. Federate the kube toolset in-process.
+	instructions := fmt.Sprintf(
+		"You are connected to the kedge edges provider MCP endpoint for tenant workspace %q. "+
+			"It exposes Kubernetes tools across connected KubernetesCluster edges and, for each Ready "+
+			"home-assistant Service, tools named \"<service>_*\" (e.g. for a Service named \"ha\": ha_call_service actuates devices, ha_states lists entities).",
+		cluster,
+	)
+	// Append each registered service's own instructions so operator-authored
+	// context (entity naming, room layout, safety notes) reaches the model.
+	for _, h := range toRegister {
+		if extra := strings.TrimSpace(h.reg.view.Spec.Instructions); extra != "" {
+			instructions += fmt.Sprintf("\n\nService %q (tools \"%s*\"):\n%s", h.reg.name, h.prefix, extra)
+		}
+	}
+
+	srv := mcp.NewServer(rootMCPImpl, &mcp.ServerOptions{Instructions: instructions})
+
+	// 2. Register the resolved home-assistant tools. Both the list and per-tool
+	//    Secret reads act as the caller (token), since the provider SA has no
+	//    direct RBAC on Service objects in tenant workspaces.
+	for _, h := range toRegister {
+		p.registerHomeAssistantTools(srv, h.prefix, cluster, token, h.reg.view, h.dialer)
+		logger.Info("home-assistant tools registered", "service", h.reg.name, "prefix", h.prefix)
+	}
+
+	// 3. Federate the kube toolset in-process.
 	if err := p.federateKubeTools(ctx, srv, kubeHandler, token, cluster); err != nil {
 		logger.V(2).Info("kube tool federation failed (kube tools omitted)", "err", err.Error())
 	}
@@ -122,30 +152,44 @@ func (p *Server) listReadyHomeAssistant(ctx context.Context, cluster, token stri
 	if err != nil {
 		return nil
 	}
+	logger := klog.FromContext(ctx).WithName("ha-discovery")
 	gvr := schema.GroupVersionResource{Group: p.group, Version: p.version, Resource: serviceResource}
 	list, err := dynClient.Resource(gvr).List(ctx, metav1.ListOptions{})
 	if err != nil {
+		// As-caller list failed (RBAC or transient) — the token can't see
+		// Service objects, so no HA tools. Logged so it's diagnosable.
+		logger.Info("home-assistant discovery: listing Services failed", "err", err.Error())
 		return nil
 	}
+	logger.V(2).Info("home-assistant discovery: listed Services", "count", len(list.Items))
 	var out []readyHAService
 	for i := range list.Items {
 		item := &list.Items[i]
-		view := &serviceView{Name: item.GetName()}
+		name := item.GetName()
+		view := &serviceView{Name: name}
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(item.Object, view); err != nil {
+			logger.Info("home-assistant discovery: skip (decode failed)", "service", name, "err", err.Error())
 			continue
 		}
-		if view.Spec.Type != "home-assistant" || view.Spec.EdgeRef.Name == "" || view.Spec.Port == 0 {
+		if view.Spec.Type != "home-assistant" {
+			continue // not an HA service — not noteworthy
+		}
+		if view.Spec.EdgeRef.Name == "" || view.Spec.Port == 0 {
+			logger.Info("home-assistant discovery: skip (missing edgeRef.name or port)", "service", name, "edgeRef", view.Spec.EdgeRef.Name, "port", view.Spec.Port)
 			continue
 		}
 		// A kube Service with no targetRef has no cluster-DNS name to dial;
 		// skip rather than fall back to the agent pod's loopback.
 		if view.isKube() && (view.Spec.TargetRef == nil || view.Spec.TargetRef.Name == "" || view.Spec.TargetRef.Namespace == "") {
+			logger.Info("home-assistant discovery: skip (kube service without spec.targetRef name+namespace)", "service", name)
 			continue
 		}
 		if !serviceReady(item.Object) {
+			phase, _, _ := unstructuredString(item.Object, "status", "phase")
+			logger.Info("home-assistant discovery: skip (status.phase != Ready)", "service", name, "phase", phase)
 			continue
 		}
-		out = append(out, readyHAService{name: item.GetName(), view: view})
+		out = append(out, readyHAService{name: name, view: view})
 	}
 	return out
 }

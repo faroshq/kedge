@@ -224,6 +224,7 @@ interface RawEdgeService {
     type?: string
     scheme?: string
     port?: number
+    instructions?: string
     authSecretRef?: { name?: string; namespace?: string } | null
   }
   status?: {
@@ -240,7 +241,7 @@ const EDGE_SVC_SEL = `
   spec {
     edgeRef { kind name }
     targetRef { namespace name }
-    type scheme port authSecretRef { name namespace }
+    type scheme port instructions authSecretRef { name namespace }
   }
   status { phase version installType url conditions { type status reason message lastTransitionTime } }
 `
@@ -256,6 +257,7 @@ function toEdgeService(it: RawEdgeService): EdgeService {
     serviceType: it.spec?.type,
     scheme: it.spec?.scheme,
     port: it.spec?.port,
+    instructions: it.spec?.instructions,
     hasCredentials: !!it.spec?.authSecretRef?.name,
     phase: s.phase,
     version: s.version,
@@ -266,16 +268,31 @@ function toEdgeService(it: RawEdgeService): EdgeService {
   }
 }
 
-// listEdgeServices returns the Services for one edge (by spec.edgeRef.name).
-export async function listEdgeServices(edgeName: string): Promise<EdgeService[]> {
+// listServices returns every Service across all edges (for the top-level
+// Services view).
+export async function listServices(): Promise<EdgeService[]> {
   const data = await graphql<{
     edges_kedge_faros_sh?: { v1alpha1?: { Services?: { items?: RawEdgeService[] } } }
-  }>(`query ListEdgeServices { edges_kedge_faros_sh { v1alpha1 { Services { items { ${EDGE_SVC_SEL} } } } } }`)
+  }>(`query ListServices { edges_kedge_faros_sh { v1alpha1 { Services { items { ${EDGE_SVC_SEL} } } } } }`)
   const items = data.edges_kedge_faros_sh?.v1alpha1?.Services?.items ?? []
-  return items
-    .map(toEdgeService)
-    .filter((es) => es.edgeName === edgeName)
-    .sort((a, b) => a.name.localeCompare(b.name))
+  return items.map(toEdgeService).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+// listEdgeServices returns the Services for one edge (by spec.edgeRef.name).
+export async function listEdgeServices(edgeName: string): Promise<EdgeService[]> {
+  return (await listServices()).filter((es) => es.edgeName === edgeName)
+}
+
+// updateEdgeServiceInstructions merge-patches spec.instructions — the free-form
+// guidance surfaced to AI clients on the service's MCP endpoint. Leaves the rest
+// of the spec untouched.
+export async function updateEdgeServiceInstructions(name: string, instructions: string): Promise<void> {
+  await graphql(
+    `mutation SetInstructions($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
+       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+     }`,
+    { name, object: { metadata: { name }, spec: { instructions } } },
+  )
 }
 
 // createKubeEdgeService declares a service behind a Kubernetes Service on a
@@ -294,6 +311,7 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
       targetRef: { namespace: d.targetNamespace, name: d.targetName },
       type: d.serviceType,
       port: d.port,
+      ...(d.instructions ? { instructions: d.instructions } : {}),
     },
   }
   await graphql(

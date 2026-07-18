@@ -65,6 +65,7 @@ type serviceView struct {
 		Scheme        string                  `json:"scheme,omitempty"`
 		Port          int32                   `json:"port"`
 		AuthSecretRef *corev1.SecretReference `json:"authSecretRef,omitempty"`
+		Instructions  string                  `json:"instructions,omitempty"`
 	} `json:"spec"`
 }
 

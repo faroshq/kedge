@@ -137,6 +137,15 @@ type ServiceSpec struct {
 	// agent host. Follows the spec.sshCredentialsRef convention (namespaced).
 	// +optional
 	AuthSecretRef *corev1.SecretReference `json:"authSecretRef,omitempty"`
+
+	// Instructions is free-form guidance surfaced to AI clients on the MCP
+	// endpoint's "initialize" for this service — a place to teach the model
+	// about this specific deployment (e.g. "gates are under cover.gate_main;
+	// the living room light is light.living_room"). Appended to the generated
+	// per-service and aggregate MCP instructions.
+	// +optional
+	// +kubebuilder:validation:MaxLength=8192
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // ServiceStatus defines the observed state of a Service.

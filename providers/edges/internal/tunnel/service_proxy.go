@@ -145,7 +145,7 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, token, clu
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		if err := p.authorizeFn(ctx, tenantCfg, token, "proxy", p.group, serviceResource, name); err != nil {
+		if err := p.authorizeFn(ctx, tenantCfg, p.kcpConfig, token, cluster, "proxy", p.group, serviceResource, name); err != nil {
 			logger.Error(err, "edgeservice authorization failed", "cluster", cluster, "name", name)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return

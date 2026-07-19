@@ -90,7 +90,7 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
-			if err := p.authorizeFn(r.Context(), tenantCfg, token, "proxy", p.group, resource, name); err != nil {
+			if err := p.authorizeFn(r.Context(), tenantCfg, p.kcpConfig, token, cluster, "proxy", p.group, resource, name); err != nil {
 				p.logger.Error(err, "edges proxy authorization failed",
 					"cluster", cluster, "name", name, "subresource", subresource)
 				http.Error(w, "Forbidden", http.StatusForbidden)

@@ -421,7 +421,7 @@ func (p *Server) authorizeByIssuedToken(ctx context.Context, gvr schema.GroupVer
 	if err != nil {
 		return fmt.Errorf("resolving tenant config: %w", err)
 	}
-	return authorize(ctx, tenantCfg, token, "proxy", gvr.Group, gvr.Resource, name)
+	return authorize(ctx, tenantCfg, p.kcpConfig, token, cluster, "proxy", gvr.Group, gvr.Resource, name)
 }
 
 // sshCredsFromAgent holds SSH credentials passed by the agent via WebSocket

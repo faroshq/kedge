@@ -77,8 +77,9 @@ export interface EdgeService {
   name: string
   edgeName: string
   edgeKind?: string // LinuxServer | KubernetesCluster
-  targetNamespace?: string // kube edges only
-  targetName?: string // kube edges only
+  targetNamespace?: string // kube service target
+  targetName?: string // kube service target
+  host?: string // direct address target (loopback / LAN / domain)
   serviceType?: string
   scheme?: string
   port?: number

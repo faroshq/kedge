@@ -222,6 +222,7 @@ interface RawEdgeService {
     edgeRef?: { kind?: string; name?: string }
     targetRef?: { namespace?: string; name?: string } | null
     type?: string
+    host?: string
     scheme?: string
     port?: number
     instructions?: string
@@ -241,7 +242,7 @@ const EDGE_SVC_SEL = `
   spec {
     edgeRef { kind name }
     targetRef { namespace name }
-    type scheme port instructions authSecretRef { name namespace }
+    host type scheme port instructions authSecretRef { name namespace }
   }
   status { phase version installType url conditions { type status reason message lastTransitionTime } }
 `
@@ -254,6 +255,7 @@ function toEdgeService(it: RawEdgeService): EdgeService {
     edgeKind: it.spec?.edgeRef?.kind,
     targetNamespace: it.spec?.targetRef?.namespace,
     targetName: it.spec?.targetRef?.name,
+    host: it.spec?.host,
     serviceType: it.spec?.type,
     scheme: it.spec?.scheme,
     port: it.spec?.port,
@@ -292,6 +294,42 @@ export async function updateEdgeServiceInstructions(name: string, instructions: 
        edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
      }`,
     { name, object: { metadata: { name }, spec: { instructions } } },
+  )
+}
+
+// EdgeServiceEdit is the editable subset of a Service's spec (edgeRef is fixed).
+export interface EdgeServiceEdit {
+  serviceType?: string
+  scheme?: string
+  port?: number
+  host?: string
+  targetNamespace?: string
+  targetName?: string
+  instructions?: string
+}
+
+// updateEdgeService merge-patches the editable spec fields. host and targetRef are
+// mutually exclusive — the unused one is cleared (null/empty) so switching target
+// mode takes effect.
+export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promise<void> {
+  const byHost = !!e.host?.trim()
+  const spec: Record<string, unknown> = {
+    type: e.serviceType,
+    scheme: e.scheme,
+    port: e.port,
+    instructions: e.instructions ?? '',
+    host: byHost ? e.host!.trim() : '',
+    targetRef: byHost
+      ? null
+      : e.targetName?.trim()
+        ? { namespace: e.targetNamespace?.trim() || 'default', name: e.targetName.trim() }
+        : null,
+  }
+  await graphql(
+    `mutation UpdateService($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
+       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+     }`,
+    { name, object: { metadata: { name }, spec } },
   )
 }
 

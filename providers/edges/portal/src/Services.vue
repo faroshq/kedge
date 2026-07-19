@@ -3,8 +3,9 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown, Save, KeyRound } from 'lucide-vue-next'
 import {
   listServices, createKubeEdgeService, deleteEdgeService,
-  updateEdgeServiceInstructions, connectEdgeService, listEdges,
+  updateEdgeServiceInstructions, updateEdgeService, connectEdgeService, listEdges,
 } from './api'
+import type { EdgeServiceEdit } from './api'
 import type { EdgeService, EdgeServiceDraft, Edge, ErrorResponse } from './types'
 
 // Service catalog — mirrors the backend svcCatalog (providers/edges/internal/
@@ -111,6 +112,9 @@ function applyHostUrl() {
 const expanded = ref<string | null>(null)
 const editInstructions = ref('')
 const editToken = ref('')
+// Editable spec fields for the expanded row + its target mode.
+const editForm = ref<EdgeServiceEdit>({})
+const editTargetMode = ref<'host' | 'kube'>('host')
 function toggle(s: EdgeService) {
   if (expanded.value === s.name) {
     expanded.value = null
@@ -119,6 +123,58 @@ function toggle(s: EdgeService) {
   expanded.value = s.name
   editInstructions.value = s.instructions ?? ''
   editToken.value = ''
+  editTargetMode.value = s.host ? 'host' : s.targetName ? 'kube' : 'host'
+  editForm.value = {
+    serviceType: s.serviceType,
+    scheme: s.scheme || 'http',
+    port: s.port,
+    host: s.host ?? '',
+    targetNamespace: s.targetNamespace ?? '',
+    targetName: s.targetName ?? '',
+  }
+}
+
+const editEdgeIsServer = computed(
+  () => edges.value.find((e) => e.name === services.value.find((s) => s.name === expanded.value)?.edgeName)?.type === 'server',
+)
+
+async function onSaveEdit(s: EdgeService) {
+  busy.value = true
+  error.value = null
+  try {
+    const byHost = editTargetMode.value === 'host'
+    await updateEdgeService(s.name, {
+      serviceType: editForm.value.serviceType,
+      scheme: editForm.value.scheme,
+      port: Number(editForm.value.port) || s.port,
+      host: byHost ? editForm.value.host?.trim() || undefined : undefined,
+      targetNamespace: editForm.value.targetNamespace,
+      targetName: byHost ? '' : editForm.value.targetName,
+    })
+    await refresh()
+  } catch (e) {
+    error.value = (e as ErrorResponse)?.message ?? 'Update failed'
+  } finally {
+    busy.value = false
+  }
+}
+
+// Relative age of an ISO timestamp, for the conditions table.
+function age(ts?: string): string {
+  if (!ts) return ''
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(ts).getTime()) / 1000))
+  if (secs < 60) return `${secs}s`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h`
+  return `${Math.floor(secs / 86400)}d`
+}
+function condClass(status?: string): string {
+  return status === 'True' ? 'ok' : status === 'False' ? 'err' : 'warn'
+}
+// Human-readable target for the table (host, or kube namespace/name).
+function targetLabel(s: EdgeService): string {
+  const base = s.host || `${s.targetNamespace ? s.targetNamespace + '/' : ''}${s.targetName || '—'}`
+  return `${s.scheme || 'http'}://${base}:${s.port || ''}`
 }
 
 async function refresh() {
@@ -342,7 +398,7 @@ function phaseClass(p?: string): string {
               <td class="name">{{ s.name }}</td>
               <td class="muted">{{ s.edgeName || '—' }}</td>
               <td class="mono muted">{{ s.serviceType || '—' }}</td>
-              <td class="mono muted">{{ s.targetNamespace ? s.targetNamespace + '/' : '' }}{{ s.targetName || '—' }}:{{ s.port || '' }}</td>
+              <td class="mono muted">{{ targetLabel(s) }}</td>
               <td><span class="status" :class="phaseClass(s.phase)">{{ s.phase || 'Pending' }}</span></td>
               <td>{{ s.hasCredentials ? '✓' : '—' }}</td>
               <td class="actions">
@@ -351,6 +407,74 @@ function phaseClass(p?: string): string {
             </tr>
             <tr v-if="expanded === s.name" class="detail-row">
               <td colspan="8">
+                <!-- Editable spec -->
+                <div class="es-head">Configuration</div>
+                <div class="row" style="gap: 12px; align-items: flex-start; margin-bottom: 8px;">
+                  <label class="fld" style="flex: 1;">
+                    <span class="lbl">Type</span>
+                    <select v-model="editForm.serviceType" class="input">
+                      <optgroup v-for="g in PRESET_GROUPS" :key="g.category" :label="g.category">
+                        <option v-for="p in g.items" :key="p.type" :value="p.type">{{ p.label }}</option>
+                      </optgroup>
+                    </select>
+                  </label>
+                  <label class="fld" style="flex: 0 0 110px;">
+                    <span class="lbl">Scheme</span>
+                    <select v-model="editForm.scheme" class="input">
+                      <option value="http">http</option>
+                      <option value="https">https</option>
+                    </select>
+                  </label>
+                  <label class="fld" style="flex: 0 0 110px;">
+                    <span class="lbl">Port</span>
+                    <input v-model="editForm.port" type="number" min="1" max="65535" class="input" />
+                  </label>
+                </div>
+                <div class="row" style="gap: 16px; margin-bottom: 6px;">
+                  <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="radio" value="host" v-model="editTargetMode" /> Host / IP
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;" :style="{ opacity: editEdgeIsServer ? 0.5 : 1 }">
+                    <input type="radio" value="kube" v-model="editTargetMode" :disabled="editEdgeIsServer" /> Kubernetes Service
+                  </label>
+                </div>
+                <div v-if="editTargetMode === 'host'" class="row" style="gap: 12px; margin-bottom: 8px;">
+                  <label class="fld" style="flex: 1;">
+                    <span class="lbl">Host (blank = agent loopback)</span>
+                    <input v-model="editForm.host" class="input" placeholder="192.168.1.1, myui.example.com, or https://…" />
+                  </label>
+                </div>
+                <div v-else class="row" style="gap: 12px; margin-bottom: 8px;">
+                  <label class="fld" style="flex: 1;">
+                    <span class="lbl">Target namespace</span>
+                    <input v-model="editForm.targetNamespace" class="input" placeholder="home" />
+                  </label>
+                  <label class="fld" style="flex: 1;">
+                    <span class="lbl">Target service name</span>
+                    <input v-model="editForm.targetName" class="input" placeholder="home-assistant" />
+                  </label>
+                </div>
+                <div class="wiz-actions" style="margin: 4px 0 16px;">
+                  <button class="btn primary" :disabled="busy" @click="onSaveEdit(s)"><Save :size="14" /> Save configuration</button>
+                </div>
+
+                <!-- Status conditions (debuggability) -->
+                <div class="es-head">Status <span class="status" :class="phaseClass(s.phase)">{{ s.phase || 'Pending' }}</span></div>
+                <div v-if="s.url" class="muted mono" style="margin-bottom: 6px; font-size: 12px;">{{ s.url }}</div>
+                <table v-if="s.conditions.length" class="edges-table" style="margin-bottom: 16px; font-size: 12px;">
+                  <thead><tr><th>Condition</th><th>Status</th><th>Reason</th><th>Message</th><th>Age</th></tr></thead>
+                  <tbody>
+                    <tr v-for="c in s.conditions" :key="c.type">
+                      <td class="name">{{ c.type }}</td>
+                      <td><span class="status" :class="condClass(c.status)">{{ c.status }}</span></td>
+                      <td class="mono muted">{{ c.reason || '—' }}</td>
+                      <td class="muted">{{ c.message || '—' }}</td>
+                      <td class="mono muted">{{ age(c.lastTransitionTime) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-else class="muted" style="margin-bottom: 16px;">No conditions reported yet.</div>
+
                 <div class="es-head">AI instructions</div>
                 <textarea v-model="editInstructions" class="input" rows="4" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea>
                 <div class="wiz-actions" style="margin: 8px 0 16px;">

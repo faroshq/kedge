@@ -410,7 +410,7 @@ var catalog = map[string]Definition{
 	},
 	"unifi-protect": {
 		Type: "unifi-protect", DisplayName: "UniFi Protect", Category: "Network",
-		Description: "UniFi OS console — cameras, snapshots, events.",
+		Description: "UniFi OS console — cameras and snapshots.",
 		DefaultPort: 443, DefaultScheme: "https", SchemeLocked: true,
 		HostRequired: true, HostHelp: "The UniFi console address, e.g. 192.168.1.1.",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-API-KEY",
@@ -418,12 +418,12 @@ var catalog = map[string]Definition{
 		ProbePath: "/proxy/protect/integration/v1/cameras", ProbeMode: ProbeValidate,
 		Instructions: "The snapshot tool captures a live frame on demand, so it depends on the camera's current state. " +
 			"Battery- or power-managed cameras (notably G4/G5 doorbells) drop to standby and their snapshot may return a 500 \"UNKNOWN_ERROR\" until they wake — this is UniFi Protect's response, not a credential or connectivity fault. " +
-			"On a snapshot 500, retry the same camera a couple of times (waking it usually succeeds), or fall back to the events tool and use the most recent event's camera/thumbnail. " +
-			"Snapshots are returned as images you can view directly. Omit highQuality unless you specifically need full resolution — it makes the doorbell 500 more likely.",
+			"On a snapshot 500, retry the same camera a couple of times (waking it usually succeeds), or take a snapshot from another camera covering the same area. " +
+			"Snapshots are returned as images you can view directly. Omit highQuality unless you specifically need full resolution — it makes the doorbell 500 more likely. " +
+			"There is no event-history tool: UniFi Protect's Integration API delivers events only over a WebSocket (/subscribe/events), not as a REST list, so recent motion/ring/smart-detect events cannot be queried here. Use the cameras and snapshot tools to observe current state.",
 		Tools: []Tool{
 			{"cameras", "List Protect cameras (each camera's id, name, state).", http.MethodGet, "/proxy/protect/integration/v1/cameras"},
-			{"snapshot", "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"<id>\"} (optional {\"highQuality\":\"true\"}). Live capture: may 500 on a sleeping doorbell — retry or use events.", http.MethodGet, "/proxy/protect/integration/v1/cameras/{cameraId}/snapshot"},
-			{"events", "Recent Protect events (motion/person/vehicle). Query: start,end (ms epoch), types.", http.MethodGet, "/proxy/protect/integration/v1/events"},
+			{"snapshot", "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"<id>\"} (optional {\"highQuality\":\"true\"}). Live capture: may 500 on a sleeping doorbell — retry or try another camera.", http.MethodGet, "/proxy/protect/integration/v1/cameras/{cameraId}/snapshot"},
 		},
 	},
 	"generic": {

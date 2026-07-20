@@ -420,7 +420,7 @@ var catalog = map[string]Definition{
 			"Battery- or power-managed cameras (notably G4/G5 doorbells) drop to standby and their snapshot may return a 500 \"UNKNOWN_ERROR\" until they wake — this is UniFi Protect's response, not a credential or connectivity fault. " +
 			"On a snapshot 500, retry the same camera a couple of times (waking it usually succeeds), or take a snapshot from another camera covering the same area. " +
 			"Snapshots are returned as images you can view directly. Omit highQuality unless you specifically need full resolution — it makes the doorbell 500 more likely. " +
-			"There is no event-history tool: UniFi Protect's Integration API delivers events only over a WebSocket (/subscribe/events), not as a REST list, so recent motion/ring/smart-detect events cannot be queried here. Use the cameras and snapshot tools to observe current state.",
+			"The events tool returns recent motion/ring/smart-detect events captured from Protect's live WebSocket feed (the provider subscribes in the background and buffers them). It is a rolling recent-history buffer, not a full archive: it only holds events seen since the subscription connected, most recent first. To see who/what triggered a camera, query events and then snapshot that camera.",
 		Tools: []Tool{
 			{"cameras", "List Protect cameras (each camera's id, name, state).", http.MethodGet, "/proxy/protect/integration/v1/cameras"},
 			{"snapshot", "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"<id>\"} (optional {\"highQuality\":\"true\"}). Live capture: may 500 on a sleeping doorbell — retry or try another camera.", http.MethodGet, "/proxy/protect/integration/v1/cameras/{cameraId}/snapshot"},

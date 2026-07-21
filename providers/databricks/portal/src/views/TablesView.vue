@@ -4,7 +4,7 @@ import { Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import ResourceTable from '../components/ResourceTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 import { importPrerequisiteMessage, nextValidWarehouseRef, warehousesForConnection } from '../tableRefs'
 import type { Connection, ErrorResponse, Table, Warehouse } from '../types'
 

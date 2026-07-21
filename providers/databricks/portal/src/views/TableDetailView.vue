@@ -4,7 +4,7 @@ import ResourceTable from '../components/ResourceTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
 import ConditionsPanel from '../components/ConditionsPanel.vue'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 import type { ErrorResponse, Table } from '../types'
 
 const props = defineProps<{ name: string }>()

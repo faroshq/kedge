@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ResourceTable from '../components/ResourceTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../api'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 import type { Connection, ErrorResponse } from '../types'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()

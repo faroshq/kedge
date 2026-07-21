@@ -32,7 +32,7 @@ VUE_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
 )
-VUE_FILES=(confirm.ts ConfirmDialog.vue)
+VUE_FILES=(confirm.ts ConfirmDialog.vue ResourceTable.vue ConditionsPanel.vue StatusBadge.vue)
 
 sync_group() {
   local src="$1"; shift

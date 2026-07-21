@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-import ConditionsPanel from '../components/ConditionsPanel.vue'
-import StatusBadge from '../components/StatusBadge.vue'
+import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import type { Connection, ErrorResponse } from '../types'
 

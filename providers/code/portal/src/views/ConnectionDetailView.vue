@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { ConnectionDetail, ErrorResponse } from '../types'
-import ConditionsPanel from '../components/ConditionsPanel.vue'
+import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import { confirmDialog } from '../portalkit/confirm'
 
 const props = defineProps<{ name: string }>()

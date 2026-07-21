@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import ResourceTable from '../components/ResourceTable.vue'
-import StatusBadge from '../components/StatusBadge.vue'
+import ResourceTable from '../portalkit/ResourceTable.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
-import ConditionsPanel from '../components/ConditionsPanel.vue'
+import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import type { ErrorResponse, Table } from '../types'
 

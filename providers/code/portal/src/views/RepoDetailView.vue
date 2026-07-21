@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
-import ConditionsPanel from '../components/ConditionsPanel.vue'
+import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { AlertTriangle } from 'lucide-vue-next'
 

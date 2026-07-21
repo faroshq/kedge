@@ -246,11 +246,12 @@ function healthBadge(name: string): string {
 
 function credentialCard(vc: ViewCtx, c: Credential): string {
   const mi = lookupModel(c.model || '')
-  const usedBy = vc.store.agents.filter((a) => {
-    const chat = a.spec?.models?.chat
-    const fb = a.spec?.modelFallbacks || []
-    return chat === c.name || fb.includes(c.name)
-  })
+  // Assignments: which agents reason with this credential, and in what role.
+  // primary = spec.models.chat; fallback = appears in spec.modelFallbacks. This
+  // surfaces the existing fallback/routing chain in the Models context.
+  const primaryOf = vc.store.agents.filter((a) => a.spec?.models?.chat === c.name)
+  const fallbackOf = vc.store.agents.filter((a) => a.spec?.models?.chat !== c.name && (a.spec?.modelFallbacks || []).includes(c.name))
+  const usedBy = [...primaryOf, ...fallbackOf]
   const disc = discovered.get(c.name)
   const isEditing = editName === c.name
   const chips = mi ? capabilityChips(mi) : `<span class="agents-chip agents-chip-warn">not in catalog — no pricing</span>`
@@ -270,7 +271,16 @@ function credentialCard(vc: ViewCtx, c: Credential): string {
       <div class="agents-model-meta">
         <span class="muted">${escapeHTML(c.provider || 'openai-compatible')}</span>
         ${c.baseURL ? `<span class="muted mono">${escapeHTML(c.baseURL)}</span>` : ''}
-        <span class="agents-badge">${usedBy.length} agent${usedBy.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="agents-model-assign">
+        ${
+          usedBy.length
+            ? [
+                ...primaryOf.map((a) => `<span class="agents-chip agents-chip-primary" title="primary model">▸ ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
+                ...fallbackOf.map((a) => `<span class="agents-chip agents-chip-fallback" title="fallback model">⤷ ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
+              ].join('')
+            : '<span class="muted" style="font-size:12px">not assigned to any agent</span>'
+        }
       </div>
       ${
         disc && disc.length

@@ -562,6 +562,9 @@ kedge-provider-agents .agents-chip-warn { background: var(--color-warning-surfac
 kedge-provider-agents .agents-chip-btn { cursor: pointer; font-family: "IBM Plex Mono", ui-monospace, monospace; }
 kedge-provider-agents .agents-chip-btn:hover { border-color: var(--color-accent, #6d4fe0); color: var(--color-accent, #6d4fe0); }
 kedge-provider-agents .agents-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
+kedge-provider-agents .agents-model-assign { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+kedge-provider-agents .agents-chip-primary { background: var(--color-accent-subtle, rgba(109,79,224,.1)); border-color: transparent; color: var(--color-accent, #6d4fe0); font-weight: 600; }
+kedge-provider-agents .agents-chip-fallback { border-style: dashed; color: var(--color-text-secondary, #667); }
 kedge-provider-agents .agents-model-meta .mono { font-size: 11px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 kedge-provider-agents .agents-model-discovered { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 12px; padding: 8px; border-radius: 9px; background: var(--color-surface, #f4f6fb); }
 kedge-provider-agents .agents-model-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }

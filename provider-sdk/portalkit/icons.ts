@@ -1,7 +1,14 @@
+// CANONICAL SOURCE — provider-sdk/portalkit. Do not edit the copies vendored
+// into individual portals (providers/*/portal/src/portalkit/); edit here and run
+// `make sync-portalkit`. Builds must stay self-contained (each portal ships its
+// own copy, no workspace/symlink), so the kit is synced rather than imported.
+//
 // Inline SVG icon set — a small, self-contained Lucide-style stroke library
 // (MIT-derived paths, hand-inlined so the bundle has no runtime dependency and
 // stays CSP-safe). Icons inherit the current text color and font size (1em),
 // so they drop into buttons, labels, chips and headings without extra styling.
+// For the string-building (vanilla-TS) portals — agents, kuery, quickstart. Vue
+// portals use lucide-vue-next instead.
 //
 // Usage: `${ic('trash')}` inside an HTML template literal. Prefer these over
 // emoji everywhere for a consistent, professional look across light/dark.

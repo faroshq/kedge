@@ -20,7 +20,7 @@ TS_PORTALS=(
   "providers/kuery/portal"
   "providers/quickstart/portal"
 )
-TS_FILES=(icons.ts modal.ts)
+TS_FILES=(icons.ts modal.ts tenant.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -50,3 +50,10 @@ sync_group() {
 
 sync_group "$TS_SRC" TS_PORTALS TS_FILES
 sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
+
+# tenant.ts is plain TS (no framework) and shared by hub-proxy portals of BOTH
+# kinds, so the vanilla canonical is also vendored into the Vue portals.
+for p in "${VUE_PORTALS[@]}"; do
+  cp "$TS_SRC/tenant.ts" "$ROOT/$p/src/portalkit/tenant.ts"
+  echo "synced tenant.ts -> $p/src/portalkit"
+done

@@ -9,6 +9,7 @@
 //
 // Each credential is its own Secret (kedge-agents-model-<name>).
 
+import { ic } from '../icons'
 import type { ViewCtx } from '../view'
 import type { Credential } from '../types'
 import { escapeHTML } from '../types'
@@ -149,9 +150,9 @@ function pct(n: number, d: number): string {
 function capabilityChips(mi: ModelInfo): string {
   const chips: string[] = []
   if (mi.contextWindow) chips.push(`<span class="agents-chip">${fmtCtx(mi.contextWindow)}</span>`)
-  if (mi.vision) chips.push(`<span class="agents-chip">👁 vision</span>`)
-  if (mi.toolCall) chips.push(`<span class="agents-chip">🔧 tools</span>`)
-  if (mi.reasoning) chips.push(`<span class="agents-chip">🧠 reasoning</span>`)
+  if (mi.vision) chips.push(`<span class="agents-chip">${ic('eye')} vision</span>`)
+  if (mi.toolCall) chips.push(`<span class="agents-chip">${ic('wrench')} tools</span>`)
+  if (mi.reasoning) chips.push(`<span class="agents-chip">${ic('brain')} reasoning</span>`)
   chips.push(`<span class="agents-chip agents-chip-price">$${mi.inputPer1M}/$${mi.outputPer1M} per 1M</span>`)
   return chips.join('')
 }
@@ -239,9 +240,9 @@ function renderDashboard(): string {
 
 function healthBadge(name: string): string {
   const t = tested.get(name)
-  if (!t) return `<span class="agents-health agents-health-unknown" title="not tested">● untested</span>`
-  if (t.ok) return `<span class="agents-health agents-health-ok" title="healthy">● healthy · ${t.latencyMS}ms</span>`
-  return `<span class="agents-health agents-health-bad" title="${escapeHTML(t.error || 'failed')}">● failed</span>`
+  if (!t) return `<span class="agents-health agents-health-unknown" title="not tested">${ic('circle')} untested</span>`
+  if (t.ok) return `<span class="agents-health agents-health-ok" title="healthy">${ic('circle')} healthy · ${t.latencyMS}ms</span>`
+  return `<span class="agents-health agents-health-bad" title="${escapeHTML(t.error || 'failed')}">${ic('circle')} failed</span>`
 }
 
 function credentialCard(vc: ViewCtx, c: Credential): string {
@@ -259,7 +260,7 @@ function credentialCard(vc: ViewCtx, c: Credential): string {
     <article class="agents-model-card ${isEditing ? 'is-editing' : ''}">
       <div class="agents-model-head">
         <div class="agents-model-title">
-          <span class="agents-model-glyph">⚙</span>
+          <span class="agents-model-glyph">${ic('settings')}</span>
           <div>
             <h4>${escapeHTML(c.name)}</h4>
             <div class="agents-model-sub"><span class="mono">${escapeHTML(c.model || '—')}</span>${mi?.label ? ` · ${escapeHTML(mi.label)}` : ''}</div>
@@ -276,8 +277,8 @@ function credentialCard(vc: ViewCtx, c: Credential): string {
         ${
           usedBy.length
             ? [
-                ...primaryOf.map((a) => `<span class="agents-chip agents-chip-primary" title="primary model">▸ ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
-                ...fallbackOf.map((a) => `<span class="agents-chip agents-chip-fallback" title="fallback model">⤷ ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
+                ...primaryOf.map((a) => `<span class="agents-chip agents-chip-primary" title="primary model">${ic('chevron-right')} ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
+                ...fallbackOf.map((a) => `<span class="agents-chip agents-chip-fallback" title="fallback model">${ic('corner-down-right')} ${escapeHTML(a.spec?.displayName || a.metadata.name)}</span>`),
               ].join('')
             : '<span class="muted" style="font-size:12px">not assigned to any agent</span>'
         }
@@ -292,9 +293,9 @@ function credentialCard(vc: ViewCtx, c: Credential): string {
       }
       ${isEditing ? renderRotate(c) : ''}
       <div class="agents-model-actions">
-        <button class="secondary" data-testcred="${escapeHTML(c.name)}">🔌 Test</button>
-        <button class="secondary" data-editcred="${escapeHTML(c.name)}">${isEditing ? 'Close' : '🔑 Rotate / model'}</button>
-        <button class="agents-iconbtn agents-iconbtn-danger" data-delcred="${escapeHTML(c.name)}" title="Delete">🗑</button>
+        <button class="secondary" data-testcred="${escapeHTML(c.name)}">${ic('plug')} Test</button>
+        <button class="secondary" data-editcred="${escapeHTML(c.name)}">${isEditing ? 'Close' : `${ic('key')} Rotate / model`}</button>
+        <button class="agents-iconbtn agents-iconbtn-danger" data-delcred="${escapeHTML(c.name)}" title="Delete">${ic('trash')}</button>
       </div>
     </article>`
 }
@@ -316,7 +317,7 @@ export function render(vc: ViewCtx): string {
   const creds = vc.store.credentials
   const cards = creds.length
     ? creds.map((c) => credentialCard(vc, c)).join('')
-    : `<div class="agents-empty-row"><span class="agents-empty">⚙ No models yet — add one below.</span></div>`
+    : `<div class="agents-empty-row"><span class="agents-empty">${ic('settings')} No models yet — add one below.</span></div>`
   const createForm = creating
     ? `<form class="agents-cred-form agents-model-create">
         <h4>New model credential</h4>
@@ -335,7 +336,7 @@ export function render(vc: ViewCtx): string {
   const datalist = `<datalist id="agents-catalog-models">${catalog.map((m) => `<option value="${escapeHTML(m.id)}">${escapeHTML(m.label || m.id)}</option>`).join('')}</datalist>`
   return `
     <div class="agents-panel">
-      <div class="agents-panel-head"><h3>Models</h3>${creating ? '' : `<button data-newcred>＋ New model</button>`}</div>
+      <div class="agents-panel-head"><h3>Models</h3>${creating ? '' : `<button data-newcred>${ic('plus')} New model</button>`}</div>
       <p class="muted">Model credentials shared across the workspace (each is a Secret <code>kedge-agents-model-&lt;name&gt;</code>). Assign them to agents in each agent's Settings or Flow.</p>
       ${renderDashboard()}
       <h3 class="agents-section-h">Credentials</h3>

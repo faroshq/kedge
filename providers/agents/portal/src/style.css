@@ -12,6 +12,16 @@ kedge-provider-agents {
   color: var(--color-text-primary, inherit);
 }
 
+/* Inline SVG icons (see icons.ts): inherit color + size from surrounding text,
+ * so they sit cleanly inside buttons, chips, labels and headings. */
+kedge-provider-agents .ic { width: 1.05em; height: 1.05em; display: inline-block; vertical-align: -0.16em; flex: none; stroke-width: 2; }
+kedge-provider-agents button .ic, kedge-provider-agents .agents-chip .ic { vertical-align: -0.16em; }
+/* Buttons/labels that pair an icon with text get a small gap. */
+kedge-provider-agents .agents-navtab, kedge-provider-agents .agents-subtab,
+kedge-provider-agents .agents-card-chat, kedge-provider-agents .agents-model-actions button,
+kedge-provider-agents .agents-back, kedge-provider-agents .agents-health,
+kedge-provider-agents .agents-chip { display: inline-flex; align-items: center; gap: 5px; }
+
 kedge-provider-agents .agents-app { display: flex; flex-direction: column; gap: 16px; min-height: 560px; }
 kedge-provider-agents .agents-empty { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; min-height: 340px; }
 kedge-provider-agents .agents-page { display: flex; flex-direction: column; gap: 14px; }

@@ -4,6 +4,7 @@ import { api } from '../api'
 import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
 import ConditionsPanel from '../components/ConditionsPanel.vue'
 import { confirmDialog } from '../components/confirm'
+import { AlertTriangle } from 'lucide-vue-next'
 
 const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -225,7 +226,7 @@ onUnmounted(() => window.clearInterval(timer))
             >{{ changingConn ? 'Changing…' : 'Change' }}</button>
           </div>
           <p v-if="ownerWillChange" class="conn-warn">
-            ⚠ Owner <code>{{ newOwner }}</code> differs from current <code>{{ currentOwner }}</code> —
+            <AlertTriangle :size="15" class="warn-ic" /> Owner <code>{{ newOwner }}</code> differs from current <code>{{ currentOwner }}</code> —
             this re-targets the repo to a different account and may create a new repo there.
           </p>
           <p v-else-if="selectedConn !== repo.connectionRef" class="muted">Same owner — only the managing credential changes.</p>

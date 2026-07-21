@@ -104,6 +104,17 @@ const PATHS: Record<IconName, string> = {
   flask: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 18l-5-9V3M7.5 14h9"/>',
 }
 
+// Self-inject the .ic sizing rule once (browser only), so any portal that
+// imports ic() gets correct icon sizing without wiring a separate stylesheet —
+// important for the raw-CSS-injection portals (agents/kuery/quickstart).
+const ICON_STYLE_ID = 'kedge-portalkit-icons-css'
+if (typeof document !== 'undefined' && !document.getElementById(ICON_STYLE_ID)) {
+  const s = document.createElement('style')
+  s.id = ICON_STYLE_ID
+  s.textContent = '.ic{width:1.05em;height:1.05em;display:inline-block;vertical-align:-0.16em;flex:none;stroke-width:2}'
+  document.head.appendChild(s)
+}
+
 // ic returns the inline SVG markup for an icon, optionally with extra classes.
 export function ic(name: IconName, extraClass = ''): string {
   const cls = extraClass ? `ic ${extraClass}` : 'ic'

@@ -28,6 +28,7 @@ import * as triggersView from './views/triggers'
 import * as modelsView from './views/models'
 import * as inboxView from './views/inbox'
 import { resetForTenant as resetChat } from './views/agent-chat'
+import { resetForTenant as resetModels } from './views/models'
 
 const MENU_META: Record<MenuKey, { icon: string; label: string }> = {
   agents: { icon: '🤖', label: 'Agents' },
@@ -106,11 +107,13 @@ export class AgentsElement extends HTMLElement {
     // hash-restored route so a refresh stays put.
     if (this._loadedTenant !== null) {
       resetChat()
+      resetModels()
       this._route = DEFAULT_ROUTE
       syncHash(this._route)
     }
     this._loadedTenant = key
     resetChat()
+    resetModels()
     this._store.loadAll()
   }
 

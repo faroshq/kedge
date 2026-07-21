@@ -7,6 +7,7 @@ import {
 } from './api'
 import type { CatalogEntry } from './api'
 import type { EdgeService, EdgeServiceDraft, Edge, ErrorResponse } from './types'
+import { confirmDialog } from './portalkit/confirm'
 import ServiceEdit from './ServiceEdit.vue'
 
 // Service type catalog — fetched from the backend (svccatalog.All()) so the form
@@ -177,7 +178,7 @@ async function onCreate() {
 }
 
 async function onDelete(s: EdgeService) {
-  if (!confirm(`Delete service "${s.name}"? Its MCP tools stop being exposed.`)) return
+  if (!(await confirmDialog({ title: `Delete service "${s.name}"?`, message: 'Its MCP tools stop being exposed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteEdgeService(s.name)
     await refresh()

@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import ConditionsPanel from '../components/ConditionsPanel.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { confirmDialog } from '../components/confirm'
+import { confirmDialog } from '../portalkit/confirm'
 import type { ErrorResponse, Warehouse } from '../types'
 
 const props = defineProps<{ name: string }>()

@@ -1,31 +1,52 @@
 #!/usr/bin/env bash
-# Copies the canonical portalkit (provider-sdk/portalkit) into each vanilla-TS
-# provider portal's src/portalkit/. The portals build self-contained (no npm
-# workspace / symlink), so shared UI primitives are vendored per portal rather
-# than imported across package boundaries.
+# Vendors the shared portal UI kits into each provider portal's src/portalkit/.
+# The portals build self-contained (no npm workspace / symlink), so shared UI
+# primitives are copied per portal rather than imported across package
+# boundaries.
 #
-# Edit the canonical files under provider-sdk/portalkit and run `make
-# sync-portalkit`. CI runs `make verify-portalkit` to fail on drift.
+#   provider-sdk/portalkit      → vanilla-TS portals  (icons.ts, modal.ts)
+#   provider-sdk/portalkit-vue  → Vue SFC portals     (confirm.ts, ConfirmDialog.vue)
+#
+# Edit the canonical files under provider-sdk/ and run `make sync-portalkit`.
+# CI runs `make verify-portalkit` to fail on drift.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/provider-sdk/portalkit"
 
-# Vanilla-TS (string-building) portals that consume the kit. The Vue portals use
-# lucide-vue-next + ConfirmDialog.vue instead and are intentionally excluded.
-PORTALS=(
+# Vanilla-TS (string-building) portals + files.
+TS_SRC="$ROOT/provider-sdk/portalkit"
+TS_PORTALS=(
   "providers/agents/portal"
   "providers/kuery/portal"
   "providers/quickstart/portal"
 )
+TS_FILES=(icons.ts modal.ts)
 
-FILES=(icons.ts modal.ts)
+# Vue SFC portals + files.
+VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
+VUE_PORTALS=(
+  "portal"
+  "providers/app-studio/portal"
+  "providers/code/portal"
+  "providers/databricks/portal"
+  "providers/edges/portal"
+  "providers/infrastructure/portal"
+)
+VUE_FILES=(confirm.ts ConfirmDialog.vue)
 
-for p in "${PORTALS[@]}"; do
-  dst="$ROOT/$p/src/portalkit"
-  mkdir -p "$dst"
-  for f in "${FILES[@]}"; do
-    cp "$SRC/$f" "$dst/$f"
+sync_group() {
+  local src="$1"; shift
+  local -n portals=$1; shift
+  local -n files=$1; shift
+  for p in "${portals[@]}"; do
+    local dst="$ROOT/$p/src/portalkit"
+    mkdir -p "$dst"
+    for f in "${files[@]}"; do
+      cp "$src/$f" "$dst/$f"
+    done
+    echo "synced $(basename "$src") -> $p/src/portalkit"
   done
-  echo "synced portalkit -> $p/src/portalkit"
-done
+}
+
+sync_group "$TS_SRC" TS_PORTALS TS_FILES
+sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES

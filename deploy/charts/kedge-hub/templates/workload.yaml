@@ -102,6 +102,9 @@ spec:
             {{- if .Values.hub.embeddedGraphQL }}
             - --embedded-graphql
             {{- end }}
+            {{- if .Values.hub.enableMetering }}
+            - --enable-metering
+            {{- end }}
             - --data-dir=/data/hub
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}

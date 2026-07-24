@@ -19,11 +19,13 @@ package kcp
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
+	meteringconfig "github.com/kcp-dev/contrib-metering/config"
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,6 +52,9 @@ var (
 	workspaceGVR = schema.GroupVersionResource{
 		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
 	}
+	workspaceTypeGVR = schema.GroupVersionResource{
+		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspacetypes",
+	}
 	apiExportGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexports",
 	}
@@ -71,6 +76,11 @@ type Bootstrapper struct {
 	// first-party CatalogEntries get materialized. nil/empty means "all
 	// known builtins" (matches the flag's default).
 	enabledProviders []string
+	// meteringEnabled is the value of `--enable-metering`. When true, Bootstrap
+	// installs contrib-metering into root:kedge:system:metering and makes the
+	// kedge-organization WorkspaceType a billing boundary. When false (default) no
+	// metering artefacts are created and the organization type is untouched.
+	meteringEnabled bool
 }
 
 // NewBootstrapper creates a new bootstrapper.
@@ -99,6 +109,15 @@ func (b *Bootstrapper) WithEnabledProviders(names []string) *Bootstrapper {
 	return b
 }
 
+// WithMetering toggles the contrib-metering integration. When enabled, Bootstrap
+// creates root:kedge:system:metering (CRDs + provider/user APIExports + the
+// "billing" WorkspaceType) and extends the kedge-organization WorkspaceType with
+// "billing" so every organization workspace is a billing boundary.
+func (b *Bootstrapper) WithMetering(enabled bool) *Bootstrapper {
+	b.meteringEnabled = enabled
+	return b
+}
+
 // Bootstrap creates the workspace hierarchy:
 //
 //	root:kedge                          - Root kedge workspace
@@ -112,8 +131,14 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Bootstrapping kcp workspace hierarchy")
 
-	// 1. Clients targeting root workspace.
-	rootDynamic, rootDiscovery, err := newClients(b.config)
+	// 1. Clients targeting the kcp root workspace. Pin explicitly to "root"
+	//    rather than trusting b.config's ambient context: the mounted kubeconfig's
+	//    current-context can drift off root (e.g. a `kubectl ws` run leaves it on
+	//    some sub-workspace), and this is the only step that would otherwise use
+	//    the raw host. If it drifts, RootWorkspaceFS (the `kedge` workspace) gets
+	//    created under the wrong parent (e.g. root:kedge:system:metering:kedge).
+	//    Every other step already normalizes via configForPath.
+	rootDynamic, rootDiscovery, err := newClients(configForPath(b.config, "root"))
 	if err != nil {
 		return fmt.Errorf("creating root clients: %w", err)
 	}
@@ -240,7 +265,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	//     admission resolves the binding's LogicalCluster and checks bind
 	//     RBAC at apply time, so the APIExport (created in step 5) must
 	//     exist beforehand or the apply fails with a 403 forbidden.
-	logger.Info("Bootstrapping post-providers workspace artefacts (organization WorkspaceType)")
+	logger.Info("Bootstrapping post-providers workspace artefacts (kedge-organization WorkspaceType)")
 	if err := confighelpers.Bootstrap(ctx, kedgeDiscovery, kedgeDynamic, kcp.PostProvidersFS); err != nil {
 		return fmt.Errorf("bootstrapping post-providers artefacts: %w", err)
 	}
@@ -256,8 +281,317 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("binding tenants.kedge.faros.sh in system:tenants: %w", err)
 	}
 
+	// 7. Optional contrib-metering integration (--enable-metering). Runs last so
+	//    it can patch the kedge-organization WorkspaceType (created in step 5d) and so
+	//    a failure here never blocks the core hierarchy. Gated: when disabled the
+	//    organization type is never touched and no metering artefacts exist.
+	if b.meteringEnabled {
+		logger.Info("Bootstrapping contrib-metering integration")
+		if err := b.bootstrapMetering(ctx); err != nil {
+			return fmt.Errorf("bootstrapping metering: %w", err)
+		}
+	}
+
 	logger.Info("kcp bootstrap complete")
 	return nil
+}
+
+// bootstrapMetering installs contrib-metering into root:kedge:system:metering and
+// makes the kedge-organization WorkspaceType a billing boundary. It is only called when
+// --enable-metering is set. The steps mirror contrib-metering's docs/install.md
+// but target the in-tree metering system workspace instead of root:metering:
+//
+//  1. create root:kedge:system:metering (universal) and wait Ready
+//  2. apply CRDs, then provider APIExport, then user APIExport
+//  3. apply the "billing" WorkspaceType mixin (rewriting root:metering ->
+//     root:kedge:system:metering); its defaultAPIBindings reference the "metering"
+//     export from step 2, which must already exist
+//  4. extend the kedge-organization WorkspaceType with "billing" so organization
+//     workspaces become billing boundaries
+func (b *Bootstrapper) bootstrapMetering(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+
+	// 1. Create the metering system workspace as a child of root:kedge:system.
+	systemDynamic, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.System))
+	if err != nil {
+		return fmt.Errorf("creating system client: %w", err)
+	}
+	meteringWS := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "tenancy.kcp.io/v1alpha1",
+			"kind":       "Workspace",
+			"metadata": map[string]interface{}{
+				"name": "metering",
+				"annotations": map[string]interface{}{
+					"bootstrap.kcp.io/create-only": "true",
+				},
+			},
+			"spec": map[string]interface{}{
+				"type": map[string]interface{}{"name": "universal", "path": "root"},
+			},
+		},
+	}
+	if _, err := systemDynamic.Resource(workspaceGVR).Create(ctx, meteringWS, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating metering workspace: %w", err)
+		}
+	} else {
+		logger.Info("Created metering workspace", "path", kcppaths.SystemMetering)
+	}
+	if err := waitForWorkspaceReady(ctx, systemDynamic, "metering"); err != nil {
+		return fmt.Errorf("waiting for metering workspace: %w", err)
+	}
+
+	// 2 & 3. Apply the embedded contrib-metering manifests into the metering
+	//        workspace, in the order contrib's config package documents:
+	//        CRDs -> provider export -> store export -> user export -> billing WST.
+	//        Order matters across FSes: the user export references the
+	//        plan/entitlement APIResourceSchemas that the store export ships, and
+	//        the billing WorkspaceType validates its defaultAPIBindings against the
+	//        "metering" (user) export, which must exist first. Each FS is a
+	//        separate Bootstrap call because confighelpers only orders
+	//        schema-before-export WITHIN a single FS.
+	meteringDynamic, meteringDiscovery, err := newClients(configForPath(b.config, kcppaths.SystemMetering))
+	if err != nil {
+		return fmt.Errorf("creating metering clients: %w", err)
+	}
+	// Every metering manifest that names the hosting workspace hardcodes contrib's
+	// standalone default (root:metering). Rewrite it to the in-tree path on ALL
+	// steps — not just the WorkspaceTypes: the export endpointslices carry it in
+	// spec.export.path (which kcp normalizes to where the export actually lives, and
+	// which is IMMUTABLE), the user export's plan CachedResource references the
+	// store export by path, and the WorkspaceTypes bind by path. If the FS value
+	// doesn't match the hosting path, re-applies try to mutate the immutable
+	// spec.export and the bootstrap hangs. ("root:metering" is not a substring of
+	// "root:kedge:system:metering", so the replace can't double-apply.)
+	rewrite := confighelpers.ReplaceOption(meteringconfig.DefaultWorkspacePath, kcppaths.SystemMetering)
+	for _, step := range []struct {
+		name string
+		fs   embed.FS
+	}{
+		{"provider APIExport", meteringconfig.ProviderAPIExport},
+		// Internal source-of-truth: account/entitlement/plan schemas + the
+		// "metering-store" export the controller watches (--store-endpointslice).
+		// Must precede the user export, which reuses these schemas.
+		{"store APIExport", meteringconfig.StoreAPIExport},
+		// Platform-only membership: the "metering-platform" export (MembershipReport).
+		// Bound only in the hub-controlled platform workspace below, never by
+		// providers/tenants, so membership ground truth cannot be forged.
+		{"platform APIExport", meteringconfig.PlatformAPIExport},
+		// Tenant read view: the "metering" export (entitlements projected, plans
+		// via CachedResource). The plan CachedResource needs kcp's alpha CacheAPIs
+		// feature gate; without it the plans resource stays unserved but the rest
+		// of the export still applies.
+		{"user APIExport", meteringconfig.UserAPIExport},
+		// The "billing" mixin (auto-binds the user export into billing workspaces).
+		{"billing WorkspaceType", meteringconfig.BillingWorkspaceType},
+		// metering-storage WorkspaceType: object-storage workspaces that bind both
+		// the user + provider exports so metering objects can be distributed across
+		// a subtree. To actually converge a subtree, also set the controller's
+		// --storage-subtree-path (off by default).
+		{"storage WorkspaceType", meteringconfig.StorageWorkspaceType},
+	} {
+		logger.Info("Applying metering manifests", "step", step.name)
+		if err := confighelpers.Bootstrap(ctx, meteringDiscovery, meteringDynamic, step.fs, rewrite); err != nil {
+			return fmt.Errorf("applying metering %s: %w", step.name, err)
+		}
+	}
+
+	// 3b. Create the dedicated store workspace (root:kedge:system:metering:store)
+	//     and bind the metering-store APIExport into it, so the source-of-truth
+	//     Account/Entitlement/Plan types are servable and WRITABLE there. The
+	//     initializer/terminator write here (the controller runs with
+	//     --store-path=SystemMeteringStore). The store export is defined in the
+	//     metering workspace above (CRD-backed); it is consumed here via the
+	//     binding, not read as raw CRDs in the provider workspace.
+	storeWS := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "tenancy.kcp.io/v1alpha1",
+			"kind":       "Workspace",
+			"metadata": map[string]interface{}{
+				"name":        "store",
+				"annotations": map[string]interface{}{"bootstrap.kcp.io/create-only": "true"},
+			},
+			"spec": map[string]interface{}{
+				"type": map[string]interface{}{"name": "universal", "path": "root"},
+			},
+		},
+	}
+	if _, err := meteringDynamic.Resource(workspaceGVR).Create(ctx, storeWS, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating metering store workspace: %w", err)
+		}
+	} else {
+		logger.Info("Created metering store workspace", "path", kcppaths.SystemMeteringStore)
+	}
+	if err := waitForWorkspaceReady(ctx, meteringDynamic, "store"); err != nil {
+		return fmt.Errorf("waiting for metering store workspace: %w", err)
+	}
+	storeDynamic, storeDiscovery, err := newClients(configForPath(b.config, kcppaths.SystemMeteringStore))
+	if err != nil {
+		return fmt.Errorf("creating metering store clients: %w", err)
+	}
+	// The binding's export path hardcodes contrib's default (root:metering); rewrite
+	// it to the in-tree metering workspace where the metering-store export lives.
+	if err := confighelpers.Bootstrap(ctx, storeDiscovery, storeDynamic, meteringconfig.StoreWorkspaceBinding, rewrite); err != nil {
+		return fmt.Errorf("applying metering store APIBinding: %w", err)
+	}
+	// Example Plans (free/small/large) into the store workspace so Entitlements have
+	// a Plan to reference — notably "free", the controller's --default-plan. Bootstrap
+	// polls until the binding above is Bound and the plans resource is served. These
+	// are examples for dev/testing; a production platform ships its own Plans.
+	if err := confighelpers.Bootstrap(ctx, storeDiscovery, storeDynamic, meteringconfig.ExamplePlans); err != nil {
+		return fmt.Errorf("applying metering example Plans: %w", err)
+	}
+
+	// 3c. Create the dedicated platform workspace (root:kedge:system:metering:platform)
+	//     and bind the metering-platform APIExport into it, so MembershipReport is
+	//     servable and WRITABLE there. The census controller writes membership reports
+	//     here; the metering controller reads them (--membership-path). This workspace
+	//     is hub-controlled and never bound by a provider or tenant, which is what makes
+	//     membership tamper-proof: a 3rd-party provider has no reachable surface to
+	//     forge or reassign which workspaces belong to which account.
+	platformWS := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "tenancy.kcp.io/v1alpha1",
+			"kind":       "Workspace",
+			"metadata": map[string]interface{}{
+				"name":        "platform",
+				"annotations": map[string]interface{}{"bootstrap.kcp.io/create-only": "true"},
+			},
+			"spec": map[string]interface{}{
+				"type": map[string]interface{}{"name": "universal", "path": "root"},
+			},
+		},
+	}
+	if _, err := meteringDynamic.Resource(workspaceGVR).Create(ctx, platformWS, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating metering platform workspace: %w", err)
+		}
+	} else {
+		logger.Info("Created metering platform workspace", "path", kcppaths.SystemMeteringPlatform)
+	}
+	if err := waitForWorkspaceReady(ctx, meteringDynamic, "platform"); err != nil {
+		return fmt.Errorf("waiting for metering platform workspace: %w", err)
+	}
+	platformDynamic, platformDiscovery, err := newClients(configForPath(b.config, kcppaths.SystemMeteringPlatform))
+	if err != nil {
+		return fmt.Errorf("creating metering platform clients: %w", err)
+	}
+	if err := confighelpers.Bootstrap(ctx, platformDiscovery, platformDynamic, meteringconfig.PlatformWorkspaceBinding, rewrite); err != nil {
+		return fmt.Errorf("applying metering platform APIBinding: %w", err)
+	}
+
+	// 4. Make the kedge-organization WorkspaceType a billing boundary. extend is
+	//    mutable (no immutability validation in kcp), so we patch it in rather
+	//    than shipping a metering-specific organization YAML — disabled hubs keep
+	//    the untouched type from PostProvidersFS.
+	if err := b.ensureOrganizationBillingExtend(ctx); err != nil {
+		return fmt.Errorf("extending kedge-organization WorkspaceType with billing: %w", err)
+	}
+
+	// 5. Bind the metering-provider export into every provider workspace so
+	//    providers can serve MeteringConfig/UsageRecord and emit usage. Patched
+	//    onto the provider WorkspaceType's defaultAPIBindings (not extend — a
+	//    provider is not a billing boundary) for the same ordering reason: the
+	//    provider type is applied at step 5d, before the metering export exists.
+	if err := b.ensureProviderMeteringBinding(ctx); err != nil {
+		return fmt.Errorf("binding metering-provider into provider WorkspaceType: %w", err)
+	}
+
+	logger.Info("contrib-metering integration complete", "path", kcppaths.SystemMetering)
+	return nil
+}
+
+// ensureProviderMeteringBinding appends {path: root:kedge:system:metering,
+// export: metering-provider} to the provider WorkspaceType's
+// spec.defaultAPIBindings if not already present. Idempotent. New provider
+// workspaces then serve MeteringConfig/UsageRecord (existing ones need a manual
+// APIBinding — defaultAPIBindings only apply at workspace creation).
+func (b *Bootstrapper) ensureProviderMeteringBinding(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+	kedgeDynamic, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.Root))
+	if err != nil {
+		return fmt.Errorf("creating root:kedge client: %w", err)
+	}
+	wtClient := kedgeDynamic.Resource(workspaceTypeGVR)
+
+	return wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
+		providerType, err := wtClient.Get(ctx, "provider", metav1.GetOptions{})
+		if err != nil {
+			logger.V(4).Info("provider WorkspaceType not found yet, retrying", "err", err)
+			return false, nil
+		}
+
+		bindings, _, _ := unstructured.NestedSlice(providerType.Object, "spec", "defaultAPIBindings")
+		for _, e := range bindings {
+			m, ok := e.(map[string]interface{})
+			if ok && m["export"] == "metering-provider" {
+				return true, nil // already bound
+			}
+		}
+		bindings = append(bindings, map[string]interface{}{
+			"path":   kcppaths.SystemMetering,
+			"export": "metering-provider",
+		})
+		if err := unstructured.SetNestedSlice(providerType.Object, bindings, "spec", "defaultAPIBindings"); err != nil {
+			return false, fmt.Errorf("setting spec.defaultAPIBindings: %w", err)
+		}
+		if _, err := wtClient.Update(ctx, providerType, metav1.UpdateOptions{}); err != nil {
+			if errors.IsConflict(err) {
+				return false, nil // re-read and retry
+			}
+			logger.V(4).Info("updating provider WorkspaceType failed, retrying", "err", err)
+			return false, nil
+		}
+		logger.Info("Bound metering-provider into provider WorkspaceType", "path", kcppaths.SystemMetering)
+		return true, nil
+	})
+}
+
+// ensureOrganizationBillingExtend adds {name: billing, path:
+// root:kedge:system:metering} to the kedge-organization WorkspaceType's spec.extend.with
+// if not already present. Idempotent. The organization type lives in root:kedge
+// (applied by PostProvidersFS in step 5d).
+func (b *Bootstrapper) ensureOrganizationBillingExtend(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+	kedgeDynamic, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.Root))
+	if err != nil {
+		return fmt.Errorf("creating root:kedge client: %w", err)
+	}
+	wtClient := kedgeDynamic.Resource(workspaceTypeGVR)
+
+	return wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
+		orgType, err := wtClient.Get(ctx, "kedge-organization", metav1.GetOptions{})
+		if err != nil {
+			logger.V(4).Info("kedge-organization WorkspaceType not found yet, retrying", "err", err)
+			return false, nil
+		}
+
+		with, _, _ := unstructured.NestedSlice(orgType.Object, "spec", "extend", "with")
+		for _, e := range with {
+			m, ok := e.(map[string]interface{})
+			if ok && m["name"] == "billing" {
+				return true, nil // already a billing boundary
+			}
+		}
+		with = append(with, map[string]interface{}{
+			"name": "billing",
+			"path": kcppaths.SystemMetering,
+		})
+		if err := unstructured.SetNestedSlice(orgType.Object, with, "spec", "extend", "with"); err != nil {
+			return false, fmt.Errorf("setting spec.extend.with: %w", err)
+		}
+		if _, err := wtClient.Update(ctx, orgType, metav1.UpdateOptions{}); err != nil {
+			if errors.IsConflict(err) {
+				return false, nil // re-read and retry
+			}
+			logger.V(4).Info("updating kedge-organization WorkspaceType failed, retrying", "err", err)
+			return false, nil
+		}
+		logger.Info("Extended kedge-organization WorkspaceType with billing", "path", kcppaths.SystemMetering)
+		return true, nil
+	})
 }
 
 // ensureTenancyObjectsBinding creates an APIBinding to the
@@ -301,7 +635,7 @@ func (b *Bootstrapper) OrgsConfig() *rest.Config {
 // invoked from the Organization bootstrap controller with the hub's own
 // admin config; no per-User RBAC is granted inside the workspace.
 //
-// The "organization" WorkspaceType's defaultAPIBindings bring
+// The "kedge-organization" WorkspaceType's defaultAPIBindings bring
 // tenants.kedge.faros.sh (Organization, CatalogEntry, future Membership)
 // and tenancy.kcp.io (Workspace for child team-workspace creation in
 // PR #3) into the Org workspace.
@@ -321,7 +655,7 @@ func (b *Bootstrapper) EnsureOrgWorkspace(ctx context.Context, orgUUID string) e
 			},
 			"spec": map[string]interface{}{
 				"type": map[string]interface{}{
-					"name": "organization",
+					"name": "kedge-organization",
 					"path": "root:kedge",
 				},
 			},

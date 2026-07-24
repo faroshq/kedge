@@ -28,7 +28,7 @@ var RootWorkspaceFS embed.FS
 // the provider sub-workspace parent, the tenant-fleet parent, and the `system`
 // container. The User/Organization CR-object storage moved from
 // root:kedge:users into root:kedge:system:tenants, so workspace-users.yaml is
-// gone. The `organization` + `workspace` + `edge` + `provider` WorkspaceTypes
+// gone. The `kedge-organization` + `workspace` + `edge` + `provider` WorkspaceTypes
 // ship in PostProvidersFS (they carry defaultAPIBindings to exports that must
 // exist first).
 //
@@ -51,7 +51,7 @@ var ProvidersFS embed.FS
 
 // PostProvidersFS contains workspace-scoped objects that must be applied in
 // root:kedge AFTER ProvidersFS has populated root:kedge:system:controllers with
-// the APIExports they reference. Ships the `organization` + `workspace` +
+// the APIExports they reference. Ships the `kedge-organization` + `workspace` +
 // `edge` + `provider` WorkspaceTypes. They carry defaultAPIBindings to exports
 // under root:kedge:system:controllers (e.g. tenants.kedge.faros.sh,
 // providers.kedge.faros.sh); kcp's WorkspaceType admission
@@ -62,5 +62,5 @@ var ProvidersFS embed.FS
 // has no defaultAPIBindings (it is a pure mount point) but ships here too so
 // the `workspace` type's limitAllowedChildren reference to it resolves.
 //
-//go:embed workspacetype-organization.yaml workspacetype-workspace.yaml workspacetype-edge.yaml workspacetype-provider.yaml
+//go:embed workspacetype-kedge-organization.yaml workspacetype-workspace.yaml workspacetype-edge.yaml workspacetype-provider.yaml
 var PostProvidersFS embed.FS

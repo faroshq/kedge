@@ -73,6 +73,9 @@ func main() {
 	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
 		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
+	cmd.Flags().BoolVar(&opts.EnableMetering, "enable-metering", false,
+		"Bootstrap contrib-metering into root:kedge:system:metering (CRDs, APIExports, the \"billing\" WorkspaceType) "+
+			"and make the organization WorkspaceType a billing boundary. Off by default (opt-in integration test).")
 
 	cmd.Flags().StringVar(&opts.GraphQLAddr, "graphql-addr", opts.GraphQLAddr, "Address of an external GraphQL gateway to proxy /graphql/* requests to (empty to disable)")
 	cmd.Flags().BoolVar(&opts.EmbeddedGraphQL, "embedded-graphql", opts.EmbeddedGraphQL, "Run GraphQL listener+gateway in-process (requires embedded or external kcp; overrides --graphql-addr)")

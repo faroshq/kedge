@@ -1,7 +1,10 @@
 apiVersion: tenancy.kcp.io/v1alpha1
 kind: WorkspaceType
 metadata:
-  name: organization
+  # Named kedge-organization (not "organization") to avoid confusion with the
+  # tenants.kedge.faros.sh Organization CR and with generic/other-provider
+  # "organization" types (e.g. contrib-metering's billing-boundary example).
+  name: kedge-organization
   annotations:
     bootstrap.kcp.io/create-only: "true"
 spec:

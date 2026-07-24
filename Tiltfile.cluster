@@ -115,12 +115,12 @@ print('')
 os.putenv('KCP_KUBECONFIG_DIR', os.getcwd())
 
 # Metering audit ingest: point every shard's audit backend at the metering-audit
-# sink (deployed by the metering Helm chart under METERING_AUDIT=true). The sink
+# sink (deployed by the metering Helm chart under METERING_ENABLED=true). The sink
 # counts requests per workspace and emits UsageRecords. Dev wires it over plain
 # HTTP (audit isn't security-sensitive; no CA). The ConfigMap (policy) + Secret
 # (webhook kubeconfig, key 'kubeconfig') live in the shard namespace (default);
 # deploy_kcp reads the KCP_AUDIT_* env hooks and sets spec.audit on each shard.
-if os.getenv('METERING_ENABLED', 'false') == 'true' or os.getenv('METERING_AUDIT', 'false') == 'true':
+if os.getenv('METERING_ENABLED', 'false') == 'true':
     k8s_yaml(blob('''
 apiVersion: v1
 kind: ConfigMap

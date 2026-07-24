@@ -55,7 +55,7 @@ cluster_name = 'kcp-tilt'
 # silently shadow any later edit to the default here. The putenv is one-way:
 # parent (this file) → child (the included Tiltfile.static, which reads the env).
 kcp_image_repo = cfg.get('kcp-image-repo', 'ghcr.io/kcp-dev/kcp-prs')
-kcp_image_tag = cfg.get('kcp-image-tag', 'pr-4280-f20adfe2d')
+kcp_image_tag = cfg.get('kcp-image-tag', 'pr-4286-bfb980226')
 # Always export (even empty) so an explicit '' override clears any inherited env.
 os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
 os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
@@ -113,6 +113,49 @@ print('')
 # at this project's directory and the kubeconfigs land here instead of the kcp
 # tree. os.getcwd() resolves to this (root) Tiltfile's directory.
 os.putenv('KCP_KUBECONFIG_DIR', os.getcwd())
+
+# Metering audit ingest: point every shard's audit backend at the metering-audit
+# sink (deployed by the metering Helm chart under METERING_AUDIT=true). The sink
+# counts requests per workspace and emits UsageRecords. Dev wires it over plain
+# HTTP (audit isn't security-sensitive; no CA). The ConfigMap (policy) + Secret
+# (webhook kubeconfig, key 'kubeconfig') live in the shard namespace (default);
+# deploy_kcp reads the KCP_AUDIT_* env hooks and sets spec.audit on each shard.
+if os.getenv('METERING_AUDIT', 'false') == 'true':
+    k8s_yaml(blob('''
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metering-audit-policy
+  namespace: default
+data:
+  policy.yaml: |
+    apiVersion: audit.k8s.io/v1
+    kind: Policy
+    omitStages: ["RequestReceived", "ResponseStarted"]
+    rules:
+    - level: Metadata
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: metering-audit-webhook
+  namespace: default
+stringData:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - name: metering-audit
+      cluster:
+        server: http://metering-audit.contrib-metering.svc.cluster.local:9444/audit
+    contexts:
+    - name: metering-audit
+      context: { cluster: metering-audit, user: "" }
+    current-context: metering-audit
+'''))
+    os.putenv('KCP_AUDIT_POLICY_CM', 'metering-audit-policy')
+    os.putenv('KCP_AUDIT_POLICY_KEY', 'policy.yaml')
+    os.putenv('KCP_AUDIT_WEBHOOK_SECRET', 'metering-audit-webhook')
 
 # Pull in the entire upstream kcp Tilt setup.
 include(kcp_tilt)

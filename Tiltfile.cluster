@@ -1505,6 +1505,8 @@ kubectl create secret generic metering-kubeconfig -n %s \
         os.putenv('METERING_KUBECONFIG_SECRET', 'metering-kubeconfig')
         os.putenv('METERING_BOUNDARY_WS_PATH', metering_ws_path)
         os.putenv('METERING_STORE_WS_PATH', metering_ws_path + ':store')
+        # Platform workspace holding MembershipReports (kedge census -> controller).
+        os.putenv('METERING_MEMBERSHIP_WS_PATH', metering_ws_path + ':platform')
         # One flag deploys the whole subsystem: controller + enforcement webhook +
         # audit sink (contrib-metering's Tiltfile reads METERING_ENABLED).
         os.putenv('METERING_ENABLED', 'true')

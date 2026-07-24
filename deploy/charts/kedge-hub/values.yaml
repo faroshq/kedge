@@ -59,6 +59,10 @@ hub:
   devMode: false
   # Enable embedded GraphQL gateway (required for portal)
   embeddedGraphQL: false
+  # Bootstrap contrib-metering into root:kedge:system:metering (CRDs, APIExports,
+  # the "billing" WorkspaceType) and make the organization type a billing
+  # boundary. Off by default; opt-in integration with kcp-dev/contrib-metering.
+  enableMetering: false
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []
   # Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.

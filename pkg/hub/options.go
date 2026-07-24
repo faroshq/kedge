@@ -57,6 +57,13 @@ type Options struct {
 	// pkg/hub/kcp.builtinEntries[].Requires.
 	Providers []string
 
+	// EnableMetering, when true, bootstraps contrib-metering into
+	// root:kedge:system:metering (CRDs, provider/user APIExports, the "billing"
+	// WorkspaceType) and makes the `organization` WorkspaceType a billing
+	// boundary by extending "billing". Off by default — this is an opt-in
+	// integration test toggle; leaving it off keeps bootstrap untouched.
+	EnableMetering bool
+
 	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
 	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
 	GraphQLAddr string

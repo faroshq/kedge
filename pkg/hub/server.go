@@ -276,11 +276,27 @@ func (s *Server) Run(ctx context.Context) error {
 	// Defaults to the base kedgeClient; overridden to root:kedge:users when kcp is configured.
 	userClient := kedgeClient
 	if kcpConfig != nil {
-		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
+		bootstrapper = kcp.NewBootstrapper(kcpConfig).
+			WithEnabledProviders(s.opts.Providers).
+			WithMetering(s.opts.EnableMetering)
 		if err := bootstrapper.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("bootstrapping kcp: %w", err)
 		}
 		logger.Info("kcp bootstrap complete")
+
+		// Metering membership census: kedge is the platform, so it owns reporting
+		// which workspaces belong to which billing account. This emitter discovers
+		// the org/descendant topology and pushes MembershipReports into the
+		// hub-controlled platform workspace; the metering controller folds them into
+		// its membership index (attribution + enforcement + workspaces count).
+		if s.opts.EnableMetering {
+			go (&meteringCensus{
+				kcpConfig: kcpConfig,
+				reporter:  "kedge-census",
+				interval:  time.Minute,
+				log:       logger.WithName("metering-census"),
+			}).Run(ctx)
+		}
 
 		// The legacy per-tenant BackfillDefaultMCPs walk (which iterated
 		// root:kedge:tenants) was removed when the new multi-org model

@@ -16,6 +16,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/kcp-dev/cli v0.32.0
+	github.com/kcp-dev/contrib-metering v0.0.0-00010101000000-000000000000
 	github.com/kcp-dev/embeddedetcd v1.1.1-0.20260402110232-2cc5c5cce35e
 	github.com/kcp-dev/kcp v0.32.0
 	github.com/kcp-dev/multicluster-provider v0.8.0
@@ -330,6 +331,11 @@ replace github.com/platform-mesh/kubernetes-graphql-gateway => github.com/farosh
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
 
 replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260719114444-12948e549686
+
+// Co-located contrib-metering checkout. Local dev uses the go.work `use` entry;
+// this replace keeps module-mode builds (GOWORK=off, e.g. Docker) resolvable
+// against the same source tree.
+replace github.com/kcp-dev/contrib-metering => ../../../github.com/kcp-dev/contrib-metering
 
 replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20260719114444-12948e549686
 

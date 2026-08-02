@@ -27,13 +27,10 @@ import (
 	"strings"
 	"time"
 
-	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/faroshq/provider-app-studio/store"
 )
 
 const (
@@ -73,7 +70,11 @@ type projectAssistantRuntimeLogsResult struct {
 	Processes               map[string]projectAssistantProcessStatus `json:"processes,omitempty"`
 	ProcessEvidenceComplete *bool                                    `json:"processEvidenceComplete,omitempty"`
 	Blockers                []string                                 `json:"blockers,omitempty"`
-	NextSteps               []string                                 `json:"nextSteps,omitempty"`
+	// Issues are the diagnosed failures behind Blockers, each with the concrete
+	// remediation. The model gets the diagnosis instead of re-deriving it from
+	// a raw log line.
+	Issues    []projectRuntimeIssue `json:"issues,omitempty"`
+	NextSteps []string              `json:"nextSteps,omitempty"`
 }
 
 type projectAssistantProcessStatus struct {
@@ -506,7 +507,16 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 	}
 	if len(diagnosticBlockers) > 0 {
 		result.Status = "not_ready"
-		result.Summary = "The preview edge is reachable, but runtime diagnostics contain failures."
+		// Report what broke and what to do, not that "the logs contain a
+		// failure" — that sent the repair lane back to re-read the same lines
+		// and re-derive a diagnosis this already has.
+		if input.Logs != nil && len(input.Logs.Issues) > 0 {
+			result.Summary = "The preview edge is reachable, but the development process failed to start. " +
+				projectRuntimeIssueDiagnosisSummary(input.Logs.Issues)
+			result.Issues = append([]projectRuntimeIssue(nil), input.Logs.Issues...)
+		} else {
+			result.Summary = "The preview edge is reachable, but runtime diagnostics contain failures."
+		}
 		result.Blockers = diagnosticBlockers
 	} else if input.RequireProcessEvidence &&
 		(input.Logs == nil ||
@@ -617,6 +627,11 @@ func boundedProjectAssistantRuntimeLogs(logs *projectAssistantRuntimeLogsResult)
 	out.Blockers = boundedProjectAssistantWorkflowStrings(out.Blockers, 4, 160)
 	out.NextSteps = boundedProjectAssistantWorkflowStrings(out.NextSteps, 4, 160)
 	out.Lines = boundedProjectAssistantWorkflowStrings(out.Lines, 20, 120)
+	// Keep the diagnosed issues alongside the raw lines, bounded the same way:
+	// they are what the repair lane should act on.
+	if len(out.Issues) > 4 {
+		out.Issues = out.Issues[:4]
+	}
 	return &out
 }
 
@@ -750,6 +765,7 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 		}
 		lines := make([]string, 0, tail)
 		var blockers []string
+		var issues []projectRuntimeIssue
 		processes := map[string]projectAssistantProcessStatus{}
 		evidenceComponents := 0
 		for _, component := range components {
@@ -806,19 +822,30 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 				}
 				lines = append(lines, line)
 			}
-			logBlockers := projectAssistantRuntimeLogBlockers(componentLines)
-			if processSupported {
-				logBlockers = currentProjectAssistantRuntimeLogBlockers(process, logBlockers)
+			// Diagnose every component: with a multi-component app the broken
+			// one is not necessarily the first, and stopping at the first
+			// component with a fault hid the others.
+			componentIssues := projectRuntimeIssuesFromLogs(component, componentLines)
+			if processSupported && process.Running {
+				// A running process outlives stale "missing script" startup
+				// noise in the retained log window; a diagnosis for it would
+				// contradict the live process evidence.
+				componentIssues = slices.DeleteFunc(componentIssues, func(issue projectRuntimeIssue) bool {
+					return issue.Kind == projectRuntimeIssueMissingScript
+				})
 			}
-			if len(logBlockers) > 0 && component != "" {
-				logBlockers[0] = "[" + component + "] " + logBlockers[0]
-			}
-			blockers = append(blockers, logBlockers...)
+			issues = append(issues, componentIssues...)
 			if componentHasEvidence {
 				evidenceComponents++
 			}
 		}
 		evidenceComplete := evidenceComponents == len(components)
+		if len(issues) > projectRuntimeIssueMaxCount {
+			issues = issues[:projectRuntimeIssueMaxCount]
+		}
+		// Process-configuration blockers collected in the loop stay; the
+		// diagnosed issues contribute their remediation-bearing summaries.
+		blockers = append(blockers, projectRuntimeIssueSummaries(issues)...)
 		if len(lines) > tail {
 			lines = lines[len(lines)-tail:]
 		}
@@ -833,9 +860,9 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 		}
 		status := "ok"
 		summary := fmt.Sprintf("Returned the last %d line(s) of development runtime logs.", len(lines))
-		if len(blockers) > 0 {
+		if projectRuntimeIssuesBlocking(issues) {
 			status = "failed"
-			summary = "The latest development runtime logs contain a startup or compilation failure."
+			summary = projectRuntimeIssueDiagnosisSummary(issues)
 		}
 		return &projectAssistantRuntimeLogsResult{
 			Status:                  status,
@@ -844,10 +871,13 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 			Processes:               processes,
 			ProcessEvidenceComplete: &evidenceComplete,
 			Blockers:                blockers,
+			Issues:                  issues,
 		}, nil
 	}
 }
 
+// projectAssistantRuntimeLogBlockers reports pattern-recognized blockers in a
+// log window as short display strings.
 func projectAssistantRuntimeLogBlockers(lines []string) []string {
 	patterns := []string{
 		"syntaxerror",
@@ -905,10 +935,11 @@ func newProjectAssistantRestartRuntimeGraphTool(runCtx projectAssistantWorkflowR
 	if err != nil {
 		return nil, err
 	}
-	if runCtx.ApprovalMode == store.AssistantApprovalModeAutoApprove {
-		return innerTool, nil
-	}
-	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
+	// Approval is not applied here. This tool is routed through
+	// projectEinoAssistantTool (see newProjectAssistantGraphWorkflowTools),
+	// which owns the permission barrier, the approval-mode decision,
+	// AdmitMutation, and the audit record for every risk-bearing call.
+	return innerTool, nil
 }
 
 func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeRestartToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
@@ -995,10 +1026,9 @@ func newProjectAssistantSetRuntimeEnvGraphTool(runCtx projectAssistantWorkflowRu
 	if err != nil {
 		return nil, err
 	}
-	if runCtx.ApprovalMode == store.AssistantApprovalModeAutoApprove {
-		return innerTool, nil
-	}
-	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
+	// Approval is owned by the audited wrapper, not this constructor — see
+	// newProjectAssistantRestartRuntimeGraphTool.
+	return innerTool, nil
 }
 
 func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeEnvToolInput) (*projectAssistantRuntimeWorkflowResult, error) {

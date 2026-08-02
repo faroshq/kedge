@@ -205,6 +205,9 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 	if err != nil {
 		return nil, projectPromoteResponse{}, err
 	}
+	// "stale" is its own refusal: every component has an image, so the older
+	// build-count check would have passed while production silently received
+	// the previous commit's code.
 	if check.Status != "built" {
 		return nil, projectPromoteResponse{}, newValidationError("project is not ready to promote: " + check.Note)
 	}

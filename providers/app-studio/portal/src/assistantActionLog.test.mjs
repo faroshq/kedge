@@ -6,7 +6,7 @@ import { renderToString } from 'vue/server-renderer'
 
 let vite
 test.before(async () => {
-  vite = await createServer({ appType: 'custom', server: { middlewareMode: true } })
+  vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
 })
 test.after(async () => vite?.close())
 

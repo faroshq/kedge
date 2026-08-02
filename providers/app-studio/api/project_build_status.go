@@ -35,6 +35,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
@@ -200,17 +201,80 @@ type projectBuildCheckComponent struct {
 	Image      string `json:"image,omitempty"`
 	Digest     string `json:"digest,omitempty"`
 	Tag        string `json:"tag,omitempty"`
+	// BuiltCommit is the commit the published image was built from, recovered
+	// from the build's "sha-<commitSHA>" tag pattern. Empty when the tag does
+	// not identify a commit (an image published before commit tagging, or by
+	// something other than the managed workflow).
+	BuiltCommit string `json:"builtCommit,omitempty"`
 }
 
 // projectBuildCheckResult is the deterministic build status the assistant polls.
 type projectBuildCheckResult struct {
 	// Status is one of: built (every launchable component has a published
-	// image), incomplete (some do), none (none published yet), or unsupported
-	// (template-less project).
+	// image for the project's latest commit), stale (every component has an
+	// image, but not from the latest commit — a build is still running or
+	// failed), incomplete (some components have images), none (no images yet),
+	// or unsupported (template-less project).
 	Status     string                       `json:"status"`
 	Components []projectBuildCheckComponent `json:"components,omitempty"`
 	Missing    []string                     `json:"missing,omitempty"`
 	Note       string                       `json:"note"`
+	// HeadCommit is the project's latest successful commit — what a promote
+	// should be shipping. Empty when no commit has been recorded yet.
+	HeadCommit string `json:"headCommit,omitempty"`
+	// StaleComponents lists components whose newest published image was built
+	// from some commit other than HeadCommit.
+	StaleComponents []string `json:"staleComponents,omitempty"`
+}
+
+// projectBuildCommitTagPrefix matches the tag pattern the generated workflow
+// publishes ("sha-{commitSHA}", see projectBuildConfigJSONComponents).
+const projectBuildCommitTagPrefix = "sha-"
+
+// projectRepositoryCommitPhaseSucceeded is the Code provider's terminal
+// success phase for a RepositoryCommit.
+const projectRepositoryCommitPhaseSucceeded = "Succeeded"
+
+// commitFromPackageTag recovers the commit a published image was built from.
+func commitFromPackageTag(tag string) string {
+	tag = strings.TrimSpace(tag)
+	if !strings.HasPrefix(tag, projectBuildCommitTagPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(tag, projectBuildCommitTagPrefix))
+}
+
+// commitsMatch compares two commit SHAs tolerating abbreviation on either side
+// — the registry tag may carry a short SHA while the commit record is full.
+func commitsMatch(a, b string) bool {
+	a, b = strings.ToLower(strings.TrimSpace(a)), strings.ToLower(strings.TrimSpace(b))
+	if a == "" || b == "" {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	// Guard against a truncated tag matching by coincidence.
+	const minAbbrev = 7
+	return len(a) >= minAbbrev && strings.HasPrefix(b, a)
+}
+
+// projectHeadCommitSHA returns the SHA of the project's most recent successful
+// commit — the revision a promote is expected to ship.
+func (s *Server) projectHeadCommitSHA(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) string {
+	repoRef := projectLinkedRepositoryRef(p)
+	if repoRef == "" || c == nil {
+		return ""
+	}
+	list := func(ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+		return c.Resource(codeResourceFor(gvr), "").List(ctx, opts)
+	}
+	for _, commit := range projectRepositoryCommits(ctx, list, repoRef) {
+		if strings.EqualFold(strings.TrimSpace(commit.Phase), projectRepositoryCommitPhaseSucceeded) {
+			return strings.TrimSpace(commit.CommitSHA)
+		}
+	}
+	return ""
 }
 
 // checkProjectBuild reports which of the project template's launchable
@@ -246,7 +310,15 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 		return projectBuildCheckResult{}, err
 	}
 
-	result := projectBuildCheckResult{Components: make([]projectBuildCheckComponent, 0, len(components))}
+	// The newest published image is not necessarily the one the user just
+	// validated: without comparing it to the project's latest commit, a build
+	// from an older (or unrelated) commit reads as ready to promote.
+	head := s.projectHeadCommitSHA(ctx, c, p)
+
+	result := projectBuildCheckResult{
+		Components: make([]projectBuildCheckComponent, 0, len(components)),
+		HeadCommit: head,
+	}
 	builtCount := 0
 	for _, comp := range components {
 		row := projectBuildCheckComponent{Name: comp.Name, ImageInput: comp.ImageInput}
@@ -255,15 +327,28 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 			row.Image = img.Image
 			row.Digest = img.Digest
 			row.Tag = img.Tag
+			row.BuiltCommit = commitFromPackageTag(img.Tag)
 			builtCount++
+			// Only claim staleness when both sides are known. An untagged image
+			// or a project with no recorded commit cannot be judged, and
+			// blocking promote on "unknown" would strand those projects.
+			if head != "" && row.BuiltCommit != "" && !commitsMatch(row.BuiltCommit, head) {
+				result.StaleComponents = append(result.StaleComponents, comp.Name)
+			}
 		} else {
 			result.Missing = append(result.Missing, comp.Name)
 		}
 		result.Components = append(result.Components, row)
 	}
 	sort.Strings(result.Missing)
+	sort.Strings(result.StaleComponents)
 
 	switch {
+	case builtCount == len(components) && len(result.StaleComponents) > 0:
+		result.Status = "stale"
+		result.Note = fmt.Sprintf(
+			"every component has a published image, but %s built from an older commit than the project's latest commit %s. The build for that commit is probably still running — wait for it, or check the repository's Actions tab if it failed. Promoting now would ship the previous version",
+			strings.Join(result.StaleComponents, ", "), shortCommitSHA(head))
 	case builtCount == len(components):
 		result.Status = "built"
 		result.Note = fmt.Sprintf("all %d component image(s) are published; the project can be promoted to production", builtCount)
@@ -275,4 +360,13 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 		result.Note = "no component images are published yet. Committing your app runs a GitHub Actions build that publishes one container image per component to the registry; they appear here once built. If images never appear, check the repository's Actions tab (Actions and package publishing must be enabled)."
 	}
 	return result, nil
+}
+
+// shortCommitSHA abbreviates a SHA for user-facing notes.
+func shortCommitSHA(sha string) string {
+	sha = strings.TrimSpace(sha)
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }

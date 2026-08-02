@@ -129,7 +129,7 @@ func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRe
 }
 
 // dataPlaneGet sends a GET verb (log) and returns a bounded body + status
-// code. Unlike dataPlaneStream it collects the response into memory, for
+// code. It collects the response into memory, for
 // callers (assistant tools) that need the payload as a value rather than a
 // stream. maxBytes bounds the body so a large log buffer cannot blow the
 // assistant context.
@@ -153,43 +153,4 @@ func (s *Server) dataPlaneGet(ctx context.Context, id identity, ref dataPlaneRef
 		return nil, resp.StatusCode, err
 	}
 	return body, resp.StatusCode, nil
-}
-
-// dataPlaneStream proxies a streaming GET verb (logs) straight to w, copying
-// the upstream status and content type.
-func (s *Server) dataPlaneStream(ctx context.Context, id identity, ref dataPlaneRef, verb string, w http.ResponseWriter) error {
-	req, err := s.newDataPlaneRequest(ctx, http.MethodGet, id, ref, verb, "", nil)
-	if err != nil {
-		return err
-	}
-	// No client timeout: log streams are long-lived; ctx cancellation (request
-	// close) ends them.
-	resp, err := s.sandboxDataPlaneClient(0).Do(req)
-	if err != nil {
-		return fmt.Errorf("development data plane %s: %w", verb, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-	w.WriteHeader(resp.StatusCode)
-	flusher, _ := w.(http.Flusher)
-	buf := make([]byte, 32<<10)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		if readErr == io.EOF {
-			return nil
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
 }

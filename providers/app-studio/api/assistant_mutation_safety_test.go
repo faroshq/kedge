@@ -19,7 +19,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -64,8 +63,22 @@ func TestAssistantMutationToolsFenceExistingFiles(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("initial-build write returned error: %v", err)
 	}
-	if _, err := workspaces.RestoreSnapshot(context.Background(), scope, "run-write"); !errors.Is(err, workspace.ErrSnapshotNotFound) {
-		t.Fatalf("assistant write snapshot error = %v, want ErrSnapshotNotFound", err)
+	// The write is snapshotted under its run so undo can roll it back. This
+	// file predates the run, so restoring returns its earlier content rather
+	// than removing it.
+	restored, err := workspaces.RestoreSnapshot(context.Background(), scope, "run-write")
+	if err != nil {
+		t.Fatalf("assistant write snapshot restore returned error: %v", err)
+	}
+	if len(restored.Files) != 1 {
+		t.Fatalf("restored files = %#v, want the single written file", restored.Files)
+	}
+	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/app.js"})
+	if err != nil {
+		t.Fatalf("read after undo returned error: %v", err)
+	}
+	if !strings.Contains(read.Content, "const theme = 'light'") {
+		t.Fatalf("content after undo = %q, want the pre-write text restored", read.Content)
 	}
 }
 
@@ -127,8 +140,17 @@ func TestAssistantApplyPatchRequiresSameTurnReadAndReturnsDiff(t *testing.T) {
 	if item.Outcome != "+1 -1" || strings.Contains(item.Outcome, "const theme") {
 		t.Fatalf("action outcome = %q, want counts only", item.Outcome)
 	}
-	if _, err := workspaces.RestoreSnapshot(context.Background(), scope, req.AssistantRunID); !errors.Is(err, workspace.ErrSnapshotNotFound) {
-		t.Fatalf("assistant patch snapshot error = %v, want ErrSnapshotNotFound", err)
+	// The patch is snapshotted under its run, so undo restores the pre-patch
+	// content rather than finding nothing to roll back.
+	if _, err := workspaces.RestoreSnapshot(context.Background(), scope, req.AssistantRunID); err != nil {
+		t.Fatalf("assistant patch snapshot restore returned error: %v", err)
+	}
+	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/app.js"})
+	if err != nil {
+		t.Fatalf("read after undo returned error: %v", err)
+	}
+	if !strings.Contains(read.Content, "const theme = 'light'") {
+		t.Fatalf("content after undo = %q, want the pre-patch text restored", read.Content)
 	}
 }
 

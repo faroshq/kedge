@@ -87,7 +87,3 @@ func (m *projectEinoAssistantLifecycle) commitResume(ctx context.Context) bool {
 	return wasInterrupted && hasState && state != nil &&
 		projectEinoAssistantCommitTool(strings.TrimSpace(state.ToolName))
 }
-
-func projectEinoAssistantVerificationReady(content string) bool {
-	return projectEinoAssistantPhaseVerificationReady(content)
-}

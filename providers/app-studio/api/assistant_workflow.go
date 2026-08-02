@@ -141,6 +141,10 @@ type projectAssistantRuntimeVerificationResult struct {
 	BrowserConsole          *projectAssistantBrowserConsoleResult    `json:"browserConsole,omitempty"`
 	Warnings                []string                                 `json:"warnings,omitempty"`
 	Blockers                []string                                 `json:"blockers,omitempty"`
+	// Issues are the diagnosed runtime failures behind Blockers, each carrying
+	// its own remediation. The repair lane acts on these rather than re-reading
+	// log lines to work out what went wrong.
+	Issues []projectRuntimeIssue `json:"issues,omitempty"`
 }
 
 type projectAssistantBrowserConsoleResult struct {
@@ -171,6 +175,13 @@ func projectEinoAssistantRuntimeVerificationDisposition(
 	if strings.TrimSpace(result.Status) == "not_ready" &&
 		result.Logs != nil &&
 		len(result.Logs.Blockers) > 0 {
+		// Route by what actually broke. Source repair is only the right lane
+		// when a source defect was diagnosed; a port conflict or a denied
+		// filesystem operation is operational, and sending those to the repair
+		// lane had the model editing code that was never at fault.
+		if len(result.Issues) > 0 && !projectRuntimeIssuesSourceFixable(result.Issues) {
+			return projectEinoAssistantVerificationOperational
+		}
 		return projectEinoAssistantVerificationRepair
 	}
 	switch strings.TrimSpace(result.Status) {
@@ -349,23 +360,67 @@ func projectAssistantWorkflowToolSpec(name string) (projectAssistantToolSpec, bo
 	return projectAssistantToolSpec{}, false
 }
 
-func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAssistantWorkflowRunContext, policy projectAssistantTurnPolicy) ([]einotool.BaseTool, error) {
+// projectAssistantGraphBackedTool adapts an eino graph tool to the registry
+// tool interface, so a graph-implemented tool can run through the same audited
+// wrapper as every other tool instead of being handed to the model raw.
+type projectAssistantGraphBackedTool struct {
+	spec  projectAssistantToolSpec
+	inner einotool.InvokableTool
+}
+
+func (t projectAssistantGraphBackedTool) Spec() projectAssistantToolSpec { return t.spec }
+
+func (t projectAssistantGraphBackedTool) Call(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+	if t.inner == nil {
+		return "", fmt.Errorf("tool %q has no graph implementation", t.spec.Name)
+	}
+	args := req.Arguments
+	if args == nil {
+		args = map[string]any{}
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return "", fmt.Errorf("encode %s arguments: %w", t.spec.Name, err)
+	}
+	return t.inner.InvokableRun(ctx, string(raw))
+}
+
+// newProjectAssistantGraphWorkflowTools builds the graph-implemented tools for
+// a turn, split by whether they need the audited execution wrapper.
+//
+// Read-only graph tools are returned ready to hand to the model. Every
+// mutation-capable one is returned as a registry tool instead: those must go
+// through projectEinoAssistantTool so they are subject to the permission
+// barrier, the approval-mode decision, AdmitMutation, and tool-call audit
+// events. Handing them to the model directly let a stopped or non-WorkItem-
+// bound run keep mutating the sandbox with no audit record of what changed.
+func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAssistantWorkflowRunContext, policy projectAssistantTurnPolicy) (direct []einotool.BaseTool, gated []projectAssistantTool, err error) {
 	specs := projectAssistantWorkflowToolSpecs()
-	out := make([]einotool.BaseTool, 0, len(specs))
+	direct = make([]einotool.BaseTool, 0, len(specs))
 	for _, spec := range specs {
 		if !policy.AllowsTool(spec) {
 			continue
 		}
 		graphTool, err := newProjectAssistantGraphWorkflowTool(spec, runCtx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := annotateProjectAssistantGraphTool(ctx, graphTool, spec); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		out = append(out, graphTool)
+		if spec.Risk == projectAssistantToolRiskRead {
+			direct = append(direct, graphTool)
+			continue
+		}
+		invokable, ok := graphTool.(einotool.InvokableTool)
+		if !ok {
+			// Fail closed: a risk-bearing tool that cannot be routed through the
+			// audited path must not reach the model on the raw plane.
+			return nil, nil, fmt.Errorf("tool %q is risk-bearing but not invokable, so it cannot be audited", spec.Name)
+		}
+		gated = append(gated, projectAssistantGraphBackedTool{spec: spec, inner: invokable})
 	}
-	return out, nil
+	return direct, gated, nil
 }
 
 func newProjectAssistantGraphWorkflowTool(spec projectAssistantToolSpec, runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -721,17 +776,6 @@ func marshalProjectAssistantWorkflowPlan(plan projectAssistantWorkflowPlan) ([]b
 	minimal.Summary = "Project planning context was bounded for assistant context."
 	minimal.Repository = nil
 	return json.Marshal(minimal)
-}
-
-func marshalProjectAssistantWorkflowJSON(value any) ([]byte, error) {
-	raw, err := json.Marshal(value)
-	if err != nil || len(raw) <= projectAssistantWorkflowMaxResultBytes {
-		return raw, err
-	}
-	return json.Marshal(map[string]any{
-		"status":  "bounded",
-		"summary": "Project assistant workflow result was bounded for assistant context.",
-	})
 }
 
 func boundedProjectAssistantWorkflowRepo(repo *projectAssistantWorkflowRepo) *projectAssistantWorkflowRepo {

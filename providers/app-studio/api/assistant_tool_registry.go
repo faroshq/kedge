@@ -135,7 +135,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 			spec: projectAssistantToolSpec{
 				Name:        projectToolDefineInitialProjectPlan,
 				Description: "Define or revise the auto-authorized execution plan for a new project's initial build. Call this before source mutations and again only when a verification-driven repair requires additional target paths.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","minLength":1,"description":"Short summary of the initial build."},"steps":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Concrete implementation and verification steps."},"targetPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50,"description":"Project-relative files or directories the initial build may create or modify. Directories must end with /."},"acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Observable outcomes required before the initial build can complete."}},"required":["summary","steps","targetPaths","acceptanceCriteria"]}`),
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","minLength":1,"description":"Short summary of the initial build."},"steps":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Concrete implementation and verification steps."},"targetPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50,"description":"Project-relative files or directories the initial build may create or modify. Directories must end with /. This plan comes BEFORE the template is bound: for a new project simply use the expected component directories (e.g. web/, api/, or ./) — declaring them does not create source."},"acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Observable outcomes required before the initial build can complete. Required — never omit."}},"required":["summary","steps","targetPaths","acceptanceCriteria"]}`),
 				Risk:        projectAssistantToolRiskPlan,
 			},
 			call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
@@ -177,11 +177,26 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					return "", err
 				}
 				content, _ := projectToolRawString(req.Arguments["content"])
-				return projectAssistantToolJSONResult(s.workspaces.WriteFile(ctx, req.WorkspaceScope, workspace.WriteOptions{
-					Path:       projectToolString(req.Arguments["path"]),
+				path := projectToolString(req.Arguments["path"])
+				createOnly := req.EnforceMutationSafety && !req.InitialBuild
+				// A template-scaffold file nobody has edited (its content
+				// still matches the materialization manifest) may be replaced
+				// wholesale: rewriting a pristine starter file loses nothing,
+				// and refusing it only produces failed-action noise followed
+				// by an apply_patch workaround.
+				if createOnly && s.projectScaffoldFilePristine(ctx, req.WorkspaceScope, path) {
+					createOnly = false
+				}
+				result, err := s.workspaces.WriteFile(ctx, req.WorkspaceScope, workspace.WriteOptions{
+					Path:       path,
 					Content:    content,
-					CreateOnly: req.EnforceMutationSafety && !req.InitialBuild,
-				}))
+					CreateOnly: createOnly,
+					// Record the pre-write state under this run so undo can
+					// restore it. Without a snapshot ID the run's undo has
+					// nothing to roll back.
+					SnapshotID: req.AssistantRunID,
+				})
+				return projectAssistantToolJSONResultWithTemplateWarning(req.Project, result, err)
 			},
 		},
 		projectAssistantToolFunc{
@@ -203,6 +218,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					OldText:    oldText,
 					NewText:    newText,
 					ReplaceAll: projectToolBool(req.Arguments["replaceAll"]),
+					SnapshotID: req.AssistantRunID,
 				}
 				clean, err := workspace.CleanProjectPath(opts.Path)
 				if err != nil {
@@ -211,7 +227,36 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if req.EnforceMutationSafety && !projectAssistantPathWasObserved(clean, req.ObservedReadFiles) {
 					return "", fmt.Errorf("read_file must successfully read %q in this assistant turn before apply_patch can edit it", clean)
 				}
-				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, opts))
+				result, err := s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, opts)
+				return projectAssistantToolJSONResultWithTemplateWarning(req.Project, result, err)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolDeleteFile,
+				Description: "Delete one file from the App Studio project workspace and remove it from the development sandbox on the next sync. Use this after renaming or splitting a file so the old path stops running — a file left behind keeps being served and is still built into the production image. Read the file in this turn first. Note: this removes the file from the workspace and sandbox; removing it from git additionally requires deleting it in the repository.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Project-relative file path to delete."}},"required":["path"]}`),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				clean, err := workspace.CleanProjectPath(projectToolString(req.Arguments["path"]))
+				if err != nil {
+					return "", err
+				}
+				// Same read-before-mutate rule as apply_patch: deleting a file
+				// the model has not looked at this turn is how a confident
+				// wrong guess destroys work.
+				if req.EnforceMutationSafety && !projectAssistantPathWasObserved(clean, req.ObservedReadFiles) {
+					return "", fmt.Errorf("read_file must successfully read %q in this assistant turn before delete_file can remove it", clean)
+				}
+				return projectAssistantToolJSONResult(s.workspaces.DeleteFile(ctx, req.WorkspaceScope, workspace.DeleteOptions{
+					Path:       clean,
+					SnapshotID: req.AssistantRunID,
+				}))
 			},
 		},
 		projectAssistantToolFunc{
@@ -226,7 +271,8 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
-				return projectAssistantToolJSONResult(s.workspaces.Mkdir(ctx, req.WorkspaceScope, workspace.MkdirOptions{Path: projectToolString(req.Arguments["path"])}))
+				result, err := s.workspaces.Mkdir(ctx, req.WorkspaceScope, workspace.MkdirOptions{Path: projectToolString(req.Arguments["path"])})
+				return projectAssistantToolJSONResultWithTemplateWarning(req.Project, result, err)
 			},
 		},
 		projectAssistantToolFunc{
@@ -247,7 +293,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
-				updated, info, err := server.selectProjectTemplate(ctx, c, req.Identity, req.Project, projectToolString(req.Arguments["template"]))
+				updated, info, scaffold, err := server.selectProjectTemplate(ctx, c, req.Identity, req.Project, projectToolString(req.Arguments["template"]), req.HTTPRequest)
 				if err != nil {
 					return "", err
 				}
@@ -260,11 +306,18 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				// Wire the CI build into the repository now that a template is
 				// bound (best-effort; a no-op without a repository).
 				_, _ = server.ensureProjectBuildConfig(ctx, req.Identity, updated, req.HTTPRequest)
-				return projectAssistantToolJSONResult(map[string]any{
+				result := map[string]any{
 					"template":   info.Name,
 					"components": info.Components,
 					"note":       "development environment is re-provisioning in development mode; the workspace will be synced into it automatically. Each entry in `components` is binding: write that component's source under its `workspacePath` (files outside every component directory are never synced and cannot run) AND write it for that component's `toolchain` — the sandbox image contains that toolchain and no other, and runs the component with its `startCommand`, so source in another language, or missing the toolchain's manifest (package.json for node, go.mod for go, requirements.txt/pyproject.toml for python), will never start no matter how correct it is",
-				}, nil)
+				}
+				if scaffold != nil {
+					result["scaffold"] = scaffold
+					if scaffold.Error == "" && len(scaffold.Written) > 0 {
+						result["scaffoldNote"] = "the workspace was pre-populated with this template's starter scaffold — a WORKING app that already honors the platform contract (ports from $PORT, same-origin /api, DATABASE_URL, dev+start scripts). Read the existing files (including AGENTS.md) and EDIT them toward the user's app; do not delete them and start over, and keep both dev and start scripts working"
+					}
+				}
+				return projectAssistantToolJSONResult(result, nil)
 			},
 		},
 		projectAssistantToolFunc{

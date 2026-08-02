@@ -166,7 +166,6 @@ type Page struct {
 
 // Store is the App Studio message persistence boundary.
 type Store interface {
-	EnsureSchema(ctx context.Context) error
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
 	ListMessages(ctx context.Context, scope Scope, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, limit int) ([]Message, error)
@@ -186,12 +185,10 @@ type Store interface {
 	SaveWorkItemExecutionPlan(ctx context.Context, scope Scope, workItemID, runID string, expectedRevision int64, executionPlanRevision string, executionPlan json.RawMessage, now time.Time) (AssistantWorkItem, error)
 	ApproveWorkItemPlan(ctx context.Context, scope Scope, workItemID, runID string, expectedRevision int64, grantRevision string, planGrant json.RawMessage, now time.Time) (AssistantWorkItem, error)
 	RetireWorkItemPlan(ctx context.Context, scope Scope, workItemID, runID, actor string, expectedWorkItemRevision int64, expectedGrantRevision, tombstoneGrantRevision string, now time.Time) (AssistantWorkItem, error)
-	RequestAssistantRunStop(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error)
 	RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error)
 	TransitionWorkItemAndRun(ctx context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, now time.Time) error
 	TransitionWorkItemAndRunWithAssistantMessage(ctx context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, assistant Message, now time.Time) error
 	LoadMessagesForWorkItem(ctx context.Context, scope Scope, workItemID string, limit int) ([]Message, error)
-	LatestAssistantRunForWorkItem(ctx context.Context, scope Scope, workItemID string) (AssistantRun, error)
 	SaveAssistantRunSnapshot(ctx context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error
 	ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error)
 	GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error)

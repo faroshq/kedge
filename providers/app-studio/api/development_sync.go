@@ -12,6 +12,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -102,13 +104,21 @@ type projectSandboxSyncFile struct {
 }
 
 type projectSandboxSyncRequest struct {
-	Files   []projectSandboxSyncFile `json:"files"`
-	Restart string                   `json:"restart,omitempty"`
+	Files []projectSandboxSyncFile `json:"files"`
+	// DeletePaths removes files the workspace no longer has. Without it a
+	// renamed or deleted file keeps running in the sandbox, because the sync
+	// only ever ships the files that currently exist.
+	DeletePaths []string `json:"deletePaths,omitempty"`
+	Restart     string   `json:"restart,omitempty"`
 }
 
 type projectDevelopmentSyncResponse struct {
 	Target projectDevelopmentSyncTargetInfo `json:"target"`
 	Result json.RawMessage                  `json:"result,omitempty"`
+	// SkippedFiles lists workspace files the sync payload cannot carry (binary
+	// or oversized). They are absent from the sandbox, so callers must be able
+	// to say so rather than reporting an unqualified success.
+	SkippedFiles []string `json:"skippedFiles,omitempty"`
 }
 
 type projectDevelopmentPreviewAuthorizeResponse struct {
@@ -176,12 +186,12 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	result, err := s.syncProjectDevelopmentTarget(r.Context(), c, id, p, target)
+	result, skipped, err := s.syncProjectDevelopmentTarget(r.Context(), c, id, p, target)
 	if err != nil {
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, projectDevelopmentSyncResponse{Target: target, Result: result})
+	writeJSON(w, http.StatusOK, projectDevelopmentSyncResponse{Target: target, Result: result, SkippedFiles: skipped})
 }
 
 func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *http.Request) {
@@ -209,58 +219,92 @@ func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *ht
 	})
 }
 
-func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
+func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, []string, error) {
 	if s.workspaces == nil {
-		return nil, fmt.Errorf("project workspace store is not configured")
+		return nil, nil, fmt.Errorf("project workspace store is not configured")
 	}
-	files, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p.Name))
+	files, skipped, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p.Name))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Validate the instance exists in the workspace first (clear 404 vs proxy err).
 	if err := s.validateDevelopmentInstance(ctx, c, target); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Route files to each component's own sync verb
 	// by workspacePath prefix (docs/app-studio-template-sandboxes.md §4.2).
 	// Files outside every component (README, docs) sync nowhere.
 	routed := routeProjectSyncFiles(files, target.Components)
+	deleted, err := s.workspaces.DeletedPaths(projectWorkspaceScope(id, p.Name))
+	if err != nil {
+		return nil, nil, err
+	}
+	routedDeletes := routeProjectSyncDeletes(deleted, target.Components)
 	// A populated workspace whose files all fall outside every component
 	// directory would "succeed" while shipping nothing to the sandbox — the
 	// app never starts and nothing explains why. Fail with the expected
 	// layout instead.
-	if len(files) > 0 && countRoutedProjectSyncFiles(routed) == 0 {
-		return nil, fmt.Errorf(
+	// Count only the user's own files. App Studio writes its build config and CI
+	// workflow to the workspace root, so a project that has just bound a
+	// template — and has nothing else yet — contains exactly those two managed
+	// files and nothing routable. Counting them made the first sync of every new
+	// project fail with "none of the N workspace files are under a development
+	// component directory", which then surfaced as a runtime blocker and left
+	// the assistant convinced it had no scaffold to work with.
+	appFiles := countProjectSyncAppFiles(files)
+	if appFiles > 0 && countRoutedProjectSyncFiles(routed) == 0 {
+		return nil, nil, fmt.Errorf(
 			"none of the %d workspace files are under a development component directory (%s); application source must live under those directories to reach the development sandbox",
-			len(files), target.componentWorkspacePathSummary())
+			appFiles, target.componentWorkspacePathSummary())
 	}
 	// Files landing in the right directory but written for the wrong runtime
 	// fail silently otherwise: the sandbox image has no toolchain for them, the
 	// start command finds nothing to run, and the pod simply never listens.
 	if err := validateProjectSyncToolchains(routed, target.Components); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	results := map[string]json.RawMessage{}
 	for _, component := range target.sortedComponents() {
-		payload, err := json.Marshal(projectSandboxSyncRequest{Files: routed[component], Restart: "auto"})
+		componentFiles := routed[component]
+		manifest := projectSyncManifest(componentFiles)
+		// Ship only what the sandbox does not already hold. Deletions are sent
+		// explicitly, so omitting unchanged files cannot remove anything.
+		payloadFiles := changedProjectSyncFiles(componentFiles, s.syncedManifestFor(id, p.Name, component))
+		deletes := routedDeletes[component]
+		if len(payloadFiles) == 0 && len(deletes) == 0 {
+			// Nothing to do for this component; record it as current and move
+			// on rather than paying a round trip to say nothing changed.
+			s.recordSyncedManifest(id, p.Name, component, manifest)
+			continue
+		}
+		payload, err := json.Marshal(projectSandboxSyncRequest{
+			Files:       payloadFiles,
+			DeletePaths: deletes,
+			Restart:     "auto",
+		})
 		if err != nil {
-			return nil, fmt.Errorf("encode %s sync payload: %w", component, err)
+			return nil, nil, fmt.Errorf("encode %s sync payload: %w", component, err)
 		}
 		body, status, err := s.dataPlanePost(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbSync, payload)
 		if err != nil {
-			return nil, fmt.Errorf("component %s: %w", component, err)
+			// The sandbox's contents are now unknown — it may have applied part
+			// of the payload. Force the next sync to send everything.
+			s.forgetSyncedManifests(id, p.Name)
+			return nil, nil, fmt.Errorf("component %s: %w", component, err)
 		}
 		if status < 200 || status >= 300 {
-			return nil, fmt.Errorf("component %s sync returned %d: %s", component, status, strings.TrimSpace(string(body)))
+			s.forgetSyncedManifests(id, p.Name)
+			return nil, nil, fmt.Errorf("component %s sync returned %d: %s", component, status, strings.TrimSpace(string(body)))
 		}
+		s.recordSyncedManifest(id, p.Name, component, manifest)
 		results[component] = json.RawMessage(body)
 	}
 	aggregated, err := json.Marshal(results)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return aggregated, nil
+	return aggregated, skipped, nil
 }
 
 // validateDevelopmentInstance confirms the target instance exists in the
@@ -295,6 +339,96 @@ func routeProjectSyncFiles(files []projectSandboxSyncFile, components map[string
 					Path:    strings.TrimPrefix(f.Path, prefix),
 					Content: f.Content,
 				})
+			}
+		}
+	}
+	return out
+}
+
+// developmentSyncManifestKey scopes a component's synced-content manifest.
+func developmentSyncManifestKey(id identity, projectName, component string) string {
+	return id.orgUUID + "/" + id.workspaceUUID + "/" + projectName + "/" + component
+}
+
+// projectSyncFileHash fingerprints one file's content for change detection.
+func projectSyncFileHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+// projectSyncManifest fingerprints a component's routed file set.
+func projectSyncManifest(files []projectSandboxSyncFile) map[string]string {
+	manifest := make(map[string]string, len(files))
+	for _, f := range files {
+		manifest[f.Path] = projectSyncFileHash(f.Content)
+	}
+	return manifest
+}
+
+// changedProjectSyncFiles returns the files that differ from what the sandbox
+// was last confirmed to hold. A nil previous manifest means "unknown", which
+// must send everything: the alternative is a sandbox silently missing files.
+func changedProjectSyncFiles(files []projectSandboxSyncFile, previous map[string]string) []projectSandboxSyncFile {
+	if previous == nil {
+		return files
+	}
+	changed := make([]projectSandboxSyncFile, 0, len(files))
+	for _, f := range files {
+		if previous[f.Path] != projectSyncFileHash(f.Content) {
+			changed = append(changed, f)
+		}
+	}
+	return changed
+}
+
+// syncedManifestFor returns the content manifest last confirmed for one
+// component, or nil when the sandbox's contents are not known.
+func (s *Server) syncedManifestFor(id identity, projectName, component string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.developmentSyncManifests[developmentSyncManifestKey(id, projectName, component)]
+}
+
+// recordSyncedManifest remembers what a component now holds.
+func (s *Server) recordSyncedManifest(id identity, projectName, component string, manifest map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.developmentSyncManifests == nil {
+		s.developmentSyncManifests = map[string]map[string]string{}
+	}
+	s.developmentSyncManifests[developmentSyncManifestKey(id, projectName, component)] = manifest
+}
+
+// forgetSyncedManifests drops every component manifest for one project, so the
+// next sync ships the whole workspace. Called whenever the sandbox's contents
+// stop being predictable from here: a failed sync, or a template switch that
+// replaces the runtime and its volume.
+func (s *Server) forgetSyncedManifests(id identity, projectName string) {
+	prefix := developmentSyncManifestKey(id, projectName, "")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key := range s.developmentSyncManifests {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.developmentSyncManifests, key)
+		}
+	}
+}
+
+// routeProjectSyncDeletes maps deleted workspace paths onto the components
+// that were serving them, using the same workspacePath prefix rule as
+// routeProjectSyncFiles.
+func routeProjectSyncDeletes(paths []string, components map[string]projectTemplateComponent) map[string][]string {
+	out := make(map[string][]string, len(components))
+	for component, comp := range components {
+		wp := path.Clean(strings.TrimSpace(comp.WorkspacePath))
+		if wp == "." {
+			out[component] = append(out[component], paths...)
+			continue
+		}
+		prefix := wp + "/"
+		for _, p := range paths {
+			if rest, ok := strings.CutPrefix(p, prefix); ok {
+				out[component] = append(out[component], rest)
 			}
 		}
 	}
@@ -434,6 +568,34 @@ func summarizeProjectStartCommand(cmd string) string {
 	return cmd
 }
 
+// projectSyncManagedFile reports whether a workspace path is written by App
+// Studio itself rather than by the user or the assistant.
+//
+// These live at the workspace root by design — the build config and CI workflow
+// describe the whole project, not one component — so they are legitimately
+// outside every component directory and must not be mistaken for misplaced
+// application source.
+func projectSyncManagedFile(path string) bool {
+	switch path {
+	case projectBuildConfigPath, projectBuildWorkflowPath, projectScaffoldManifestPath:
+		return true
+	default:
+		return false
+	}
+}
+
+// countProjectSyncAppFiles totals the files that represent application source,
+// excluding App Studio's own managed files.
+func countProjectSyncAppFiles(files []projectSandboxSyncFile) int {
+	total := 0
+	for _, f := range files {
+		if !projectSyncManagedFile(f.Path) {
+			total++
+		}
+	}
+	return total
+}
+
 // countRoutedProjectSyncFiles totals the files routed across all components.
 func countRoutedProjectSyncFiles(routed map[string][]projectSandboxSyncFile) int {
 	total := 0
@@ -451,23 +613,35 @@ func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c
 	return s.templateDevelopmentPreview(ctx, c, target)
 }
 
-func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, error) {
+// projectWorkspaceSyncFiles reads every syncable workspace file. A truncated
+// listing is a hard error: shipping an alphabetical prefix of the tree leaves
+// the sandbox running a partial application with nothing to explain why. Files
+// the sync payload cannot carry (binary, oversized) are returned separately so
+// the caller can report them rather than dropping them silently.
+func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) ([]projectSandboxSyncFile, []string, error) {
 	list, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if list.Truncated {
+		return nil, nil, fmt.Errorf(
+			"workspace has more than %d files, which exceeds the development sync limit; only part of the project would reach the sandbox. Remove build output or vendored dependencies from the workspace and sync again",
+			workspace.MaxListLimit)
 	}
 	files := make([]projectSandboxSyncFile, 0, len(list.Files))
+	var skipped []string
 	for _, f := range list.Files {
 		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: f.Path, MaxBytes: workspace.MaxWriteBytes})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if read.Binary || read.Truncated {
+			skipped = append(skipped, read.Path)
 			continue
 		}
 		files = append(files, projectSandboxSyncFile{Path: read.Path, Content: read.Content})
 	}
-	return files, nil
+	return files, skipped, nil
 }
 
 func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ workspace.Scope, _ string, _ bool, toolCalls []projectToolCallStreamEvent) bool {
@@ -476,7 +650,7 @@ func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ works
 
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir, projectToolSelectTemplate, projectToolHydrateWorkspace:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile, projectToolMkdir, projectToolSelectTemplate, projectToolHydrateWorkspace:
 		return true
 	default:
 		return false
@@ -486,6 +660,14 @@ func shouldSyncDevelopmentAfterTool(name string) bool {
 func (s *Server) scheduleDevelopmentSyncAfterMutation(id identity, p *aiv1alpha1.Project, name string) {
 	if s == nil || p == nil || !shouldSyncDevelopmentAfterTool(name) {
 		return
+	}
+	// Selecting a template tears the development environment down and
+	// re-provisions it, and hydrating replaces the workspace wholesale. Either
+	// way what the sandbox holds is no longer derivable from the last sync, so
+	// the next one must send everything.
+	switch projectToolBaseName(name) {
+	case projectToolSelectTemplate, projectToolHydrateWorkspace:
+		s.forgetSyncedManifests(id, p.Name)
 	}
 	project := p.DeepCopy()
 	s.mu.Lock()
@@ -522,13 +704,23 @@ func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id i
 		klog.V(2).Infof("development sync after %s skipped for project %s: %v", projectToolBaseName(name), p.Name, err)
 		return
 	}
-	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
+	_, skipped, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target)
+	if err != nil {
 		// A failed post-mutation sync means the user's edit never reached the
 		// development sandbox — warn, don't bury it at debug verbosity, and
 		// record it so the assistant's own verification reports it instead of
 		// silently diagnosing a stale sandbox.
 		klog.Warningf("development sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
 		s.recordDevelopmentSyncFailure(id, p.Name, fmt.Sprintf("the last workspace sync after %s failed, so the development sandbox is still running the previous code: %v", projectToolBaseName(name), err))
+		return
+	}
+	if len(skipped) > 0 {
+		// The sync succeeded but the sandbox does not match the workspace. Left
+		// unreported this reads as a working sandbox that inexplicably 404s on
+		// an asset the assistant is certain it wrote.
+		s.recordDevelopmentSyncFailure(id, p.Name, fmt.Sprintf(
+			"the development sandbox is missing %d workspace file(s) that the sync cannot carry (binary or larger than %d bytes): %s",
+			len(skipped), workspace.MaxWriteBytes, strings.Join(skipped, ", ")))
 		return
 	}
 	s.clearDevelopmentSyncFailure(id, p.Name)

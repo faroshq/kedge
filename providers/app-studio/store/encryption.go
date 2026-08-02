@@ -138,10 +138,6 @@ func NewEncryptedStore(inner Store, keys []EncryptionKey) (Store, error) {
 	return out, nil
 }
 
-func (s *encryptedStore) EnsureSchema(ctx context.Context) error {
-	return s.inner.EnsureSchema(ctx)
-}
-
 func (s *encryptedStore) AppendMessage(ctx context.Context, scope Scope, msg Message) error {
 	if err := scope.validate(); err != nil {
 		return err
@@ -600,17 +596,6 @@ func (s *encryptedStore) TransitionWorkItemAndRunWithAssistantMessage(ctx contex
 	return s.inner.TransitionWorkItemAndRunWithAssistantMessage(ctx, scope, workItemID, expectedWorkItemRevision, run, status, reason, assistant, now)
 }
 
-func (s *encryptedStore) RequestAssistantRunStop(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
-	run, err := s.inner.RequestAssistantRunStop(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, now)
-	if err != nil {
-		return AssistantRun{}, err
-	}
-	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
-		return AssistantRun{}, err
-	}
-	return run, nil
-}
-
 func (s *encryptedStore) RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
 	var err error
 	assistant, err = s.encryptMessage(scope, assistant)
@@ -638,17 +623,6 @@ func (s *encryptedStore) LoadMessagesForWorkItem(ctx context.Context, scope Scop
 		}
 	}
 	return items, nil
-}
-
-func (s *encryptedStore) LatestAssistantRunForWorkItem(ctx context.Context, scope Scope, workItemID string) (AssistantRun, error) {
-	run, err := s.inner.LatestAssistantRunForWorkItem(ctx, scope, workItemID)
-	if err != nil {
-		return AssistantRun{}, err
-	}
-	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
-		return AssistantRun{}, err
-	}
-	return run, nil
 }
 
 func (s *encryptedStore) SaveAssistantRunSnapshot(ctx context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error {

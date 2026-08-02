@@ -79,6 +79,75 @@ func TestProjectAssistantTurnNeedsInfrastructureMCP(t *testing.T) {
 	}
 }
 
+// TestProjectAssistantTurnNeedsInfrastructureMCPScansRecentTurns covers the
+// ordinary follow-up: intent stated one turn ago and confirmed with a bare
+// "now do it". Scanning only the newest user message dropped the
+// infrastructure tools there, which reads as the assistant refusing to do what
+// it just proposed.
+func TestProjectAssistantTurnNeedsInfrastructureMCPScansRecentTurns(t *testing.T) {
+	user := func(content string) store.Message {
+		return store.Message{Role: aiv1alpha1.ProjectMessageRoleUser, Content: content}
+	}
+	assistant := func(content string) store.Message {
+		return store.Message{Role: aiv1alpha1.ProjectMessageRoleAssistant, Content: content}
+	}
+
+	followUp := []store.Message{
+		user("add a postgres database for the app"),
+		assistant("I can provision one. Want me to?"),
+		user("now do it"),
+	}
+	if !projectAssistantTurnNeedsInfrastructureMCP(followUp) {
+		t.Fatal("a confirmation following an infrastructure request lost the infrastructure tools")
+	}
+
+	// Intent older than the window must not keep the tools alive forever.
+	stale := []store.Message{
+		user("add a postgres database for the app"),
+		user("actually let's just fix the header"),
+		user("make the padding smaller"),
+		user("and the font lighter"),
+	}
+	if projectAssistantTurnNeedsInfrastructureMCP(stale) {
+		t.Fatal("infrastructure intent leaked past the scan window")
+	}
+}
+
+// TestProjectAssistantToolDiscoveryRecordsDegradation pins that a failed
+// discovery is reported rather than silently shrinking the catalog: losing
+// commit_project_files with no signal is indistinguishable from a model that
+// will not commit.
+func TestProjectAssistantToolDiscoveryRecordsDegradation(t *testing.T) {
+	req := projectAssistantRunRequest{
+		// An implementation turn is one that would have had the commit and MCP
+		// tools, which is exactly when losing them matters.
+		TurnPolicy:  projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
+		TurnProfile: projectAssistantTurnProfileImplementation,
+		ToolPort:    projectAssistantFailingDiscoveryToolPort{err: errors.New("mcp endpoint unreachable")},
+		History: []store.Message{{
+			Role:    aiv1alpha1.ProjectMessageRoleUser,
+			Content: "commit the project files",
+		}},
+	}
+	discovery := projectEinoAssistantDiscoverTools(context.Background(), &Server{}, req)
+	if discovery.IncludeCommitBridge {
+		t.Fatal("commit bridge was included despite discovery failing")
+	}
+	if !strings.Contains(discovery.Degraded, "mcp endpoint unreachable") {
+		t.Fatalf("degraded reason = %q, want the discovery error", discovery.Degraded)
+	}
+}
+
+type projectAssistantFailingDiscoveryToolPort struct{ err error }
+
+func (p projectAssistantFailingDiscoveryToolPort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+	return nil, false, p.err
+}
+
+func (projectAssistantFailingDiscoveryToolPort) Invoke(ctx context.Context, tool projectAssistantTool, req projectAssistantToolCallRequest) (string, error) {
+	return tool.Call(ctx, req)
+}
+
 func TestProjectAssistantTurnPolicyCanUseDatabricksMCP(t *testing.T) {
 	req := projectAssistantRunRequest{
 		History: []store.Message{{

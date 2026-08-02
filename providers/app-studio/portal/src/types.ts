@@ -52,8 +52,9 @@ export interface ProjectAssistantRun {
   mode?: ProjectAssistantRunMode
   approvalMode?: ProjectAssistantApprovalMode
   status: ProjectAssistantRunStatus
-  revision: number
-  activeMessageID: string
+  // Both omitempty on the wire: absent at revision 0 / before a message is active.
+  revision?: number
+  activeMessageID?: string
   clientRequestID?: string
   userMessageID?: string
   requestID?: string
@@ -111,48 +112,6 @@ export interface ProjectAssistantActionFeedItem {
   diagnostic?: ProjectAssistantActionDiagnostic
 }
 
-export interface ProjectAssistantUIComponent {
-  id: string
-  component: {
-    Text?: {
-      value?: string
-      dataKey?: string
-      usageHint?: 'caption' | 'body' | 'title' | string
-    }
-    Column?: {
-      children: string[]
-    }
-    Card?: {
-      children: string[]
-    }
-    Row?: {
-      children: string[]
-    }
-  }
-}
-
-export interface ProjectAssistantUIDataContent {
-  key: string
-  valueString?: string
-  append?: boolean
-}
-
-export interface ProjectAssistantUIEvent {
-  beginRendering?: {
-    surfaceId: string
-    root: string
-  }
-  surfaceUpdate?: {
-    surfaceId: string
-    components?: ProjectAssistantUIComponent[]
-  }
-  dataModelUpdate?: {
-    surfaceId: string
-    contents?: ProjectAssistantUIDataContent[]
-  }
-  interruptRequest?: ProjectAssistantUIInterruptRequest
-}
-
 export interface ProjectAssistantUIInterruptRequest {
   interruptId: string
   kind?: 'permission' | 'follow_up'
@@ -165,15 +124,6 @@ export interface ProjectAssistantUIInterruptRequest {
     requestId: string
     assistantMessageId?: string
   }
-}
-
-export interface ProjectAssistantResumeResponse {
-  runID: string
-  requestID: string
-  status: 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'aborted'
-  decision?: 'allow' | 'deny'
-  uiEvents?: ProjectAssistantUIEvent[]
-  assistantMessage?: ProjectMessage
 }
 
 export interface Project {
@@ -290,6 +240,13 @@ export interface ProjectHydrateResult {
   skipped?: string[]
 }
 
+// Result of POST /api/projects/{name}/sync-development.
+export interface ProjectDevelopmentSyncResult {
+  // Workspace files the sync payload cannot carry (binary or oversized);
+  // they are absent from the sandbox.
+  skippedFiles?: string[]
+}
+
 // One launchable component's build state, from GET /api/projects/{name}/promotion.
 export interface ProjectBuildComponent {
   name: string
@@ -297,17 +254,22 @@ export interface ProjectBuildComponent {
   built: boolean
   image?: string
   digest?: string
+  tag?: string
+  // Commit the published image was built from ("sha-<commit>" tag pattern);
+  // empty when the tag does not identify a commit.
+  builtCommit?: string
 }
 
-// Deterministic build status: built | incomplete | none | unsupported.
+// Deterministic build status: built | stale | incomplete | none | unsupported.
 export interface ProjectBuildCheck {
   status: string
-  commit?: string
-  builder?: string
-  registry?: string
   components?: ProjectBuildComponent[]
   missing?: string[]
   note: string
+  // The project's latest successful commit — what a promote should ship.
+  headCommit?: string
+  // Components whose newest image was built from a commit other than headCommit.
+  staleComponents?: string[]
 }
 
 // Result of GET /api/projects/{name}/promotion — gates the Promote to Prod
@@ -344,6 +306,5 @@ export interface ProjectCheckpoints {
 export interface ProjectPromoteResult {
   environment: string
   instance: string
-  commit?: string
   components?: ProjectBuildComponent[]
 }

@@ -9,13 +9,13 @@ const emit = defineEmits<{ (e: 'act', checkpoint: ProjectCheckpoint): void }>()
 const config = computed(() => {
   switch (props.checkpoint.state) {
     case 'done':
-      return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle, dot: 'bg-success' }
+      return { bg: 'bg-success-subtle', text: 'text-success', icon: CheckCircle }
     case 'error':
-      return { bg: 'bg-danger-subtle', text: 'text-danger', icon: AlertTriangle, dot: 'bg-danger' }
+      return { bg: 'bg-danger-subtle', text: 'text-danger', icon: AlertTriangle }
     case 'blocked':
-      return { bg: 'bg-surface-overlay', text: 'text-text-muted', icon: Lock, dot: 'bg-text-muted' }
+      return { bg: 'bg-surface-overlay', text: 'text-text-muted', icon: Lock }
     default: // pending
-      return { bg: 'bg-warning-subtle', text: 'text-warning', icon: Clock, dot: 'bg-warning' }
+      return { bg: 'bg-warning-subtle', text: 'text-warning', icon: Clock }
   }
 })
 

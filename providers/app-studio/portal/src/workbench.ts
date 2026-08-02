@@ -1,4 +1,4 @@
-export type WorkbenchBuiltInTab = 'preview' | 'review' | 'providers' | 'publishing' | 'launcher'
+export type WorkbenchBuiltInTab = 'preview' | 'activity' | 'review' | 'providers' | 'publishing' | 'launcher'
 export type WorkbenchTabKind = WorkbenchBuiltInTab | 'provider'
 
 export interface WorkbenchProviderToolRef {
@@ -33,6 +33,12 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
     title: 'Preview',
     closeable: true,
   },
+  activity: {
+    id: 'activity',
+    kind: 'activity',
+    title: 'Activity',
+    closeable: true,
+  },
   review: {
     id: 'review',
     kind: 'review',
@@ -59,10 +65,12 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
   },
 }
 
+// Preview is the active tab, not the launcher: watching the app come up is the
+// point of the product, and opening on a tab search page hid it behind a click.
 export function createDefaultWorkbenchState(): WorkbenchState {
   return {
     tabs: [cloneWorkbenchTab(builtInTabs.preview), cloneWorkbenchTab(builtInTabs.launcher)],
-    activeTabID: builtInTabs.launcher.id,
+    activeTabID: builtInTabs.preview.id,
   }
 }
 

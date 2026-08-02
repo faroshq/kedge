@@ -5,18 +5,12 @@ import type { Template } from '../types'
 const props = defineProps<{ template: Template }>()
 defineEmits<{ (e: 'select', name: string): void }>()
 
-// Say up front whether this thing will have a URL. Users otherwise provision,
-// wait, and go looking for a link that is never coming — and 'public' is the
-// unremarkable case, so only the other two are worth a pill.
+// Say up front when this thing will never have a URL. Users otherwise
+// provision, wait, and go looking for a link that is never coming. Anything
+// that can get a URL (public, or optional's opt-in) needs no pill.
 const exposure = computed(() => {
-  switch (props.template.exposure || 'internal') {
-    case 'internal':
-      return { label: 'internal', title: 'No public URL. Reached from inside the platform, authorized per caller.' }
-    case 'optional':
-      return { label: 'internal by default', title: 'No public URL unless this instance asks for one — and then only behind an OIDC gate.' }
-    default:
-      return null
-  }
+  if ((props.template.exposure || 'internal') !== 'internal') return null
+  return { label: 'internal', title: 'No public URL. Reached from inside the platform, authorized per caller.' }
 })
 </script>
 

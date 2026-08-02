@@ -1,7 +1,6 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { AlertTriangle, CheckCircle, Circle, Clock, XCircle } from 'lucide-vue-next'
 
 type Tone = 'success' | 'warning' | 'danger' | 'muted'
 type ToneConfig = { toneClass: string; dotClass: string; pulseClass: string }
@@ -23,35 +22,30 @@ const toneConfig: Record<Tone, ToneConfig> = {
 }
 
 const config = computed(() => {
-  if (props.connected === false)
-    return { ...toneConfig.danger, icon: XCircle }
+  if (props.connected === false) return toneConfig.danger
 
-  if (props.tone) {
-    const tone = toneConfig[props.tone]
-    return { ...tone, icon: props.tone === 'danger' ? AlertTriangle : props.tone === 'warning' ? Clock : props.tone === 'success' ? CheckCircle : Circle }
-  }
+  if (props.tone) return toneConfig[props.tone]
 
   switch (props.status?.toLowerCase()) {
     case 'ready':
     case 'succeeded':
     case 'committed':
-      return { ...toneConfig.success, icon: CheckCircle }
+    case 'active':
+      return toneConfig.success
     case 'scheduling':
     case 'pending':
     case 'provisioning':
     case 'running':
     case 'status unavailable':
-      return { ...toneConfig.warning, icon: Clock }
-    case 'active':
-      return { ...toneConfig.success, icon: CheckCircle }
+      return toneConfig.warning
     case 'terminating':
     case 'failed':
     case 'error':
     case 'repository missing':
     case 'connection missing':
-      return { ...toneConfig.danger, icon: AlertTriangle }
+      return toneConfig.danger
     default:
-      return { ...toneConfig.muted, icon: Circle }
+      return toneConfig.muted
   }
 })
 </script>

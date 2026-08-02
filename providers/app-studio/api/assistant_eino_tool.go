@@ -28,6 +28,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/store"
@@ -46,6 +47,10 @@ type projectEinoAssistantToolDiscovery struct {
 	IncludeCommitBridge bool
 	MCPTools            []projectAssistantTool
 	Prompt              string
+	// Degraded carries the reason the catalog is smaller than it should be, so
+	// a turn missing its commit and MCP tools can say so instead of looking
+	// like a model that simply refuses to work.
+	Degraded string
 }
 
 type projectEinoAssistantTool struct {
@@ -70,11 +75,16 @@ func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToo
 		if projectEinoAssistantProgressEnabled(req, runState) {
 			out = append(out, newProjectEinoAssistantProgressTool(req, runState))
 		}
-		graphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), catalogPolicy)
+		graphTools, gatedGraphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), catalogPolicy)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, graphTools...)
+		// Mutation-capable graph tools take the same audited path as registry
+		// tools rather than being handed to the model raw.
+		for _, tool := range gatedGraphTools {
+			out = append(out, newProjectEinoAssistantServerTool(server, tool, req, runState))
+		}
 		for _, tool := range localTools {
 			out = append(out, newProjectEinoAssistantServerTool(server, tool, req, runState))
 		}
@@ -113,6 +123,19 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 	}
 	mcpTools, includeCommitBridge, err := req.ToolPort.DiscoverMCP(ctx, req.Identity, req.LLM)
 	if err != nil {
+		// Discovery failing silently drops commit_project_files along with the
+		// MCP tools, and the run then reads as an assistant that inexplicably
+		// will not commit. Record it so the turn can say what is missing, and
+		// log it above debug so operators can correlate it.
+		discovery.Degraded = strings.TrimSpace(err.Error())
+		projectName := ""
+		if req.Project != nil {
+			projectName = req.Project.Name
+		}
+		klog.Warningf(
+			"app studio assistant tool discovery failed for project %q; commit and MCP tools are unavailable this turn: %v",
+			projectName, err,
+		)
 		// Inline-promotable adaptive runs load the implementation catalog up
 		// front, but their discovery prompt must remain bounded by the active
 		// adaptive policy until promotion. Do not advertise hidden mutation
@@ -170,11 +193,22 @@ func projectAssistantFilterMCPToolsForTurn(tools []projectAssistantTool, history
 	return out
 }
 
+// projectAssistantTurnMCPKeywordWindow is how many of the most recent user
+// messages are scanned for intent that needs the infrastructure tools.
+//
+// Scanning only the newest message lost the tools on ordinary follow-ups: "add
+// a postgres database" followed by "now do it" left the second turn with no
+// infrastructure tools, which the user experiences as the assistant suddenly
+// refusing to do what it just offered.
+const projectAssistantTurnMCPKeywordWindow = 3
+
 func projectAssistantTurnNeedsInfrastructureMCP(history []store.Message) bool {
-	for i := len(history) - 1; i >= 0; i-- {
+	scanned := 0
+	for i := len(history) - 1; i >= 0 && scanned < projectAssistantTurnMCPKeywordWindow; i-- {
 		if history[i].Role != aiv1alpha1.ProjectMessageRoleUser {
 			continue
 		}
+		scanned++
 		content := strings.ToLower(strings.TrimSpace(history[i].Content))
 		if containsProjectAssistantTurnKeyword(content, []string{
 			"infrastructure", "infra", "template", "templates", "provision",
@@ -183,7 +217,9 @@ func projectAssistantTurnNeedsInfrastructureMCP(history []store.Message) bool {
 		}) {
 			return true
 		}
-		return projectAssistantTurnNeedsDatabricksMCP(history[i:])
+		if projectAssistantTurnNeedsDatabricksMCP(history[i:]) {
+			return true
+		}
 	}
 	return false
 }
@@ -885,7 +921,7 @@ func (t projectEinoAssistantTool) resumePermission(ctx context.Context, callID s
 			args = cloneProjectAssistantToolArguments(data.EditedArguments)
 		}
 		if spec.Risk == projectAssistantToolRiskWrite &&
-			projectAssistantDirectApprovalGrantsWritePlan(spec.Name) {
+			projectAssistantPlanCanAuthorizeWriteTool(spec.Name) {
 			// The user approved a source write directly. Remember its path
 			// as a source-mutation grant until the next commit.
 			if err := t.grantWriteUntilCommit(ctx, spec.Name, args); err != nil {
@@ -1034,7 +1070,7 @@ func projectAssistantApprovedPlanFromArguments(args map[string]any) (projectAssi
 		return projectAssistantApprovedPlan{}, err
 	}
 	if len(targetPaths) == 0 {
-		return projectAssistantApprovedPlan{}, errors.New("targetPaths is required")
+		return projectAssistantApprovedPlan{}, errors.New("targetPaths requires at least one entry: for a new template-backed project use the expected component directories (for example \"web/\", \"api/\", or \"./\") — declaring plan target paths does not create any source and is required BEFORE the template is bound, so do not omit them just because the scaffold's exact files are not known yet")
 	}
 	return normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Summary:            projectToolString(args["summary"]),
@@ -1056,7 +1092,7 @@ func projectAssistantInitialExecutionPlanFromArguments(
 		return projectAssistantApprovedPlan{}, err
 	}
 	if len(plan.AcceptanceCriteria) == 0 {
-		return projectAssistantApprovedPlan{}, errors.New("acceptanceCriteria is required")
+		return projectAssistantApprovedPlan{}, errors.New("acceptanceCriteria requires at least one entry: list the observable outcomes that must be true before the initial build completes (for example \"the preview serves the app UI\" or \"created items survive a restart\") and call define_initial_project_plan again with summary, steps, targetPaths, and acceptanceCriteria all present")
 	}
 	plan.Goal = strings.TrimSpace(goal)
 	plan.ApprovalTool = projectToolDefineInitialProjectPlan

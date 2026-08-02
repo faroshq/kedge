@@ -111,16 +111,10 @@ type projectAssistantEvent struct {
 type projectAssistantEventType string
 
 const (
-	projectAssistantEventMessageDelta     projectAssistantEventType = "message_delta"
-	projectAssistantEventStatus           projectAssistantEventType = "status"
-	projectAssistantEventToolCallStarted  projectAssistantEventType = "tool_call_started"
-	projectAssistantEventToolCallFinished projectAssistantEventType = "tool_call_finished"
 	projectAssistantEventPermissionNeeded projectAssistantEventType = "permission_required"
 	projectAssistantEventInputNeeded      projectAssistantEventType = "input_required"
 	projectAssistantEventCheckpointSaved  projectAssistantEventType = "checkpoint_saved"
 	projectAssistantEventBuilderEvent     projectAssistantEventType = "builder_event"
-	projectAssistantEventRunFailed        projectAssistantEventType = "run_failed"
-	projectAssistantEventRunFinished      projectAssistantEventType = "run_finished"
 )
 
 type projectAssistantToolCall struct {

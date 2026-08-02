@@ -13,7 +13,15 @@ const { outputText } = ts.transpileModule(source, {
   },
 })
 const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
-const { developmentPreviewDisplayPhase, developmentPreviewSyncStatus } = await import(moduleURL)
+const {
+  developmentPreviewDisplayPhase,
+  developmentPreviewSyncStatus,
+  developmentPreviewFrameProblemMessage,
+  developmentPreviewFrameStateForLoads,
+  recentDevelopmentPreviewLoads,
+  developmentPreviewAuthLoopThreshold,
+  developmentPreviewAuthLoopWindowMS,
+} = await import(moduleURL)
 
 test('reports synced files without claiming preview refresh when route binding is missing', () => {
   assert.equal(
@@ -95,4 +103,32 @@ test('marks preview badge error when authorization failed', () => {
     }),
     'Error',
   )
+})
+
+test('a single frame load is a healthy preview', () => {
+  assert.equal(developmentPreviewFrameStateForLoads([1_000]), 'loaded')
+  assert.equal(developmentPreviewFrameProblemMessage('loaded'), '')
+})
+
+test('repeated loads in one window are reported as a blocked-cookie redirect loop', () => {
+  const loads = Array.from({ length: developmentPreviewAuthLoopThreshold }, (_, i) => 1_000 + i * 100)
+  assert.equal(developmentPreviewFrameStateForLoads(loads), 'auth_loop')
+  const message = developmentPreviewFrameProblemMessage('auth_loop')
+  assert.match(message, /cookie/i)
+  assert.match(message, /browser tab/i)
+})
+
+test('loads outside the detection window do not accumulate into a false loop', () => {
+  const now = 100_000
+  const stale = [now - developmentPreviewAuthLoopWindowMS - 1, now - developmentPreviewAuthLoopWindowMS - 2]
+  const recent = recentDevelopmentPreviewLoads([...stale, now - 100], now)
+  assert.deepEqual(recent, [now - 100])
+  assert.equal(developmentPreviewFrameStateForLoads(recent.concat(now)), 'loaded')
+})
+
+test('a frame that never loads is reported rather than left blank behind a Ready badge', () => {
+  const message = developmentPreviewFrameProblemMessage('timeout')
+  assert.match(message, /not finished loading/i)
+  // Still-pending is not yet a problem worth showing.
+  assert.equal(developmentPreviewFrameProblemMessage('pending'), '')
 })

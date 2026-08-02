@@ -167,9 +167,49 @@ test('a snapshot captured for a project is rejected after selection changes', ()
 test('a successful abort snapshot immediately makes the run terminal and non-provisional', () => {
   const stopped = state.abortedConversationSnapshot(snapshot(4, 'working'))
   assert.equal(stopped.run.status, 'aborted')
-  assert.equal(stopped.run.revision, 5)
+  // The revision is NOT advanced: the server publishes its authoritative
+  // aborted snapshot at revision + 1, and fabricating that number here made
+  // the real one look stale.
+  assert.equal(stopped.run.revision, 4)
   assert.equal(stopped.message.metadata.assistantStatus, 'Aborted')
   assert.equal(stopped.message.metadata.assistantProvisional, false)
+})
+
+test("a locally applied abort does not shadow the server's authoritative snapshot", () => {
+  const base = snapshot(4, 'working')
+  const local = state.abortedConversationSnapshot(base)
+
+  // Applied without registering a revision, as App.vue does for source 'local'.
+  const afterLocal = state.mergeConversationSnapshot(
+    { messages: [base.message], runs: { [base.run.id]: base.run } },
+    local,
+    { registerRevision: false },
+  )
+  assert.equal(afterLocal.messages[0].metadata.assistantStatus, 'Aborted')
+  assert.equal(afterLocal.runs[base.run.id].revision, 4, 'local apply must not claim a durable revision')
+
+  // The server's own aborted snapshot lands at revision + 1 and must win.
+  const authoritative = {
+    run: { ...base.run, status: 'aborted', revision: 5 },
+    message: { ...base.message, metadata: { assistantStatus: 'Aborted', assistantProvisional: false, sanitized: true } },
+  }
+  const afterServer = state.mergeConversationSnapshot(afterLocal, authoritative)
+  assert.equal(afterServer.runs[base.run.id].revision, 5)
+  assert.equal(afterServer.messages[0].metadata.sanitized, true, 'server abort metadata was discarded')
+})
+
+test('forgetting a run revision lets a repairing snapshot re-apply after a REST reload', () => {
+  const base = snapshot(4, 'working')
+  const runs = { [base.run.id]: base.run }
+
+  // Re-applying the same revision is refused while it is still registered.
+  const refused = state.mergeConversationSnapshot({ messages: [], runs }, base)
+  assert.equal(refused.messages.length, 0)
+
+  state.forgetConversationRunRevision(runs, base.run.id)
+  const reapplied = state.mergeConversationSnapshot({ messages: [], runs }, base)
+  assert.equal(reapplied.messages.length, 1)
+  assert.equal(reapplied.runs[base.run.id].revision, 4)
 })
 
 test('normalizes supervisor snapshot projectName into the portal projectID contract', () => {

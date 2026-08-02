@@ -63,6 +63,11 @@ type projectTemplateInfo struct {
 	// Components maps a development component name to its contract. Non-empty
 	// iff the template declares spec.development.
 	Components map[string]projectTemplateComponent
+
+	// Scaffold is the template's starter-code repository
+	// (spec.development.scaffold), pinned by tag. Nil when the template
+	// declares none.
+	Scaffold *projectTemplateScaffold
 }
 
 // projectTemplateComponent is one development component's contract: where its
@@ -157,6 +162,13 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 				Port:          strings.TrimSpace(port),
 				ImageInput:    strings.TrimSpace(imageInput),
 			}
+		}
+	}
+	if repository, _, _ := unstructured.NestedString(obj.Object, "spec", "development", "scaffold", "repository"); strings.TrimSpace(repository) != "" {
+		ref, _, _ := unstructured.NestedString(obj.Object, "spec", "development", "scaffold", "ref")
+		info.Scaffold = &projectTemplateScaffold{
+			Repository: strings.TrimSpace(repository),
+			Ref:        strings.TrimSpace(ref),
 		}
 	}
 	return info, nil
@@ -360,44 +372,50 @@ func applyProjectDevelopmentTemplate(p *aiv1alpha1.Project, info projectTemplate
 //     re-synced after the switch).
 //  3. Rewrite spec.template + the development binding; update the Project.
 //  4. Reconcile the new binding (creates the instance in development mode).
-func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, templateName string) (*aiv1alpha1.Project, projectTemplateInfo, error) {
+//  5. Materialize the template's starter scaffold into an EMPTY workspace
+//     (best-effort — the returned materialization carries any failure).
+//     httpReq carries the caller's Authorization for the scaffold git commit.
+func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, templateName string, httpReq *http.Request) (*aiv1alpha1.Project, projectTemplateInfo, *projectScaffoldMaterialization, error) {
 	info, err := fetchProjectTemplate(ctx, c, templateName)
 	if err != nil {
-		return nil, projectTemplateInfo{}, err
+		return nil, projectTemplateInfo{}, nil, err
 	}
 	if err := validateProjectDevelopmentTemplate(info); err != nil {
-		return nil, projectTemplateInfo{}, err
+		return nil, projectTemplateInfo{}, nil, err
 	}
 	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) == info.Name {
 		// Already selected — reconcile and return (idempotent re-select).
+		// Materialization still runs: it is a no-op unless the workspace is
+		// empty, which makes re-select the recovery path for a scaffold fetch
+		// that failed at first selection.
 		next, err := s.reconcileProjectLiveBindings(ctx, c, p, id)
 		if err != nil {
-			return nil, projectTemplateInfo{}, err
+			return nil, projectTemplateInfo{}, nil, err
 		}
-		return next, info, nil
+		return next, info, s.materializeProjectScaffold(ctx, id, next, info, httpReq), nil
 	}
 
 	// Tear down the previous development instance before rewriting the spec:
 	// after the update its binding is gone from the Project, and nothing
 	// would ever delete it.
 	if err := s.deleteProjectDevelopmentBindingResources(ctx, c, p, id); err != nil {
-		return nil, projectTemplateInfo{}, err
+		return nil, projectTemplateInfo{}, nil, err
 	}
 
 	next := p.DeepCopy()
 	if err := applyProjectDevelopmentTemplate(next, info); err != nil {
-		return nil, projectTemplateInfo{}, err
+		return nil, projectTemplateInfo{}, nil, err
 	}
 
 	updated, err := c.Projects().Update(ctx, next, metav1.UpdateOptions{})
 	if err != nil {
-		return nil, projectTemplateInfo{}, err
+		return nil, projectTemplateInfo{}, nil, err
 	}
 	reconciled, err := s.reconcileProjectLiveBindings(ctx, c, updated, id)
 	if err != nil {
-		return nil, projectTemplateInfo{}, err
+		return nil, projectTemplateInfo{}, nil, err
 	}
-	return reconciled, info, nil
+	return reconciled, info, s.materializeProjectScaffold(ctx, id, reconciled, info, httpReq), nil
 }
 
 // deleteProjectDevelopmentBindingResources deletes the instances behind the
@@ -554,9 +572,10 @@ type projectTemplateSelectRequest struct {
 }
 
 type projectTemplateSelectResponse struct {
-	Template   string            `json:"template"`
-	Components map[string]string `json:"components"`
-	Project    json.RawMessage   `json:"project,omitempty"`
+	Template   string                          `json:"template"`
+	Components map[string]string               `json:"components"`
+	Scaffold   *projectScaffoldMaterialization `json:"scaffold,omitempty"`
+	Project    json.RawMessage                 `json:"project,omitempty"`
 }
 
 // putProjectTemplate is PUT /api/projects/{project}/template — the portal's
@@ -572,7 +591,7 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
-	updated, info, err := s.selectProjectTemplate(r.Context(), c, id, p, req.Template)
+	updated, info, scaffold, err := s.selectProjectTemplate(r.Context(), c, id, p, req.Template, r)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
@@ -595,6 +614,7 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projectTemplateSelectResponse{
 		Template:   info.Name,
 		Components: info.WorkspacePaths(),
+		Scaffold:   scaffold,
 		Project:    raw,
 	})
 }

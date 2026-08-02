@@ -95,6 +95,15 @@ const (
 
 const (
 	projectEinoAssistantRepeatedActionWarnAt = 2
+	// projectEinoAssistantRepeatedActionStopAt ends a run that keeps taking the
+	// same action, or keeps reasoning, without making progress. It has to be far
+	// below the iteration ceiling to be worth anything: sharing that ceiling
+	// meant a stuck model burned the whole budget of paid model calls and then
+	// reported "max iterations" instead of "no progress".
+	//
+	// The model gets projectEinoAssistantRepeatedActionWarnAt strikes of warning
+	// first, so this bound is only reached by a loop the warning did not break.
+	projectEinoAssistantRepeatedActionStopAt = 6
 	projectEinoAssistantRepeatedActionLimit  = maxAssistantDeepIterations
 )
 
@@ -638,9 +647,22 @@ func (m *projectEinoAssistantPhaseFilterMiddleware) enforceRepeatedActionProgres
 	state *adk.ChatModelAgentState,
 	phase projectEinoAssistantPhase,
 ) (bool, error) {
-	_, repeats := m.runState.RepeatedCompletedAction()
+	toolName, repeats := m.runState.RepeatedCompletedAction()
 	if repeats < projectEinoAssistantRepeatedActionWarnAt {
 		return false, nil
+	}
+	if repeats >= projectEinoAssistantRepeatedActionStopAt {
+		// The run is suspended (reason "no_progress") rather than failed, so the
+		// user can inspect what it did and resume with Continue.
+		sourceRevision, verifiedRevision := m.runState.SourceMutationRevisions()
+		return false, &projectEinoAssistantNoProgressError{
+			Phase:            phase,
+			ToolName:         toolName,
+			Calls:            repeats,
+			Limit:            projectEinoAssistantRepeatedActionStopAt,
+			SourceRevision:   sourceRevision,
+			VerifiedRevision: verifiedRevision,
+		}
 	}
 	if state != nil && phase != projectEinoAssistantPhaseApproval {
 		instruction := projectEinoAssistantPhaseProgressInstruction(
@@ -1710,7 +1732,7 @@ func projectEinoAssistantPhaseHistoryForState(state *adk.ChatModelAgentState) pr
 				continue
 			}
 			switch name {
-			case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+			case projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile, projectToolMkdir:
 				history.latestWrite = index
 			case projectToolCommitProjectFiles, projectToolCommitFiles:
 				history.latestCommit = index
@@ -1816,10 +1838,6 @@ func projectEinoAssistantPhaseSuccessfulToolContent(content string) bool {
 		}
 	}
 	return true
-}
-
-func projectEinoAssistantPhaseVerificationReady(content string) bool {
-	return projectEinoAssistantPhaseVerificationDisposition(content) == projectEinoAssistantVerificationReadyDisposition
 }
 
 func projectEinoAssistantPhaseVerificationDisposition(content string) projectEinoAssistantVerificationDisposition {
@@ -2074,6 +2092,12 @@ func projectEinoAssistantPhaseAllowsTool(
 		return name == projectToolDefineInitialProjectPlan
 	case projectEinoAssistantPhaseApproval:
 		if operationalRead {
+			// An inline-adaptive approval turn is about the pending plan, not
+			// re-opening environment selection: catalog reads (adaptive now
+			// exposes them for Q&A turns) stay hidden until a decision lands.
+			if inlinePromotion && bundle == projectAssistantToolBundleInfrastructure {
+				return false
+			}
 			return true
 		}
 		if !inlinePromotion && (templateBootstrap || directAction) {
@@ -2096,11 +2120,17 @@ func projectEinoAssistantPhaseAllowsTool(
 			operationalRead ||
 			(name == projectToolAskFollowUp && risk == projectAssistantToolRiskInput)
 	case projectEinoAssistantPhaseVerify:
+		// templateBootstrap: a template-less project must be able to bind its
+		// template in ANY phase that can mutate — verification on such a
+		// project can only conclude "nothing runs", and hiding the bind tool
+		// here left the assistant wedged ("binding is not available in this
+		// phase") with no recovery path.
 		return (projectEinoAssistantPhaseCanonicalEditTool(tool.Name) &&
 			bundle == projectAssistantToolBundleEdit && risk == projectAssistantToolRiskWrite) ||
 			((tool.Name == projectToolVerifyDevelopmentRuntime ||
 				tool.Name == projectToolGetPreviewConsoleLogs) &&
 				bundle == projectAssistantToolBundleRuntime && risk == projectAssistantToolRiskRead) ||
+			templateBootstrap ||
 			(name == projectToolAskFollowUp && risk == projectAssistantToolRiskInput)
 	case projectEinoAssistantPhaseRepair:
 		return (bundle == projectAssistantToolBundleWorkspaceRead && risk == projectAssistantToolRiskRead) ||
@@ -2252,7 +2282,7 @@ func projectEinoAssistantPhaseTemplateBootstrapAllowed(project *aiv1alpha1.Proje
 
 func projectEinoAssistantPhaseCanonicalEditTool(name string) bool {
 	switch name {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile, projectToolMkdir:
 		return true
 	default:
 		return false

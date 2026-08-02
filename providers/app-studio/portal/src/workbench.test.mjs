@@ -38,7 +38,9 @@ test('starts with preview plus an active launcher tab while review stays closed'
       { id: 'launcher', closeable: true },
     ],
   )
-  assert.equal(state.activeTabID, 'launcher')
+  // Preview is active by default: seeing the app run is the payoff moment, and
+  // defaulting to the launcher hid it behind a click.
+  assert.equal(state.activeTabID, 'preview')
 })
 
 test('opens the launcher from the plus nub without duplicating it', () => {

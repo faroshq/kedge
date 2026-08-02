@@ -177,7 +177,7 @@ docker-build-edges-provider: ## Build the edges provider image (context = provid
 		providers/edges
 
 build-app-studio-provider-portal: ## Build the App Studio provider's micro-frontend (Vite + TS → portal/dist)
-	cd providers/app-studio/portal && npm install --no-audit --no-fund && npm run build
+	cd providers/app-studio/portal && npm install --no-audit --no-fund && npm test && npm run typecheck && npm run build
 
 build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
 	cd providers/app-studio && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider .
@@ -302,20 +302,29 @@ crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSc
 
 codegen: crds codegen-code-provider codegen-app-studio-provider codegen-databricks-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
 
-verify-codegen: codegen ## Verify codegen is up to date
-	@if ! git diff --quiet HEAD; then \
+# Compares the tree's diff-state before and after running codegen, so
+# unrelated uncommitted work does not trip the check — only changes that
+# codegen itself produced.
+verify-codegen: ## Verify codegen is up to date
+	@before=$$( (git status --porcelain; git diff) | shasum ); \
+	$(MAKE) codegen; \
+	after=$$( (git status --porcelain; git diff) | shasum ); \
+	if [ "$$before" != "$$after" ]; then \
 		echo "ERROR: codegen produced a diff. Please run 'make codegen' and commit the result."; \
-		git diff --stat; \
 		exit 1; \
 	fi
 
 sync-portalkit: ## Vendor the shared portalkit (provider-sdk/portalkit) into vanilla-TS portals
 	@hack/sync-portalkit.sh
 
-verify-portalkit: sync-portalkit ## Verify vendored portalkit copies are in sync with the canonical source
-	@if ! git diff --quiet HEAD; then \
+# Same before/after comparison as verify-codegen: only changes written by
+# the sync itself count as drift, not unrelated uncommitted work.
+verify-portalkit: ## Verify vendored portalkit copies are in sync with the canonical source
+	@before=$$( (git status --porcelain; git diff) | shasum ); \
+	hack/sync-portalkit.sh; \
+	after=$$( (git status --porcelain; git diff) | shasum ); \
+	if [ "$$before" != "$$after" ]; then \
 		echo "ERROR: portalkit copies are stale. Please run 'make sync-portalkit' and commit the result."; \
-		git diff --stat; \
 		exit 1; \
 	fi
 

@@ -673,10 +673,6 @@ func (s *PostgresStore) transitionWorkItemAndRun(ctx context.Context, scope Scop
 	return nil
 }
 
-func (s *PostgresStore) RequestAssistantRunStop(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
-	return s.requestAssistantRunStop(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, Message{}, now)
-}
-
 func (s *PostgresStore) RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
 	return s.requestAssistantRunStop(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, assistant, now)
 }
@@ -789,16 +785,6 @@ func normalizeAssistantWorkItemExecutionPlan(executionPlan json.RawMessage) (jso
 		return nil, fmt.Errorf("assistant work item execution plan is not valid json")
 	}
 	return executionPlan, nil
-}
-
-func (s *PostgresStore) LatestAssistantRunForWorkItem(ctx context.Context, scope Scope, workItemID string) (AssistantRun, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT run_id,work_item_id,mode,approval_mode,expected_grant_revision,status,client_request_id,user_message_id,active_message_id,revision,request_id,checkpoint,audit,created_at,updated_at FROM app_studio_assistant_runs
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND work_item_id=$5 ORDER BY updated_at DESC, run_id DESC LIMIT 1`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, workItemID)
-	run, err := scanAssistantRun(row, scope)
-	if err == sql.ErrNoRows {
-		return AssistantRun{}, fmt.Errorf("%w: latest work item run", ErrAssistantRunNotFound)
-	}
-	return run, err
 }
 
 func scanAssistantWorkItem(row interface{ Scan(...any) error }, scope Scope) (AssistantWorkItem, error) {

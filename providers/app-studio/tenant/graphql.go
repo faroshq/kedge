@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -49,6 +50,14 @@ type GraphQLClient struct {
 // NewGraphQLClient targets the hub's GraphQL gateway under hubBase (the hub's
 // base URL, e.g. https://kedge-hub.kedge.svc:9443). insecureSkipVerify relaxes
 // TLS for in-cluster hub certs that aren't in the provider's trust store.
+// graphQLRequestTimeout bounds one gateway call.
+//
+// These are ordinary CRUD reads and writes, not streams. Without a timeout a
+// hung hub connection pinned the calling goroutine forever — and the HTTP
+// server sets only ReadHeaderTimeout, so those accumulate until the provider
+// stops serving anything.
+const graphQLRequestTimeout = 30 * time.Second
+
 func NewGraphQLClient(hubBase string, insecureSkipVerify bool) *GraphQLClient {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	if insecureSkipVerify {
@@ -56,7 +65,7 @@ func NewGraphQLClient(hubBase string, insecureSkipVerify bool) *GraphQLClient {
 	}
 	return &GraphQLClient{
 		hubBase: strings.TrimRight(hubBase, "/"),
-		http:    &http.Client{Transport: tr},
+		http:    &http.Client{Transport: tr, Timeout: graphQLRequestTimeout},
 	}
 }
 

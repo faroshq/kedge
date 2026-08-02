@@ -148,10 +148,13 @@ func runServe() {
 	}
 	defer closeStore()
 
+	workspaceStore := openWorkspaceStore()
+	startSnapshotRetention(ctx, workspaceStore)
+
 	apiServer := api.NewWithWorkspaceContext(ctx,
 		gqlClient,
 		msgStore,
-		openWorkspaceStore(),
+		workspaceStore,
 		os.Getenv("KEDGE_HUB_URL"),
 		// The MCP virtual-workspace endpoint lives on the same hub host as the
 		// GraphQL client above, so it must honor the standard KEDGE_HUB_INSECURE
@@ -255,6 +258,73 @@ func openWorkspaceStore() *workspace.FileStore {
 	return workspace.NewFileStore(root)
 }
 
+// defaultSnapshotRetention is how long an assistant run stays undoable.
+//
+// Undo is a "that wasn't what I meant" control, used within a session, so a
+// few days is generous. The workspace volume is shared by every tenant, and
+// keeping snapshots forever eventually fails every tenant's writes at once.
+const defaultSnapshotRetention = 72 * time.Hour
+
+// startSnapshotRetention sweeps expired undo snapshots in the background.
+// Set APP_STUDIO_SNAPSHOT_RETENTION to "0" to keep snapshots indefinitely.
+func startSnapshotRetention(ctx context.Context, store *workspace.FileStore) {
+	retention := defaultSnapshotRetention
+	if raw := strings.TrimSpace(os.Getenv("APP_STUDIO_SNAPSHOT_RETENTION")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			log.Printf("WARNING ignoring invalid APP_STUDIO_SNAPSHOT_RETENTION %q: %v", raw, err)
+		case parsed <= 0:
+			log.Printf("app studio undo-snapshot retention disabled; snapshots are kept until the project is deleted")
+			return
+		default:
+			retention = parsed
+		}
+	}
+	log.Printf("app studio undo-snapshot retention: %s", retention)
+	// Sweep once at startup so a pod that has been restarting in a crash loop
+	// still reclaims space rather than waiting a full interval each time.
+	go runRetentionLoop(ctx, retention, true, func(cutoff time.Time) {
+		sweepSnapshots(ctx, store, cutoff)
+	})
+}
+
+// runRetentionLoop invokes sweep with a rolling cutoff every retention/4
+// (at least every minute) until ctx is cancelled.
+func runRetentionLoop(ctx context.Context, retention time.Duration, sweepAtStart bool, sweep func(cutoff time.Time)) {
+	interval := retention / 4
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	if sweepAtStart {
+		sweep(time.Now().Add(-retention))
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep(time.Now().Add(-retention))
+		}
+	}
+}
+
+func sweepSnapshots(ctx context.Context, store *workspace.FileStore, cutoff time.Time) {
+	result, err := store.SweepSnapshots(ctx, cutoff)
+	if err != nil {
+		log.Printf("App Studio undo-snapshot sweep failed (cutoff %s): %v", cutoff.UTC().Format(time.RFC3339), err)
+		return
+	}
+	for _, sweepErr := range result.Errors {
+		log.Printf("App Studio undo-snapshot sweep: %v", sweepErr)
+	}
+	if result.Removed > 0 {
+		log.Printf("App Studio undo-snapshot sweep removed %d of %d run snapshot(s)", result.Removed, result.Scanned)
+	}
+}
+
 // openMessageStore builds the App Studio message store from env, wraps it with
 // envelope encryption when configured, and starts the retention sweeper. The
 // returned closer is always safe to call.
@@ -294,7 +364,11 @@ func openMessageStore(ctx context.Context) (store.Store, func(), error) {
 	}
 
 	if retention := parseRetention(os.Getenv("APP_STUDIO_MESSAGE_RETENTION")); retention > 0 {
-		go runRetention(ctx, msgStore, retention)
+		go runRetentionLoop(ctx, retention, false, func(cutoff time.Time) {
+			if _, err := msgStore.DeleteMessagesOlderThan(ctx, cutoff); err != nil {
+				log.Printf("App Studio retention cleanup failed (cutoff %s): %v", cutoff, err)
+			}
+		})
 	}
 
 	return msgStore, closeFn, nil
@@ -311,26 +385,6 @@ func parseRetention(raw string) time.Duration {
 		return 0
 	}
 	return d
-}
-
-func runRetention(ctx context.Context, msgStore store.Store, retention time.Duration) {
-	interval := retention / 4
-	if interval < time.Minute {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			cutoff := time.Now().Add(-retention)
-			if _, err := msgStore.DeleteMessagesOlderThan(ctx, cutoff); err != nil {
-				log.Printf("App Studio retention cleanup failed (cutoff %s): %v", cutoff, err)
-			}
-		}
-	}
 }
 
 func logMiddleware(next http.Handler) http.Handler {

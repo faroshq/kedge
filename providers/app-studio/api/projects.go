@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -60,12 +59,6 @@ type PatchProjectRequest struct {
 	DisplayName *string                        `json:"displayName,omitempty"`
 	Description *string                        `json:"description,omitempty"`
 	Sharing     *aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
-}
-
-type PatchProjectMemoryRequest struct {
-	Goals        *[]string `json:"goals,omitempty"`
-	Requirements *[]string `json:"requirements,omitempty"`
-	Constraints  *[]string `json:"constraints,omitempty"`
 }
 
 type CreateProjectMessageRequest struct {
@@ -224,7 +217,6 @@ const projectAPIInitializingMessage = "App Studio is still initializing for this
 const projectMessageMetadataStatus = "status"
 const projectMessageMetadataAssistantActionFeed = "assistantActionFeed"
 const projectMessageMetadataAssistantInterrupt = "assistantInterrupt"
-const projectMessageStatusInterrupted = "interrupted"
 const projectMessageStatusPendingPermission = "pending_permission"
 const projectMessageStatusPendingInput = "pending_input"
 const projectMessagePersistTimeout = 5 * time.Second
@@ -392,9 +384,6 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	if err != nil {
 		return nil, err
 	}
-	if err := emitProjectCreationStatus(onStatus, "Configuring repository"); err != nil {
-		return nil, err
-	}
 	var repoPlan projectRepositoryPlan
 	if adoptedPlan != nil {
 		repoPlan = *adoptedPlan
@@ -438,19 +427,11 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		}
 	}
 	if repoPlan.Adopted {
-		if err := emitProjectCreationStatus(onStatus, "Importing repository"); err != nil {
-			s.cleanupCreatedProjectSetup(ctx, c, id, created)
-			return nil, err
-		}
 		if err := claimProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
 			s.cleanupCreatedProjectSetup(ctx, c, id, created)
 			return nil, err
 		}
 	} else {
-		if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
-			s.cleanupCreatedProjectSetup(ctx, c, id, created)
-			return nil, err
-		}
 		if err := s.createProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
 			s.cleanupCreatedProjectSetup(ctx, c, id, created)
 			return nil, err
@@ -470,12 +451,8 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		// Best-effort: pull the imported repository's tree into the fresh
 		// workspace. A failure leaves a valid (empty) project the user can
 		// hydrate again via /hydrate-workspace or the assistant.
-		if err := emitProjectCreationStatus(onStatus, "Importing repository files"); err != nil {
-			return updated, nil
-		}
 		if _, err := s.hydrateWorkspaceFromRepository(ctx, id, updated, httpReq, ""); err != nil {
 			klog.V(1).Infof("repository import hydrate failed for project %s: %v", updated.Name, err)
-			_ = emitProjectCreationStatus(onStatus, "Repository import incomplete — retry from project settings")
 		}
 	}
 	return updated, nil
@@ -924,7 +901,16 @@ func (s *Server) listProjectAssistantWorkItems(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	items, err := s.store.ListAssistantWorkItems(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p))
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
+	// Release a task whose run died before listing it. An ACTIVE work item is
+	// not cancellable and is filtered out of the portal's picker, so one left
+	// active by a dead run blocked every new edit plan with no control able to
+	// clear it. Reconciliation suspends it, which makes it both continuable and
+	// discardable — previously this only happened if something read the run.
+	if err := s.reconcileOrphanedProjectAssistantRun(r.Context(), scope); err != nil {
+		klog.V(2).Infof("work item list: orphan reconcile failed for project %s: %v", p.Name, err)
+	}
+	items, err := s.store.ListAssistantWorkItems(r.Context(), scope)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -936,23 +922,6 @@ func (s *Server) listProjectAssistantWorkItems(w http.ResponseWriter, r *http.Re
 		}
 	}
 	writeJSON(w, http.StatusOK, owned)
-}
-
-func (s *Server) getProjectAssistantWorkItem(w http.ResponseWriter, r *http.Request) {
-	_, id, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	item, err := s.store.GetAssistantWorkItem(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, p), mux.Vars(r)["workItem"])
-	if errors.Is(err, store.ErrAssistantWorkItemNotFound) || (err == nil && item.CreatedBy != id.user) {
-		writeStatus(w, http.StatusNotFound, "NotFound", "assistant work item not found")
-		return
-	}
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, projectAssistantWorkItemToAPI(item))
 }
 
 func (s *Server) cancelProjectAssistantWorkItem(w http.ResponseWriter, r *http.Request) {
@@ -973,6 +942,11 @@ func (s *Server) cancelProjectAssistantWorkItem(w http.ResponseWriter, r *http.R
 		return
 	}
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
+	// Same release as the list path: a task still marked active by a run that
+	// is gone is otherwise uncancellable, so the caller has no way out of it.
+	if err := s.reconcileOrphanedProjectAssistantRun(r.Context(), scope); err != nil {
+		klog.V(2).Infof("work item cancel: orphan reconcile failed for project %s: %v", p.Name, err)
+	}
 	item, err := s.store.GetAssistantWorkItem(r.Context(), scope, mux.Vars(r)["workItem"])
 	if errors.Is(err, store.ErrAssistantWorkItemNotFound) || (err == nil && item.CreatedBy != id.user) {
 		writeStatus(w, http.StatusNotFound, "NotFound", "assistant work item not found")
@@ -991,7 +965,17 @@ func (s *Server) cancelProjectAssistantWorkItem(w http.ResponseWriter, r *http.R
 		return
 	}
 	if request.Revision != item.Revision || item.Status != store.AssistantWorkItemStatusSuspended || item.ActiveRunID != "" {
-		writeStatus(w, http.StatusConflict, "Conflict", "assistant work item is not cancellable at that revision")
+		// Say which precondition failed. "Not cancellable at that revision"
+		// reads as a stale-revision problem even when the real reason is that
+		// the task is still running, which sends callers into a retry loop.
+		reason := "assistant work item is not cancellable at that revision; re-read it and retry with its current revision"
+		switch {
+		case item.Status == store.AssistantWorkItemStatusActive && strings.TrimSpace(item.ActiveRunID) != "":
+			reason = "this assistant task is still running; press Stop to suspend it first, then continue or discard it"
+		case item.Status != store.AssistantWorkItemStatusSuspended:
+			reason = fmt.Sprintf("assistant task is %s and only a suspended task can be discarded", item.Status)
+		}
+		writeStatus(w, http.StatusConflict, "Conflict", reason)
 		return
 	}
 	item.Status = store.AssistantWorkItemStatusCancelled
@@ -1109,56 +1093,8 @@ func projectAssistantToolCallsRequireDevelopmentSync(toolCalls []projectToolCall
 	return false
 }
 
-func projectAssistantGenerationFailureMessage(err error) string {
-	detail := "assistant generation failed"
-	if err != nil {
-		detail = strings.TrimSpace(err.Error())
-	}
-	if projectAssistantLLMRateLimitError(detail) {
-		return "assistant generation failed: The LLM provider is rate limited. Please wait a moment and try again."
-	}
-	detail = projectAssistantStripEinoTrace(detail)
-	if detail == "" {
-		detail = "assistant generation failed"
-	}
-	if strings.HasPrefix(detail, "assistant generation failed") {
-		return detail
-	}
-	return "assistant generation failed: " + detail
-}
-
-func projectAssistantLLMRateLimitError(detail string) bool {
-	detail = strings.ToLower(detail)
-	return strings.Contains(detail, "429") ||
-		strings.Contains(detail, "too many requests") ||
-		strings.Contains(detail, "resource_exhausted") ||
-		strings.Contains(detail, "resource exhausted")
-}
-
-func projectAssistantStripEinoTrace(detail string) string {
-	detail = strings.TrimSpace(detail)
-	if before, _, found := strings.Cut(detail, "------------------------"); found {
-		detail = strings.TrimSpace(before)
-	}
-	detail = strings.TrimPrefix(detail, "[NodeRunError]")
-	return strings.TrimSpace(detail)
-}
-
-func shouldPersistInterruptedProjectAssistant(ctx context.Context, err, streamErr error, streamed string) bool {
-	return strings.TrimSpace(streamed) != "" && (streamErr != nil || errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled))
-}
-
 func detachedProjectPersistenceContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), projectMessagePersistTimeout)
-}
-
-func appendInterruptedProjectAssistantMessage(ctx context.Context, msgStore store.Store, scope store.Scope, id, content string) error {
-	if strings.TrimSpace(content) == "" {
-		return nil
-	}
-	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
-	defer cancel()
-	return appendProjectAssistantMessage(persistCtx, msgStore, scope, id, content, projectAssistantMessageMetadata(projectMessageStatusInterrupted, nil))
 }
 
 func appendProjectAssistantMessage(ctx context.Context, msgStore store.Store, scope store.Scope, id, content string, metadata map[string]any) error {
@@ -1293,308 +1229,6 @@ func (s *Server) findProjectMessage(ctx context.Context, scope store.Scope, id s
 	return store.Message{}, fmt.Errorf("%w: %q", errProjectAssistantMessageNotFound, id)
 }
 
-func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallStreamEvent) map[string]any {
-	metadata := map[string]any{}
-	if status != "" {
-		metadata[projectMessageMetadataStatus] = status
-	}
-	if actions := projectAssistantActionFeedFromToolCalls(toolCalls); len(actions) > 0 {
-		metadata[projectMessageMetadataAssistantActionFeed] = actions
-	}
-	if interrupt := projectAssistantUIInterruptFromToolCalls(toolCalls); interrupt != nil {
-		metadata[projectMessageMetadataAssistantInterrupt] = interrupt
-	}
-	if len(metadata) == 0 {
-		return nil
-	}
-	return metadata
-}
-
-func projectAssistantActionFeedFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
-	return filterProjectAssistantActionFeedItems(projectAssistantActionFeedUpdatesFromToolCalls(events))
-}
-
-func projectAssistantActionFeedUpdatesFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
-	if len(events) == 0 {
-		return nil
-	}
-	actions := make([]projectAssistantActionFeedItem, 0, len(events))
-	for _, event := range events {
-		if event.ID == "" || event.Status == "" || projectToolBaseName(event.Name) == projectEinoAssistantWriteTodosTool {
-			continue
-		}
-		actions = upsertProjectAssistantActionFeedItem(actions, projectAssistantActionFeedItemFromToolCall(event))
-	}
-	if len(actions) == 0 {
-		return nil
-	}
-	return actions
-}
-
-func projectAssistantUIInterruptFromToolCalls(events []projectToolCallStreamEvent) *projectAssistantUIInterruptRequest {
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if event.Status == "input_required" && event.FollowUp != nil && event.Checkpoint != nil {
-			return projectAssistantUIInterruptRequestFromFollowUpCheckpoint("", *event.FollowUp, *event.Checkpoint)
-		}
-		if event.Status != "permission_required" || event.Permission == nil || event.Checkpoint == nil {
-			continue
-		}
-		return projectAssistantUIInterruptRequestFromPermissionCheckpoint("", *event.Permission, *event.Checkpoint)
-	}
-	return nil
-}
-
-func projectAssistantActionFeedFromMetadata(raw any) []projectAssistantActionFeedItem {
-	if raw == nil {
-		return nil
-	}
-	if typed, ok := raw.([]projectAssistantActionFeedItem); ok {
-		return filterProjectAssistantActionFeedItems(typed)
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil
-	}
-	var out []projectAssistantActionFeedItem
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return filterProjectAssistantActionFeedItems(out)
-}
-
-func filterProjectAssistantActionFeedItems(items []projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
-	filtered := make([]projectAssistantActionFeedItem, 0, len(items))
-	for _, item := range items {
-		if projectAssistantActionFeedItemVisible(item) {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
-}
-
-func projectAssistantActionFeedItemVisible(item projectAssistantActionFeedItem) bool {
-	if item.Kind != projectAssistantActionFeedItemOther {
-		return true
-	}
-	return item.Status == projectAssistantActionFeedStatusWaiting ||
-		item.Status == projectAssistantActionFeedStatusFailed ||
-		item.Status == projectAssistantActionFeedStatusRejected
-}
-
-func projectAssistantUIInterruptFromMetadata(raw any) *projectAssistantUIInterruptRequest {
-	if raw == nil {
-		return nil
-	}
-	if typed, ok := raw.(*projectAssistantUIInterruptRequest); ok {
-		if typed == nil {
-			return nil
-		}
-		copy := *typed
-		return &copy
-	}
-	if typed, ok := raw.(projectAssistantUIInterruptRequest); ok {
-		return &typed
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil
-	}
-	var out projectAssistantUIInterruptRequest
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	if out.InterruptID == "" && out.Action == nil {
-		return nil
-	}
-	return &out
-}
-
-func upsertProjectAssistantActionFeedItem(actions []projectAssistantActionFeedItem, action projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
-	if action.ID == "" {
-		return actions
-	}
-	for i := range actions {
-		if actions[i].ID == action.ID {
-			actions[i] = mergeProjectAssistantActionFeedItem(actions[i], action)
-			return actions
-		}
-	}
-	return append(actions, action)
-}
-
-func applyProjectAssistantActionFeedUpdate(actions []projectAssistantActionFeedItem, action projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
-	if projectAssistantActionFeedItemVisible(action) {
-		return upsertProjectAssistantActionFeedItem(actions, action)
-	}
-	filtered := actions[:0]
-	for _, existing := range actions {
-		if existing.ID != action.ID {
-			filtered = append(filtered, existing)
-		}
-	}
-	return filtered
-}
-
-func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFeedItem) projectAssistantActionFeedItem {
-	if next.Kind == "" {
-		next.Kind = existing.Kind
-	}
-	if next.Status == "" {
-		next.Status = existing.Status
-	}
-	if next.Title == "" {
-		next.Title = existing.Title
-	}
-	if next.Target == "" {
-		next.Target = existing.Target
-	}
-	if next.Outcome == "" {
-		next.Outcome = existing.Outcome
-	}
-	if next.Count == 0 {
-		next.Count = existing.Count
-	}
-	if next.Severity == "" {
-		next.Severity = existing.Severity
-	}
-	if next.GroupKey == "" {
-		next.GroupKey = existing.GroupKey
-	}
-	if next.GroupTitle == "" {
-		next.GroupTitle = existing.GroupTitle
-	}
-	if next.Sequence == 0 {
-		next.Sequence = existing.Sequence
-	}
-	if next.Diagnostic == nil {
-		next.Diagnostic = existing.Diagnostic
-	}
-	return next
-}
-
-func sanitizeProjectToolCallStreamEventsForMetadata(events []projectToolCallStreamEvent) []projectToolCallStreamEvent {
-	if len(events) == 0 {
-		return nil
-	}
-	out := make([]projectToolCallStreamEvent, 0, len(events))
-	for _, event := range events {
-		if event.Permission != nil {
-			permission := *event.Permission
-			permission.Input = nil
-			event.Permission = &permission
-		}
-		out = append(out, event)
-	}
-	return out
-}
-
-func projectToolCallStreamEventsFromMetadata(raw any) []projectToolCallStreamEvent {
-	if raw == nil {
-		return nil
-	}
-	if typed, ok := raw.([]projectToolCallStreamEvent); ok {
-		return append([]projectToolCallStreamEvent(nil), typed...)
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil
-	}
-	var out []projectToolCallStreamEvent
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return out
-}
-
-func upsertProjectToolCallStreamEvent(events []projectToolCallStreamEvent, event projectToolCallStreamEvent) []projectToolCallStreamEvent {
-	for i := range events {
-		if events[i].ID == event.ID {
-			events[i] = mergeProjectToolCallStreamEvent(events[i], event)
-			return events
-		}
-	}
-	return append(events, event)
-}
-
-func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) projectToolCallStreamEvent {
-	if next.Name == "" {
-		next.Name = existing.Name
-	}
-	if next.Arguments == "" {
-		next.Arguments = existing.Arguments
-	}
-	if next.Summary == "" {
-		next.Summary = existing.Summary
-	}
-	if next.Error == "" {
-		next.Error = existing.Error
-	}
-	if next.Permission == nil {
-		next.Permission = existing.Permission
-	}
-	if next.FollowUp == nil {
-		next.FollowUp = existing.FollowUp
-	}
-	if next.Checkpoint == nil {
-		next.Checkpoint = existing.Checkpoint
-	}
-	if next.Sequence == 0 {
-		next.Sequence = existing.Sequence
-	}
-	if next.Mutation == nil {
-		next.Mutation = existing.Mutation
-	}
-	return next
-}
-
-func (s *Server) getProjectMemory(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.requireProject(w, r)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, p.Spec.Memory)
-}
-
-func (s *Server) patchProjectMemory(w http.ResponseWriter, r *http.Request) {
-	c, _, p, ok := s.requireProjectWithClient(w, r)
-	if !ok {
-		return
-	}
-	var req PatchProjectMemoryRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	changed := false
-	if req.Goals != nil {
-		p.Spec.Memory.Goals = append([]string(nil), (*req.Goals)...)
-		changed = true
-	}
-	if req.Requirements != nil {
-		p.Spec.Memory.Requirements = append([]string(nil), (*req.Requirements)...)
-		changed = true
-	}
-	if req.Constraints != nil {
-		p.Spec.Memory.Constraints = append([]string(nil), (*req.Constraints)...)
-		changed = true
-	}
-	if !changed {
-		writeProjectError(w, newValidationError("PATCH body must set at least one memory field"))
-		return
-	}
-	updated, err := c.Projects().Update(r.Context(), p, metav1.UpdateOptions{})
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	updated, err = touchProjectStatus(r.Context(), c, updated)
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, updated.Spec.Memory)
-}
-
 func projectName(ctx context.Context, c *asclient.Client, requested, displayName string) (string, error) {
 	if requested != "" {
 		name := slugifyProjectName(requested)
@@ -1645,144 +1279,10 @@ func projectStatusTouchPatch(now metav1.Time) ([]byte, error) {
 	return json.Marshal(patch)
 }
 
-func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) ProjectView {
-	p = projectWithLiveBindingStatus(ctx, c, p, id)
-	view := ProjectView{
-		Name:         p.Name,
-		DisplayName:  p.Spec.DisplayName,
-		Description:  p.Spec.Description,
-		Phase:        p.Status.Phase,
-		Repository:   projectRepositoryView(ctx, c, p),
-		Memory:       p.Spec.Memory,
-		Sharing:      effectiveProjectSharingSpec(p.Spec.Sharing),
-		Environments: projectEnvironmentViews(p),
-		CreatedAt:    p.CreationTimestamp.Time,
-	}
-	if p.Spec.Template != nil {
-		view.Template = strings.TrimSpace(p.Spec.Template.Name)
-	}
-	if p.Status.UpdatedAt != nil {
-		t := p.Status.UpdatedAt.Time
-		view.UpdatedAt = &t
-	}
-	return view
-}
-
-func projectEnvironmentViews(p *aiv1alpha1.Project) []ProjectEnvironmentView {
-	statusByName := map[string]aiv1alpha1.ProjectEnvironmentStatus{}
-	for _, st := range p.Status.Environments {
-		statusByName[st.Name] = st
-	}
-	views := make([]ProjectEnvironmentView, 0, len(p.Spec.Environments))
-	for _, spec := range p.Spec.Environments {
-		st := statusByName[spec.Name]
-		mode := string(spec.Mode)
-		if mode == "" && st.Mode != "" {
-			mode = string(st.Mode)
-		}
-		if mode == "" {
-			mode = string(aiv1alpha1.ProjectEnvironmentModeArtifact)
-		}
-		view := ProjectEnvironmentView{
-			Name:     spec.Name,
-			Mode:     mode,
-			Phase:    st.Phase,
-			Bindings: projectProviderBindingViews(spec.Bindings, st.Bindings),
-		}
-		views = append(views, view)
-		delete(statusByName, spec.Name)
-	}
-	for _, st := range statusByName {
-		mode := string(st.Mode)
-		if mode == "" {
-			mode = string(aiv1alpha1.ProjectEnvironmentModeArtifact)
-		}
-		views = append(views, ProjectEnvironmentView{
-			Name:     st.Name,
-			Mode:     mode,
-			Phase:    st.Phase,
-			Bindings: projectProviderBindingViews(nil, st.Bindings),
-		})
-	}
-	return views
-}
-
-func projectProviderBindingViews(specs []aiv1alpha1.ProjectProviderBindingSpec, statuses []aiv1alpha1.ProjectProviderBindingStatus) []ProjectProviderBindingView {
-	statusByName := map[string]aiv1alpha1.ProjectProviderBindingStatus{}
-	for _, st := range statuses {
-		statusByName[st.Name] = st
-	}
-	views := make([]ProjectProviderBindingView, 0, len(specs)+len(statuses))
-	for _, spec := range specs {
-		st := statusByName[spec.Name]
-		views = append(views, ProjectProviderBindingView{
-			Name:       spec.Name,
-			Provider:   firstNonEmpty(st.Provider, spec.Provider),
-			Phase:      st.Phase,
-			URL:        st.URL,
-			PreviewURL: st.PreviewURL,
-			Outputs:    st.Outputs,
-		})
-		delete(statusByName, spec.Name)
-	}
-	for _, st := range statusByName {
-		views = append(views, ProjectProviderBindingView{
-			Name:       st.Name,
-			Provider:   st.Provider,
-			Phase:      st.Phase,
-			URL:        st.URL,
-			PreviewURL: st.PreviewURL,
-			Outputs:    st.Outputs,
-		})
-	}
-	return views
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func projectUpdatedAt(p *aiv1alpha1.Project) time.Time {
-	if p.Status.UpdatedAt != nil {
-		return p.Status.UpdatedAt.Time
-	}
-	return p.CreationTimestamp.Time
-}
-
-func emptyProjectMemory() aiv1alpha1.ProjectMemory {
-	return aiv1alpha1.ProjectMemory{
-		Goals:        []string{},
-		Requirements: []string{},
-		Constraints:  []string{},
-	}
-}
-
-var invalidProjectNameChars = regexp.MustCompile(`[^a-z0-9-]+`)
-
-func slugifyProjectName(str string) string {
-	str = strings.ToLower(strings.TrimSpace(str))
-	str = invalidProjectNameChars.ReplaceAllString(str, "-")
-	str = strings.Trim(str, "-")
-	for strings.Contains(str, "--") {
-		str = strings.ReplaceAll(str, "--", "-")
-	}
-	if len(str) > 63 {
-		str = strings.Trim(str[:63], "-")
-	}
-	return str
-}
-
+// initialProjectMemoryUpdateAttempts bounds optimistic-concurrency retries
+// when stamping the initial plan into project memory.
 const initialProjectMemoryUpdateAttempts = 3
 
-// persistInitialProjectMemory records the user's original creation goal and the
-// acceptance criteria from the auto-authorized initial execution plan. The
-// update is additive: users may edit project memory independently, so conflicts
-// are resolved by re-reading and merging rather than overwriting their values.
 func persistInitialProjectPlanMemory(
 	ctx context.Context,
 	c *asclient.Client,

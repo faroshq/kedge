@@ -2021,13 +2021,6 @@ type blockingResumeRouteEngine struct {
 	finished chan struct{}
 }
 
-type blockingStartRouteEngine struct {
-	entered  chan struct{}
-	finished chan struct{}
-}
-
-type replyStartRouteEngine struct{ chunk, reply string }
-
 type planStartRouteEngine struct {
 	plans     []projectAssistantPlanSnapshot
 	published chan struct{}
@@ -2074,13 +2067,6 @@ func (*initialProjectBootstrapCaptureEngine) ResumeProjectAssistant(context.Cont
 	return projectAssistantRunResult{}, errors.New("unexpected resume")
 }
 
-func (e replyStartRouteEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	if e.chunk != "" {
-		req.StreamCallbacks.OnChunk(e.chunk)
-	}
-	return projectAssistantRunResult{Content: e.reply}, nil
-}
-
 func (e *planStartRouteEngine) StreamProjectAssistant(_ context.Context, req projectAssistantRunRequest) (projectAssistantRunResult, error) {
 	for _, plan := range e.plans {
 		req.StreamCallbacks.OnPlan(plan)
@@ -2113,31 +2099,6 @@ func (failingResumeRouteEngine) StreamProjectAssistant(context.Context, projectA
 
 func (e failingResumeRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
 	return projectAssistantRunResult{}, e.cause
-}
-
-func (replyStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-type failingStartRouteEngine struct{}
-
-func (failingStartRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("expected failure")
-}
-
-func (failingStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
-}
-
-func (e *blockingStartRouteEngine) StreamProjectAssistant(ctx context.Context, _ projectAssistantRunRequest) (projectAssistantRunResult, error) {
-	close(e.entered)
-	<-ctx.Done()
-	close(e.finished)
-	return projectAssistantRunResult{}, context.Cause(ctx)
-}
-
-func (*blockingStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
-	return projectAssistantRunResult{}, errors.New("unexpected resume")
 }
 
 func (*blockingResumeRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {
@@ -2185,4 +2146,156 @@ func (s *ambiguousAssistantRunPromotionStore) PromoteAssistantRunToWorkItem(
 		return store.AssistantWorkItem{}, store.AssistantRun{}, err
 	}
 	return store.AssistantWorkItem{}, store.AssistantRun{}, errors.New("ambiguous promotion acknowledgement")
+}
+
+// TestWorkItemConflictMessageNamesAReachableAction pins the guidance a blocked
+// caller receives. "assistant work item conflict" told users and the model
+// nothing actionable, so both invented remedies that do not exist — an ACTIVE
+// work item cannot be cancelled or discarded, and the portal does not even list
+// it, so "clear the pending work item" sends people looking for a control that
+// is not there.
+func TestWorkItemConflictMessageNamesAReachableAction(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	ctx := context.Background()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+
+	run := store.AssistantRun{
+		ID: "run-1", Mode: store.AssistantRunModeAdaptive, Status: store.AssistantRunStatusRunning,
+		ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1",
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := messages.CreateAssistantRun(ctx, scope,
+		store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "build it", CreatedAt: now, UpdatedAt: now},
+		store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}, run,
+	); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	item, _, err := messages.PromoteAssistantRunToWorkItem(ctx, scope, run.ID, "test-user", "work-item-1", run.Revision, now)
+	if err != nil {
+		t.Fatalf("PromoteAssistantRunToWorkItem: %v", err)
+	}
+	if item.Status != store.AssistantWorkItemStatusActive {
+		t.Fatalf("work item status = %q, want active", item.Status)
+	}
+
+	msg := server.projectAssistantWorkItemConflictMessage(ctx, scope, "test-user")
+	if !strings.Contains(strings.ToLower(msg), "stop") {
+		t.Fatalf("conflict message = %q, want it to name Stop for a running task", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "clear") {
+		t.Fatalf("conflict message = %q, must not suggest clearing an active item — no such control exists", msg)
+	}
+
+	// A different actor's task must not leak into the explanation.
+	if other := server.projectAssistantWorkItemConflictMessage(ctx, scope, "someone-else"); strings.Contains(other, "in progress") {
+		t.Fatalf("conflict message for a non-owner = %q, want the generic explanation", other)
+	}
+}
+
+// TestReconcileReleasesWorkItemStrandedBehindSupersededRun reproduces a
+// production dead end: a task left active by a run that died, with newer runs
+// completed after it.
+//
+// reconcileOrphanedProjectAssistantRun only inspects the LATEST run, so once a
+// newer run reached a terminal status the stranded task was never examined
+// again. It stayed active — and an active task cannot be cancelled and is not
+// listed for discard — so every later edit plan was refused with nothing able
+// to clear it.
+func TestReconcileReleasesWorkItemStrandedBehindSupersededRun(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	ctx := context.Background()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+
+	// The task's own run, promoted to a work item and then abandoned.
+	stranded := store.AssistantRun{
+		ID: "run-stranded", Mode: store.AssistantRunModeAdaptive, Status: store.AssistantRunStatusRunning,
+		ClientRequestID: "request-stranded", UserMessageID: "user-stranded", ActiveMessageID: "assistant-stranded",
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := messages.CreateAssistantRun(ctx, scope,
+		store.Message{ID: stranded.UserMessageID, Role: "user", ActorID: "test-user", Content: "build the swipe screen", CreatedAt: now, UpdatedAt: now},
+		store.Message{ID: stranded.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}, stranded,
+	); err != nil {
+		t.Fatalf("CreateAssistantRun stranded: %v", err)
+	}
+	item, promoted, err := messages.PromoteAssistantRunToWorkItem(ctx, scope, stranded.ID, "test-user", "work-item-stranded", stranded.Revision, now)
+	if err != nil {
+		t.Fatalf("PromoteAssistantRunToWorkItem: %v", err)
+	}
+	if item.Status != store.AssistantWorkItemStatusActive {
+		t.Fatalf("work item status = %q, want active", item.Status)
+	}
+
+	// That run dies without releasing the task, and a later run completes —
+	// which is what hides the strand from the latest-run reconciler.
+	promoted.Status = store.AssistantRunStatusInterrupted
+	promoted.Revision++
+	promoted.UpdatedAt = now.Add(time.Minute)
+	if err := messages.SaveAssistantRunSnapshot(ctx, scope, promoted, nil, promoted.Revision-1); err != nil {
+		t.Fatalf("SaveAssistantRunSnapshot stranded: %v", err)
+	}
+	later := store.AssistantRun{
+		ID: "run-later", Mode: store.AssistantRunModeAdaptive, Status: store.AssistantRunStatusCompleted,
+		ClientRequestID: "request-later", UserMessageID: "user-later", ActiveMessageID: "assistant-later",
+		Revision: 1, CreatedAt: now.Add(2 * time.Minute), UpdatedAt: now.Add(2 * time.Minute),
+	}
+	if _, err := messages.CreateAssistantRun(ctx, scope,
+		store.Message{ID: later.UserMessageID, Role: "user", ActorID: "test-user", Content: "try again", CreatedAt: later.CreatedAt, UpdatedAt: later.UpdatedAt},
+		store.Message{ID: later.ActiveMessageID, Role: "assistant", CreatedAt: later.CreatedAt, UpdatedAt: later.UpdatedAt}, later,
+	); err != nil {
+		t.Fatalf("CreateAssistantRun later: %v", err)
+	}
+
+	if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope); err != nil {
+		t.Fatalf("reconcileOrphanedProjectAssistantRun: %v", err)
+	}
+
+	released, err := messages.GetAssistantWorkItem(ctx, scope, item.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem: %v", err)
+	}
+	if released.Status != store.AssistantWorkItemStatusSuspended {
+		t.Fatalf("stranded work item status = %q, want suspended so it can be continued or discarded", released.Status)
+	}
+}
+
+// TestReconcileLeavesLiveWorkItemAlone guards the other direction: releasing a
+// task that is genuinely running would abandon work mid-mutation.
+func TestReconcileLeavesLiveWorkItemAlone(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	ctx := context.Background()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+
+	run := store.AssistantRun{
+		ID: "run-live", Mode: store.AssistantRunModeAdaptive, Status: store.AssistantRunStatusRunning,
+		ClientRequestID: "request-live", UserMessageID: "user-live", ActiveMessageID: "assistant-live",
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := messages.CreateAssistantRun(ctx, scope,
+		store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "build", CreatedAt: now, UpdatedAt: now},
+		store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}, run,
+	); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	item, _, err := messages.PromoteAssistantRunToWorkItem(ctx, scope, run.ID, "test-user", "work-item-live", run.Revision, now)
+	if err != nil {
+		t.Fatalf("PromoteAssistantRunToWorkItem: %v", err)
+	}
+
+	if err := server.reconcileOrphanedProjectAssistantWorkItems(ctx, scope); err != nil {
+		t.Fatalf("reconcileOrphanedProjectAssistantWorkItems: %v", err)
+	}
+	current, err := messages.GetAssistantWorkItem(ctx, scope, item.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantWorkItem: %v", err)
+	}
+	if current.Status != store.AssistantWorkItemStatusActive {
+		t.Fatalf("running work item status = %q, want it left active", current.Status)
+	}
 }

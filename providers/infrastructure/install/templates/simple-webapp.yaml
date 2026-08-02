@@ -6,17 +6,20 @@ spec:
   displayName: "Simple web app"
   description: "A single-container web app on a public URL — Deployment + Service + HTTPRoute. No backend tiers, no database. Development-capable: can back an App Studio project with a hot-reload dev server."
   category: Workloads
-  version: 0.2.0
+  version: 0.3.0
   # exposure: what the platform tells callers about reaching an instance.
   # Every instance is published; App Studio's preview depends on it.
   exposure: public
   backend: kro
-  # One-click provision defaults for the portal form. nginx serves its welcome
-  # page on port 80, so "Provision → see it working" needs zero external setup.
+  # One-click provision defaults for the portal form. The image is the
+  # scaffold repo's hello-world (github.com/faroshq/kedge-scaffold-simple-webapp),
+  # built by that repo's CI and pinned to the SAME tag as
+  # development.scaffold.ref below — "Provision → see it working" runs exactly
+  # the code a new App Studio project starts from, honoring $PORT.
   sampleValues:
     name: demo-site
-    image: nginx:latest
-    port: 80
+    image: ghcr.io/faroshq/kedge-scaffold-simple-webapp/app:v0.1.1
+    port: 8080
   # Operational guidance for AI agents discovering this template over MCP. Not
   # shown in the portal UI — it tells an LLM how to use the template and where
   # its outputs land.
@@ -48,8 +51,9 @@ spec:
       app (workspacePath "."); a package.json with a dev script (vite et al)
       is auto-detected, otherwise vite is bootstrapped directly.
 
-      INPUTS you set when provisioning: name (required); image (required in
-      production, ignored in development), port, replicas, env (env-var map;
+      INPUTS you set when provisioning: name (required); image (defaults to
+      the scaffold hello-world image — supply your own to run real code;
+      ignored in development), port, replicas, env (env-var map;
       not for secrets), expose.hostnamePrefix. The platform stamps
       spec.expose.fqdn — do not set it. All except name and kedgeMode can be
       changed later with update_instance.
@@ -93,7 +97,8 @@ spec:
         description: "Logical name; used as the resource-name prefix in the tenant namespace and the default hostname prefix."
       image:
         type: string
-        description: "Container image serving HTTP. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
+        default: ghcr.io/faroshq/kedge-scaffold-simple-webapp/app:v0.1.1
+        description: "Container image serving HTTP. Defaults to the scaffold hello-world (same tag as development.scaffold.ref) so provisioning with no image runs a working app — replace with your own image to ship real code. Ignored when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
       port:
         type: integer
         default: 8080
@@ -142,6 +147,14 @@ spec:
   # loads the platform preview-console plugin when trusted keys are installed.
   # A missing plugin/config fails open and leaves the ordinary preview intact.
   development:
+    # Starter source for new App Studio projects: a working single-app Vite
+    # hello-world honoring the platform contract (PORT, 0.0.0.0, dev+start
+    # scripts). Locked by git tag: changing the scaffold repo does nothing
+    # until a new tag is cut AND this ref (plus the sampleValues image tag
+    # above) is bumped to match.
+    scaffold:
+      repository: https://github.com/faroshq/kedge-scaffold-simple-webapp
+      ref: v0.1.1
     components:
       app:
         workspacePath: .

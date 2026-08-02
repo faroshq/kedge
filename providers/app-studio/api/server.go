@@ -55,7 +55,17 @@ type Server struct {
 	assistantSupervisor          *projectAssistantSupervisor
 	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
-	projectCreatePreflight       projectCreatePreflightGenerator
+	// projectCreatePreflight overrides the create-preflight generator (tests).
+	projectCreatePreflight projectCreatePreflightGenerator
+	// developmentSyncManifests records the content hashes last successfully
+	// synced to each component, so the next sync ships only what changed.
+	// Whole-workspace payloads were re-sent on every mutation, which at the
+	// 500-file limit is megabytes through the hub proxy inside a 20s budget.
+	//
+	// Sandbox files live on a PVC, so this survives pod restarts; it is
+	// dropped whenever that assumption breaks (sync failure, template switch,
+	// provider restart) and the next sync sends everything.
+	developmentSyncManifests map[string]map[string]string
 	// developmentSyncFailures records the most recent post-mutation sync
 	// failure per project so verify_development_runtime can report it. A
 	// failed background sync means the assistant's edits never reached the
@@ -70,11 +80,6 @@ type Server struct {
 	previewConsoleStore   *previewConsoleStore
 	previewConsoleSigner  *previewConsoleCapabilitySigner
 	mu                    sync.Mutex
-}
-
-// New constructs a Server.
-func New(gql *tenant.GraphQLClient, msgStore store.Store, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
-	return NewWithWorkspace(gql, msgStore, nil, hubBase, mcpInsecureSkipTLSVerify)
 }
 
 // NewWithWorkspace constructs a Server with an explicit project workspace store.
@@ -172,9 +177,6 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/promote", s.promoteProjectHandler).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/hydrate-workspace", s.hydrateProjectWorkspace).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/sync-development", s.syncProjectDevelopment).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/restart-development", s.restartProjectDevelopment).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/development-logs", s.logsProjectDevelopment).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/development-status", s.statusProjectDevelopment).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/authorize-development-preview", s.authorizeProjectDevelopmentPreview).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/preview-console/sessions", s.createProjectPreviewConsoleSession).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/preview-console/sessions/{session}/events", s.appendProjectPreviewConsoleEvents).Methods(http.MethodPost)
@@ -185,12 +187,9 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.getProjectAssistantApprovalMode).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.patchProjectAssistantApprovalMode).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}/assistant/work-items", s.listProjectAssistantWorkItems).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/work-items/{workItem}", s.getProjectAssistantWorkItem).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/work-items/{workItem}/cancel", s.cancelProjectAssistantWorkItem).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/runs/latest", s.latestProjectAssistantRun).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/{run}/stream", s.streamProjectAssistantSnapshots).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
 }
 
 // clientFor builds a workspace-scoped client acting as the caller, talking to
@@ -243,12 +242,6 @@ func (s *Server) requireProjectWithClient(w http.ResponseWriter, r *http.Request
 		return nil, identity{}, nil, false
 	}
 	return c, id, p, true
-}
-
-// requireProject fetches the named Project, discarding the client/identity.
-func (s *Server) requireProject(w http.ResponseWriter, r *http.Request) (*aiv1alpha1.Project, bool) {
-	_, _, p, ok := s.requireProjectWithClient(w, r)
-	return p, ok
 }
 
 // requireStore guards against a nil message store.

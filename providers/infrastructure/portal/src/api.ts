@@ -374,7 +374,12 @@ export const api = {
           const data = await graphqlQuery<Infra<Record<string, { items?: RawObject[] }>>>(
             `{ ${GROUP_FIELD} { ${VERSION} { ${field} { ${SEL} } } } }`,
           )
-          return data[GROUP_FIELD]?.[VERSION]?.[field]?.items ?? []
+          const items = data[GROUP_FIELD]?.[VERSION]?.[field]?.items ?? []
+          // The GraphQL list items carry no kind of their own, but each list IS
+          // one kind — stamp it so instanceFromObj's kind→template fallback
+          // works for instances that lack the portal's template label (App
+          // Studio dev bindings, MCP provisions).
+          return items.map(c => ({ ...c, kind }))
         } catch (e) {
           if ((e as ErrorResponse).reason === 'NotFound') return []
           throw e

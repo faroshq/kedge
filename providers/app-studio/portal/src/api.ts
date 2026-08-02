@@ -12,8 +12,8 @@ import type {
   ProjectAssistantApprovalPreference,
   ProjectAssistantSnapshot,
   ProjectAssistantUndoResponse,
+  ProjectDevelopmentSyncResult,
   ProjectLLMSettings,
-  ProjectMemory,
   ProjectMessage,
   ProjectMessagesPage,
   ProjectCheckpoints,
@@ -142,9 +142,16 @@ async function requestAssistantSnapshotStream(
   }
   try {
     for (;;) {
-      const { done, value } = await reader.read()
+      // The server sends a keepalive comment every 15s. Without a read
+      // deadline a silently dead connection (NAT timeout, sleeping laptop)
+      // leaves this read pending forever: the spinner runs, no snapshot
+      // arrives, and no reconnect is ever attempted because nothing errored.
+      const { done, value } = await readWithInactivityDeadline(reader, ASSISTANT_STREAM_INACTIVITY_MS)
       if (done) break
       buffer += decoder.decode(value, { stream: true })
+      // Normalize CRLF framing: a proxy that rewrites SSE line endings would
+      // otherwise leave the "\n\n" separator search unable to find any event.
+      if (buffer.includes('\r')) buffer = buffer.replace(/\r\n/g, '\n')
       for (;;) {
         const separator = buffer.indexOf('\n\n')
         if (separator < 0) break
@@ -153,6 +160,38 @@ async function requestAssistantSnapshotStream(
       }
     }
   } finally { reader.releaseLock() }
+}
+
+/**
+ * Time without a single byte (including keepalive comments) after which the
+ * assistant stream is treated as dead. Three missed 15s keepalives.
+ */
+const ASSISTANT_STREAM_INACTIVITY_MS = 45_000
+
+export class AssistantStreamStalledError extends Error {
+  constructor() {
+    super('assistant stream stalled')
+    this.name = 'AssistantStreamStalledError'
+  }
+}
+
+async function readWithInactivityDeadline(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new AssistantStreamStalledError()), timeoutMs)
+  })
+  try {
+    return await Promise.race([reader.read(), deadline])
+  } catch (err) {
+    // Drop the half-open connection so the caller's reconnect starts clean.
+    if (err instanceof AssistantStreamStalledError) void reader.cancel().catch(() => {})
+    throw err
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 export const api = {
@@ -281,22 +320,12 @@ export const api = {
     await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
   },
 
-  async syncDevelopment(ctx: KedgeContext | null, name: string): Promise<unknown> {
-    return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/sync-development`)
+  async syncDevelopment(ctx: KedgeContext | null, name: string): Promise<ProjectDevelopmentSyncResult> {
+    return request<ProjectDevelopmentSyncResult>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/sync-development`)
   },
 
   async authorizeDevelopmentPreview(ctx: KedgeContext | null, name: string): Promise<unknown> {
     return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/authorize-development-preview`)
-  },
-
-  async listMessages(ctx: KedgeContext | null, name: string, cursor?: string): Promise<ProjectMessagesPage> {
-    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
-    const body = await request<ProjectMessagesPage>(
-      ctx,
-      'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/messages${query}`,
-    )
-    return body
   },
 
   async listAllMessages(ctx: KedgeContext | null, name: string): Promise<ProjectMessage[]> {
@@ -396,10 +425,6 @@ export const api = {
       `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/work-items/${encodeURIComponent(workItemID)}/cancel`,
       { revision, clientRequestID },
     )
-  },
-
-  async getMemory(ctx: KedgeContext | null, name: string): Promise<ProjectMemory> {
-    return request<ProjectMemory>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/memory`)
   },
 
   async createPreviewConsoleSession(

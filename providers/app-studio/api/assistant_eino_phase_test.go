@@ -3291,26 +3291,6 @@ func projectEinoAssistantPhaseToolResult(name, content string) *schema.Message {
 	return schema.ToolMessage(content, "call-"+name, schema.WithToolName(name))
 }
 
-func projectEinoAssistantAppendCompletedAction(
-	state *adk.ChatModelAgentState,
-	callID string,
-	name string,
-	arguments string,
-) {
-	state.Messages = append(
-		state.Messages,
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   callID,
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      name,
-				Arguments: arguments,
-			},
-		}}),
-		schema.ToolMessage("ok", callID, schema.WithToolName(name)),
-	)
-}
-
 func projectEinoAssistantPhaseToolInfo(name string, risk projectAssistantToolRisk, bundle projectAssistantToolBundle) *schema.ToolInfo {
 	return &schema.ToolInfo{Extra: map[string]any{
 		"bundle": string(bundle),

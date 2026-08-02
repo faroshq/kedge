@@ -16,7 +16,6 @@ const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toStrin
 const {
   canSubmitCreatePrompt,
   createSetupItems,
-  createPromptBlockedMessage,
 } = await import(moduleURL)
 
 test('blocks project creation when no validated Git connection is ready', () => {
@@ -28,10 +27,6 @@ test('blocks project creation when no validated Git connection is ready', () => 
   }
 
   assert.equal(canSubmitCreatePrompt('build a dashboard', readiness), false)
-  assert.equal(
-    createPromptBlockedMessage(readiness),
-    'You need to connect to a Git account before you can continue',
-  )
 })
 
 test('allows the a-ha prompt only after Git durability is ready', () => {
@@ -43,7 +38,6 @@ test('allows the a-ha prompt only after Git durability is ready', () => {
   }
 
   assert.equal(canSubmitCreatePrompt('build a dashboard', readiness), true)
-  assert.equal(createPromptBlockedMessage(readiness), '')
 })
 
 test('still requires the user to type a prompt before submitting', () => {
@@ -135,7 +129,6 @@ test('new-project route has one setup surface and a stable create button label',
   assert.equal(appSource.includes('createPromptSubmitLabel'), false)
   assert.equal(appSource.includes('to create a durable project.'), false)
   assert.match(appSource, /<button\s+v-if="!showNewProjectComposer"[\s\S]*title="LLM settings"/)
-  assert.equal(appSource.includes('error.value = gitConnectionCreateReady.value ? null : createReadinessError.value || createPromptBlockedMessage(createReadiness.value)'), false)
   assert.match(appSource, /if \(gitConnectionCreateReady\.value && llmConfigured\.value\) return true\s+error\.value = null\s+return false/)
   assert.match(appSource, />\s*Create and send\s*</)
 })

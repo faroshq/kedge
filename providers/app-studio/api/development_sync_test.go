@@ -276,3 +276,114 @@ func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 		}
 	}
 }
+
+func TestChangedProjectSyncFilesSendsOnlyModifiedContent(t *testing.T) {
+	files := []projectSandboxSyncFile{
+		{Path: "src/App.tsx", Content: "one\n"},
+		{Path: "src/util.ts", Content: "two\n"},
+	}
+	manifest := projectSyncManifest(files)
+
+	if changed := changedProjectSyncFiles(files, manifest); len(changed) != 0 {
+		t.Fatalf("changed = %v, want none when nothing was edited", changed)
+	}
+
+	edited := []projectSandboxSyncFile{
+		{Path: "src/App.tsx", Content: "one changed\n"},
+		{Path: "src/util.ts", Content: "two\n"},
+		{Path: "src/new.ts", Content: "three\n"},
+	}
+	changed := changedProjectSyncFiles(edited, manifest)
+	if len(changed) != 2 {
+		t.Fatalf("changed = %v, want the edited and the new file only", changed)
+	}
+	got := map[string]bool{}
+	for _, f := range changed {
+		got[f.Path] = true
+	}
+	if !got["src/App.tsx"] || !got["src/new.ts"] {
+		t.Fatalf("changed paths = %v, want src/App.tsx and src/new.ts", got)
+	}
+}
+
+// TestChangedProjectSyncFilesSendsEverythingWhenSandboxStateIsUnknown is the
+// safety property: with no manifest the sandbox's contents are unknown, and
+// sending a delta would leave it silently missing files.
+func TestChangedProjectSyncFilesSendsEverythingWhenSandboxStateIsUnknown(t *testing.T) {
+	files := []projectSandboxSyncFile{
+		{Path: "a.txt", Content: "one\n"},
+		{Path: "b.txt", Content: "two\n"},
+	}
+	if changed := changedProjectSyncFiles(files, nil); len(changed) != len(files) {
+		t.Fatalf("changed = %v, want a full sync when no manifest is known", changed)
+	}
+}
+
+func TestForgetSyncedManifestsIsScopedToOneProject(t *testing.T) {
+	s := &Server{}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
+	s.recordSyncedManifest(id, "shop", "web", map[string]string{"a.txt": "hash"})
+	s.recordSyncedManifest(id, "shop", "api", map[string]string{"b.txt": "hash"})
+	s.recordSyncedManifest(id, "blog", "web", map[string]string{"c.txt": "hash"})
+
+	s.forgetSyncedManifests(id, "shop")
+
+	if s.syncedManifestFor(id, "shop", "web") != nil || s.syncedManifestFor(id, "shop", "api") != nil {
+		t.Fatal("shop manifests survived invalidation")
+	}
+	if s.syncedManifestFor(id, "blog", "web") == nil {
+		t.Fatal("an unrelated project's manifest was invalidated")
+	}
+}
+
+// TestTemplateSwitchInvalidatesSyncManifest pins the case that would silently
+// break a sandbox: selecting a template re-provisions the runtime and its
+// volume, so the previous manifest no longer describes anything.
+func TestTemplateSwitchInvalidatesSyncManifest(t *testing.T) {
+	s := &Server{developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) {}}
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "shop"
+	s.recordSyncedManifest(id, "shop", "web", map[string]string{"a.txt": "hash"})
+
+	s.scheduleDevelopmentSyncAfterMutation(id, project, projectToolSelectTemplate)
+	if s.syncedManifestFor(id, "shop", "web") != nil {
+		t.Fatal("manifest survived a template switch; the next sync would ship a delta to a fresh volume")
+	}
+
+	// An ordinary edit keeps the manifest, which is what makes delta sync work.
+	s.recordSyncedManifest(id, "shop", "web", map[string]string{"a.txt": "hash"})
+	s.scheduleDevelopmentSyncAfterMutation(id, project, projectToolWriteFile)
+	if s.syncedManifestFor(id, "shop", "web") == nil {
+		t.Fatal("an ordinary write invalidated the manifest, forcing needless full syncs")
+	}
+}
+
+// TestSyncGuardIgnoresAppStudioManagedFiles pins the first-sync path of every
+// new project. Binding a template writes the build config and CI workflow to
+// the workspace root; with no app source yet, those were the only files present
+// and the "nothing routed" guard failed the sync, which surfaced as a runtime
+// blocker and convinced the assistant it had no scaffold to work with.
+func TestSyncGuardIgnoresAppStudioManagedFiles(t *testing.T) {
+	managedOnly := []projectSandboxSyncFile{
+		{Path: projectBuildConfigPath, Content: "{}"},
+		{Path: projectBuildWorkflowPath, Content: "name: build"},
+	}
+	if got := countProjectSyncAppFiles(managedOnly); got != 0 {
+		t.Fatalf("app file count = %d for a freshly templated project, want 0", got)
+	}
+
+	// Real source outside every component directory must still be caught: that
+	// is the misplaced-source case the guard exists for.
+	withStraySource := append(append([]projectSandboxSyncFile(nil), managedOnly...),
+		projectSandboxSyncFile{Path: "index.js", Content: "console.log(1)"})
+	if got := countProjectSyncAppFiles(withStraySource); got != 1 {
+		t.Fatalf("app file count = %d with one stray source file, want 1", got)
+	}
+
+	// And correctly placed source counts too.
+	placed := []projectSandboxSyncFile{{Path: "api/src/index.js", Content: "x"}}
+	if got := countProjectSyncAppFiles(placed); got != 1 {
+		t.Fatalf("app file count = %d for placed source, want 1", got)
+	}
+}

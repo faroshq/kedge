@@ -299,15 +299,6 @@ func (s *projectEinoAssistantRunState) TurnPolicy() projectAssistantTurnPolicy {
 	return normalizeProjectAssistantTurnPolicy(s.turnPolicy, projectAssistantTurnProfileDiscussion)
 }
 
-func (s *projectEinoAssistantRunState) SetToolPrompt(prompt string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.toolPrompt = strings.TrimSpace(prompt)
-}
-
 func (s *projectEinoAssistantRunState) SetToolDiscovery(discovery projectEinoAssistantToolDiscovery) {
 	if s == nil {
 		return

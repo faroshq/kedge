@@ -128,6 +128,14 @@ func projectAssistantPermissionForApprovalMode(
 	if mode != store.AssistantApprovalModeAutoApprove {
 		return projectAssistantPermissionForToolWithRunState(spec, false, runState, args)
 	}
+	// Auto-approve trades confirmations for speed, but a few verbs destroy work
+	// or reach outside the workspace, and one injected instruction (from a
+	// hydrated README, a template's agent.usage, or an MCP tool description) is
+	// enough to invoke them. Those keep their confirmation in every mode; the
+	// blast radius is asymmetric with the clicks saved.
+	if projectAssistantToolAlwaysConfirms(spec.Name) {
+		return projectAssistantPermissionAsk
+	}
 	switch spec.Risk {
 	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:
 		return projectAssistantPermissionAllow
@@ -152,8 +160,7 @@ func projectAssistantPermissionForApprovalMode(
 		if projectAssistantApprovedPlanAllowsWrite(runState.ApprovedPlan(), spec.Name, args) {
 			return projectAssistantPermissionAllow
 		}
-		switch strings.TrimSpace(spec.Name) {
-		case projectToolSelectTemplate, projectToolHydrateWorkspace:
+		if strings.TrimSpace(spec.Name) == projectToolSelectTemplate {
 			return projectAssistantPermissionAllow
 		}
 		if projectAssistantApprovedPlanActive(runState.ApprovedPlan()) &&
@@ -182,7 +189,7 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	}
 	toolName = strings.TrimSpace(toolName)
 	switch toolName {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile, projectToolMkdir:
 	default:
 		return false
 	}
@@ -259,24 +266,50 @@ func projectAssistantApprovedTargetWithinApprovedTarget(requested, approved stri
 	if err != nil {
 		return false
 	}
+	if approved == projectAssistantWholeWorkspaceGrant {
+		return true
+	}
+	if requested == projectAssistantWholeWorkspaceGrant {
+		return false
+	}
 	if requestedDirectory && !approvedDirectory {
 		return false
 	}
 	return requested == approved || (approvedDirectory && strings.HasPrefix(strings.TrimSuffix(requested, "/"), approved))
 }
 
-func projectAssistantPlanCanAuthorizeWriteTool(toolName string) bool {
-	switch strings.TrimSpace(toolName) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
-		return true
-	default:
-		return false
+// projectAssistantToolAlwaysConfirms names the verbs that keep their user
+// confirmation even under auto-approve.
+//
+// The test is not "is this risky" — every mutation is — but "is this
+// irreversible or externally visible":
+//
+//   - hydrate_workspace replaces the workspace, discarding uncommitted work
+//     with no undo snapshot to restore from.
+//   - promote_project publishes to production.
+//   - provision creates billable infrastructure in the tenant's account.
+//
+// Ordinary edits stay auto-approvable: they are snapshotted and undoable,
+// which is what makes them safe to do without asking.
+func projectAssistantToolAlwaysConfirms(toolName string) bool {
+	// Compare on the base name so a namespaced MCP tool cannot slip past by
+	// carrying its provider prefix (projectToolBaseName strips "provider__").
+	base := projectToolBaseName(toolName)
+	for _, confirming := range []string{
+		projectToolHydrateWorkspace,
+		projectToolPromoteProject,
+		projectToolInfrastructureProvision,
+	} {
+		if base == projectToolBaseName(confirming) {
+			return true
+		}
 	}
+	return false
 }
 
-func projectAssistantDirectApprovalGrantsWritePlan(toolName string) bool {
+func projectAssistantPlanCanAuthorizeWriteTool(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile, projectToolMkdir:
 		return true
 	default:
 		return false
@@ -285,7 +318,7 @@ func projectAssistantDirectApprovalGrantsWritePlan(toolName string) bool {
 
 func projectAssistantWriteTargetPath(toolName string, args map[string]any) (string, error) {
 	switch strings.TrimSpace(toolName) {
-	case projectToolWriteFile, projectToolApplyPatch:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile:
 		return projectAssistantCanonicalGrantTarget(projectToolString(args["path"]), false)
 	case projectToolMkdir:
 		return projectAssistantCanonicalGrantTarget(projectToolString(args["path"]), true)
@@ -305,6 +338,9 @@ func projectAssistantPathWithinApprovedTarget(candidate, approved string) bool {
 	if err != nil {
 		return false
 	}
+	if approved == projectAssistantWholeWorkspaceGrant {
+		return true
+	}
 	if approvedDirectory {
 		return candidate == strings.TrimSuffix(approved, "/") || strings.HasPrefix(candidate, approved)
 	}
@@ -314,6 +350,13 @@ func projectAssistantPathWithinApprovedTarget(candidate, approved string) bool {
 func projectAssistantCanonicalGrantTarget(value string, directory bool) (string, error) {
 	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
 	directory = directory || strings.HasSuffix(value, "/")
+	// "." / "./" is the whole-workspace directory grant — single-component
+	// templates (workspacePath ".") develop at the workspace root, so an
+	// initial plan legitimately targets everything. CleanProjectPath rejects
+	// it as empty, hence the explicit form.
+	if value == "." || value == "./" {
+		return projectAssistantWholeWorkspaceGrant, nil
+	}
 	clean, err := workspace.CleanProjectPath(value)
 	if err != nil {
 		return "", err
@@ -323,6 +366,10 @@ func projectAssistantCanonicalGrantTarget(value string, directory bool) (string,
 	}
 	return clean, nil
 }
+
+// projectAssistantWholeWorkspaceGrant is the canonical whole-workspace
+// directory target ("./"): it covers every project-relative path.
+const projectAssistantWholeWorkspaceGrant = "./"
 
 func projectAssistantCanonicalGrantTargets(values []string) ([]string, error) {
 	out := make([]string, 0, len(values))

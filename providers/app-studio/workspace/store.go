@@ -31,7 +31,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/pmezard/go-difflib/difflib"
@@ -160,13 +159,59 @@ type SearchResult struct {
 
 // FileStore stores workspaces under a root directory.
 type FileStore struct {
-	root       string
-	mutationMu sync.Mutex
+	root string
+
+	// Mutations serialize per project workspace, not store-wide: the
+	// invariants they protect (read-baseline conflict detection, snapshot
+	// consistency) are all scoped to one workspace, while a single store-wide
+	// lock would make one tenant's slow disk write block every other tenant's
+	// assistant mutation on the provider.
+	locksMu sync.Mutex
+	locks   map[string]*scopeLock
+}
+
+// scopeLock is one workspace's mutation lock plus the number of holders
+// keeping it alive, so idle workspaces do not accumulate in the map.
+type scopeLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // NewFileStore returns a filesystem-backed project workspace store.
 func NewFileStore(root string) *FileStore {
-	return &FileStore{root: strings.TrimSpace(root)}
+	return &FileStore{root: strings.TrimSpace(root), locks: map[string]*scopeLock{}}
+}
+
+// lockScope serializes mutations for one workspace and returns the release
+// function. The scope is validated by the caller's scopeDir; an invalid scope
+// simply gets its own (unused) key.
+func (s *FileStore) lockScope(scope Scope) func() {
+	key := strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName}, "\x00")
+
+	s.locksMu.Lock()
+	if s.locks == nil {
+		s.locks = map[string]*scopeLock{}
+	}
+	lock, ok := s.locks[key]
+	if !ok {
+		lock = &scopeLock{}
+		s.locks[key] = lock
+	}
+	lock.refs++
+	s.locksMu.Unlock()
+
+	lock.mu.Lock()
+
+	return func() {
+		lock.mu.Unlock()
+
+		s.locksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.locks, key)
+		}
+		s.locksMu.Unlock()
+	}
 }
 
 // CleanProjectPath returns the canonical workspace-relative path accepted by
@@ -185,9 +230,13 @@ func (s *FileStore) ApplyFiles(ctx context.Context, scope Scope, files []File) e
 	if s == nil {
 		return errors.New("project workspace store is not configured")
 	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
-	return s.applyFiles(ctx, scope, files)
+	defer s.lockScope(scope)()
+	if err := s.applyFiles(ctx, scope, files); err != nil {
+		return err
+	}
+	// These paths exist again; a stale tombstone would have the next sync
+	// delete them straight back out of the sandbox.
+	return s.clearDeletedPaths(scope, cleanedFilePaths(files)...)
 }
 
 func (s *FileStore) applyFiles(ctx context.Context, scope Scope, files []File) error {
@@ -228,8 +277,7 @@ func (s *FileStore) WriteFile(ctx context.Context, scope Scope, opts WriteOption
 	if err := validateMutationContent(opts.Path, opts.Content); err != nil {
 		return MutationResult{}, err
 	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
+	defer s.lockScope(scope)()
 
 	clean, _ := cleanProjectPath(opts.Path)
 	before, existed, err := s.readMutationTarget(ctx, scope, clean)
@@ -251,7 +299,79 @@ func (s *FileStore) WriteFile(ctx context.Context, scope Scope, opts WriteOption
 			return MutationResult{}, errors.Join(err, s.resetSnapshotAfter(scope, opts.SnapshotID, clean, before, existed))
 		}
 	}
+	if err := s.clearDeletedPaths(scope, clean); err != nil {
+		return MutationResult{}, err
+	}
 	return mutationResult("write_file", clean, before, opts.Content, 0), nil
+}
+
+// DeleteOptions configures removal of one workspace file.
+type DeleteOptions struct {
+	Path string
+	// SnapshotID records the pre-delete content under an assistant run so the
+	// deletion can be undone with the rest of that run's changes.
+	SnapshotID string
+}
+
+// DeleteFile removes one file from the project workspace and records a
+// tombstone so the next development sync removes it from the sandbox too.
+//
+// Without this, a rename left the old file live: the sandbox kept serving it
+// (duplicate route registrations, shadowed handlers) and it was still built
+// into the production image.
+func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOptions) (MutationResult, error) {
+	if s == nil {
+		return MutationResult{}, errors.New("project workspace store is not configured")
+	}
+	clean, err := cleanProjectPath(opts.Path)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	defer s.lockScope(scope)()
+
+	before, existed, err := s.readMutationTarget(ctx, scope, clean)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if !existed {
+		return MutationResult{}, fmt.Errorf("file %q does not exist", clean)
+	}
+	if err := s.prepareSnapshotFile(ctx, scope, opts.SnapshotID, clean, before, existed, nil, false); err != nil {
+		return MutationResult{}, err
+	}
+	if err := s.removeFile(ctx, scope, clean); err != nil {
+		return MutationResult{}, errors.Join(err, s.resetSnapshotAfter(scope, opts.SnapshotID, clean, before, existed))
+	}
+	// Record the tombstone only after the file is actually gone, so a failed
+	// delete cannot make the next sync remove a file that still exists here.
+	if err := s.recordDeletedPath(scope, clean); err != nil {
+		return MutationResult{}, err
+	}
+	return mutationResult("delete_file", clean, before, "", 0), nil
+}
+
+// removeFile deletes one already-canonicalized path from the workspace.
+func (s *FileStore) removeFile(ctx context.Context, scope Scope, clean string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(dir, filepath.FromSlash(clean))
+	if err := ensureWithin(dir, target); err != nil {
+		return err
+	}
+	// Include the target itself: deleting through a symlink would remove a file
+	// outside the workspace.
+	if err := rejectSymlinkComponents(dir, clean, true); err != nil {
+		return err
+	}
+	if err := os.Remove(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("delete %q: %w", clean, err)
+	}
+	return nil
 }
 
 // ApplyPatch replaces exact text in one bounded UTF-8 workspace file.
@@ -268,25 +388,34 @@ func (s *FileStore) ApplyPatch(ctx context.Context, scope Scope, opts PatchOptio
 	if !validTextContent(opts.OldText) || !validTextContent(opts.NewText) {
 		return MutationResult{}, errors.New("patch text must be UTF-8 text without NUL bytes")
 	}
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
+	defer s.lockScope(scope)()
 
 	read, err := s.ReadFile(ctx, scope, ReadOptions{Path: opts.Path, MaxBytes: MaxWriteBytes})
 	if err != nil {
 		return MutationResult{}, err
 	}
+	// These messages state the remediation, not just the fault. A failed edit
+	// roughly halves the odds that the edit ever succeeds, because the model
+	// tends to retry the same shape; saying what to do instead is the cheapest
+	// available correction.
 	if read.Binary {
-		return MutationResult{}, fmt.Errorf("file %q is binary", read.Path)
+		return MutationResult{}, fmt.Errorf("file %q is binary and cannot be patched as text; edit the source that generates it, or replace it with write_file", read.Path)
 	}
 	if read.Truncated {
-		return MutationResult{}, fmt.Errorf("file %q is too large to patch", read.Path)
+		return MutationResult{}, fmt.Errorf(
+			"file %q is larger than the %d-byte edit limit, so it cannot be patched in one piece; read a specific line range to find a smaller unique anchor and patch that section instead",
+			read.Path, MaxWriteBytes)
 	}
 	count := strings.Count(read.Content, opts.OldText)
 	if count == 0 {
-		return MutationResult{}, fmt.Errorf("oldText was not found in %q", read.Path)
+		return MutationResult{}, fmt.Errorf(
+			"oldText was not found in %q; reread that part of the file and copy the exact current text (including indentation and line breaks) into oldText — do not rewrite the whole file with write_file",
+			read.Path)
 	}
 	if count > 1 && !opts.ReplaceAll {
-		return MutationResult{}, fmt.Errorf("oldText matched %d times in %q; set replaceAll to true or provide a more specific oldText", count, read.Path)
+		return MutationResult{}, fmt.Errorf(
+			"oldText matched %d times in %q; extend oldText with surrounding lines until it identifies exactly one place, or set replaceAll to true if every occurrence should change",
+			count, read.Path)
 	}
 	replacements := 1
 	next := strings.Replace(read.Content, opts.OldText, opts.NewText, 1)
@@ -311,18 +440,6 @@ func (s *FileStore) ApplyPatch(ctx context.Context, scope Scope, opts PatchOptio
 		return MutationResult{}, errors.Join(err, s.resetSnapshotAfter(scope, opts.SnapshotID, read.Path, []byte(read.Content), true))
 	}
 	return mutationResult("apply_patch", read.Path, []byte(read.Content), next, replacements), nil
-}
-
-func (s *FileStore) resetSnapshotAfter(scope Scope, snapshotID, clean string, content []byte, existed bool) error {
-	if strings.TrimSpace(snapshotID) == "" {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := s.prepareSnapshotFile(ctx, scope, snapshotID, clean, content, existed, content, existed); err != nil {
-		return fmt.Errorf("restore workspace snapshot metadata: %w", err)
-	}
-	return nil
 }
 
 func (s *FileStore) createFile(ctx context.Context, scope Scope, file File) error {

@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFileStoreAppliesListsReadsAndSearchesProjectFiles(t *testing.T) {
@@ -496,6 +497,147 @@ func TestFileStoreSnapshotFailureDoesNotMutateSource(t *testing.T) {
 	read, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/app.js"})
 	if err != nil || read.Content != "dark\n" {
 		t.Fatalf("content after snapshot failure = %#v, err = %v", read, err)
+	}
+}
+
+// TestFileStoreMutationsDoNotSerializeAcrossScopes pins the per-workspace lock:
+// a store-wide mutex made one tenant's in-progress write block every other
+// tenant's assistant mutation on the provider.
+func TestFileStoreMutationsDoNotSerializeAcrossScopes(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	held := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "busy"}
+	other := Scope{OrgUUID: "org-b", WorkspaceUUID: "ws-2", ProjectName: "free"}
+
+	release := store.lockScope(held)
+	defer release()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- store.ApplyFiles(context.Background(), other, []File{{Path: "a.txt", Content: "ok\n"}})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ApplyFiles on an unrelated scope returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ApplyFiles on an unrelated scope blocked behind another workspace's mutation lock")
+	}
+}
+
+// TestFileStoreScopeLocksAreReleased guards the refcounted lock map against
+// growing once per project for the process lifetime.
+func TestFileStoreScopeLocksAreReleased(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+
+	if err := store.ApplyFiles(context.Background(), scope, []File{{Path: "a.txt", Content: "ok\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+
+	store.locksMu.Lock()
+	remaining := len(store.locks)
+	store.locksMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("scope locks retained after mutation = %d, want 0", remaining)
+	}
+}
+
+// TestFileStoreDeleteFileRemovesAndTombstones pins the sandbox half of a
+// delete: without a tombstone the sync only stops sending the file and the
+// sandbox keeps serving it forever.
+func TestFileStoreDeleteFileRemovesAndTombstones(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	ctx := context.Background()
+
+	if err := store.ApplyFiles(ctx, scope, []File{
+		{Path: "routes/user.js", Content: "old\n"},
+		{Path: "routes/keep.js", Content: "keep\n"},
+	}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+
+	result, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "routes/user.js"})
+	if err != nil {
+		t.Fatalf("DeleteFile returned error: %v", err)
+	}
+	if result.Operation != "delete_file" || result.Path != "routes/user.js" {
+		t.Fatalf("delete result = %#v", result)
+	}
+	if _, err := store.ReadFile(ctx, scope, ReadOptions{Path: "routes/user.js"}); err == nil {
+		t.Fatal("deleted file is still readable")
+	}
+
+	deleted, err := store.DeletedPaths(scope)
+	if err != nil {
+		t.Fatalf("DeletedPaths returned error: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "routes/user.js" {
+		t.Fatalf("tombstones = %v, want [routes/user.js]", deleted)
+	}
+
+	// Deleting a file that is already gone is an error, not a silent success:
+	// the model should notice it targeted the wrong path.
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "routes/user.js"}); err == nil {
+		t.Fatal("deleting a missing file returned no error")
+	}
+	// The surviving file is untouched.
+	if _, err := store.ReadFile(ctx, scope, ReadOptions{Path: "routes/keep.js"}); err != nil {
+		t.Fatalf("unrelated file was affected: %v", err)
+	}
+}
+
+// TestFileStoreRecreatingDeletedFileClearsTombstone covers the rename-back
+// case: a stale tombstone would have the next sync delete the file straight
+// out of the sandbox again.
+func TestFileStoreRecreatingDeletedFileClearsTombstone(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	ctx := context.Background()
+
+	if err := store.ApplyFiles(ctx, scope, []File{{Path: "a.txt", Content: "one\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "a.txt"}); err != nil {
+		t.Fatalf("DeleteFile returned error: %v", err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "a.txt", Content: "two\n"}); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	deleted, err := store.DeletedPaths(scope)
+	if err != nil {
+		t.Fatalf("DeletedPaths returned error: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("tombstones after recreate = %v, want none", deleted)
+	}
+}
+
+// TestFileStoreDeleteFileIsUndoable ties deletion into the run snapshot that
+// backs undo.
+func TestFileStoreDeleteFileIsUndoable(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"}
+	ctx := context.Background()
+
+	if err := store.ApplyFiles(ctx, scope, []File{{Path: "src/app.js", Content: "original\n"}}); err != nil {
+		t.Fatalf("ApplyFiles returned error: %v", err)
+	}
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "src/app.js", SnapshotID: "run-1"}); err != nil {
+		t.Fatalf("DeleteFile returned error: %v", err)
+	}
+	if _, err := store.RestoreSnapshot(ctx, scope, "run-1"); err != nil {
+		t.Fatalf("RestoreSnapshot returned error: %v", err)
+	}
+	read, err := store.ReadFile(ctx, scope, ReadOptions{Path: "src/app.js"})
+	if err != nil {
+		t.Fatalf("read after undo returned error: %v", err)
+	}
+	if read.Content != "original\n" {
+		t.Fatalf("content after undo = %q, want the deleted file restored", read.Content)
 	}
 }
 

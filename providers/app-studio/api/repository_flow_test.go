@@ -173,6 +173,7 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"request_project_plan_approval",
 		"write_file",
 		"apply_patch",
+		"delete_file",
 		"mkdir",
 		"select_project_template",
 		"hydrate_workspace",
@@ -197,9 +198,9 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 	}
 
 	all := projectChatToolNames(registry.ChatTools(true))
-	wantAll := append([]string(nil), want[:13]...)
+	wantAll := append([]string(nil), want[:14]...)
 	wantAll = append(wantAll, "commit_project_files")
-	wantAll = append(wantAll, want[13:]...)
+	wantAll = append(wantAll, want[14:]...)
 	if strings.Join(all, ",") != strings.Join(wantAll, ",") {
 		t.Fatalf("tool names with commit bridge = %v, want %v", all, wantAll)
 	}
@@ -1153,20 +1154,6 @@ func TestSummarizeProjectToolResultEinoGrepFormats(t *testing.T) {
 				t.Fatalf("action = %#v, want mode-neutral outcome %q", action, wantOutcome)
 			}
 		})
-	}
-}
-
-func assertProjectAssistantMetadataDoesNotContain(t *testing.T, metadata map[string]any, forbidden ...string) {
-	t.Helper()
-	raw, err := json.Marshal(metadata)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	payload := string(raw)
-	for _, value := range forbidden {
-		if strings.Contains(payload, value) {
-			t.Fatalf("assistant metadata leaked %q in %s", value, payload)
-		}
 	}
 }
 
@@ -3034,34 +3021,31 @@ func TestResumeProjectAssistantRunContinuesLLMAfterApprovedPermission(t *testing
 func TestGenerateProjectAssistantStreamSettlesRepeatedToolLoopAtGlobalCeiling(t *testing.T) {
 	closing := projectAssistantBoundedClosingAnswerForTest("I inspected src/App.tsx.")
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, closing)
-	if !projectEinoAssistantMaxIterationsExceeded(err) {
-		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want Eino max-iterations limit", err, len(requests))
+	if !projectEinoAssistantNoProgressExceeded(err) {
+		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want the no-progress repeated-action stop", err, len(requests))
 	}
-	if reply != closing {
-		t.Fatalf("reply = %q, want bounded closing answer", reply)
+	if !strings.Contains(reply, "Status: Incomplete") || !strings.Contains(reply, "I inspected file read") {
+		t.Fatalf("reply = %q, want evidence-based incomplete fallback", reply)
 	}
-	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantRepeatedActionLimit {
-		t.Fatalf("tool-bearing LLM request count = %d, want %d", got, projectEinoAssistantRepeatedActionLimit)
+	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantRepeatedActionStopAt {
+		t.Fatalf("tool-bearing LLM request count = %d, want %d", got, projectEinoAssistantRepeatedActionStopAt)
 	}
-	if len(requests) != projectEinoAssistantRepeatedActionLimit+2 {
-		t.Fatalf("LLM request count = %d, want max iterations, forced return, and fallback closing call", len(requests))
-	}
-	if last := requests[len(requests)-1]; len(last.Tools) != 0 || last.ToolChoice != "none" {
-		t.Fatalf("closing LLM request = %#v, want tools disabled", last)
+	if len(requests) != projectEinoAssistantRepeatedActionStopAt+1 {
+		t.Fatalf("LLM request count = %d, want repeated-action stop plus the final settle call", len(requests))
 	}
 }
 
 func TestGenerateProjectAssistantStreamFallsBackWhenGlobalCeilingClosingAnswerIsEmpty(t *testing.T) {
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, "")
-	if !projectEinoAssistantMaxIterationsExceeded(err) {
-		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want Eino max-iterations limit", err, len(requests))
+	if !projectEinoAssistantNoProgressExceeded(err) {
+		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want the no-progress repeated-action stop", err, len(requests))
 	}
 	if !projectEinoAssistantBoundedClosingAnswerValid(reply) ||
 		!strings.Contains(reply, "I inspected file read") {
 		t.Fatalf("reply = %q, want evidence-based fallback", reply)
 	}
-	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantRepeatedActionLimit {
-		t.Fatalf("tool-bearing LLM request count = %d, want %d", got, projectEinoAssistantRepeatedActionLimit)
+	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantRepeatedActionStopAt {
+		t.Fatalf("tool-bearing LLM request count = %d, want %d", got, projectEinoAssistantRepeatedActionStopAt)
 	}
 }
 
@@ -3699,22 +3683,6 @@ func codeObjectGetter(objects ...*unstructured.Unstructured) codeResourceGetter 
 		return nil, apierrors.NewNotFound(k8sschema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}, name)
 	}
 }
-
-type failingProjectStreamResponseWriter struct {
-	header http.Header
-}
-
-func (w *failingProjectStreamResponseWriter) Header() http.Header {
-	return w.header
-}
-
-func (w *failingProjectStreamResponseWriter) Write([]byte) (int, error) {
-	return 0, errors.New("stream write failed")
-}
-
-func (w *failingProjectStreamResponseWriter) WriteHeader(int) {}
-
-func (w *failingProjectStreamResponseWriter) Flush() {}
 
 func codeObjectLister(objects ...*unstructured.Unstructured) codeResourceLister {
 	return func(_ context.Context, gvr k8sschema.GroupVersionResource, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {

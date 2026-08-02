@@ -4,6 +4,7 @@ export interface AssistantRun {
   id: string
   status: 'pending_permission' | 'pending_input' | 'running' | 'stopping' | 'completed' | 'aborted' | 'failed' | 'interrupted'
   mode?: 'adaptive' | 'discussion' | 'new' | 'continue'
+  approvalMode?: 'always_ask' | 'auto_approve'
   workItemID?: string
   revision: number
   activeMessageID: string
@@ -131,9 +132,19 @@ export function acceptScopedConversationSnapshot(
   return acceptConversationSnapshot(current, incoming)
 }
 
+/**
+ * Builds the locally-applied view of a run the server reported as aborted.
+ *
+ * The revision is deliberately NOT incremented. The server publishes its own
+ * authoritative aborted snapshot at exactly `revision + 1`; fabricating that
+ * same number here made the real snapshot look stale, so its sanitized action
+ * states and cleared interrupts were dropped until a full reload. Apply this
+ * with `registerRevision: false` so it updates the view without claiming a
+ * durable revision the server still owns.
+ */
 export function abortedConversationSnapshot(snapshot: AssistantSnapshot): AssistantSnapshot {
   return {
-    run: { ...snapshot.run, status: 'aborted', revision: snapshot.run.revision + 1 },
+    run: { ...snapshot.run, status: 'aborted' },
     message: { ...snapshot.message, metadata: { ...snapshot.message.metadata, assistantStatus: 'Aborted', assistantProvisional: false } },
   }
 }
@@ -142,19 +153,41 @@ export function normalizeSnapshotMessage(message: ProjectMessage & { projectName
   return { ...message, projectID: message.projectID || message.projectName || '' }
 }
 
+// The wire run omits revision/activeMessageID when zero-valued (Go omitempty);
+// resilience logic compares revisions numerically, so fill them in at ingestion.
+export function normalizeSnapshotRun(run: Omit<AssistantRun, 'revision' | 'activeMessageID'> & { revision?: number; activeMessageID?: string }): AssistantRun {
+  return { ...run, revision: run.revision ?? 0, activeMessageID: run.activeMessageID ?? '' }
+}
+
 // Snapshot messages are authoritative and keyed by their durable IDs. Revisions
 // make reconnects and simultaneous browser tabs safe: stale snapshots are ignored.
 export function mergeConversationSnapshot<TMessage extends ProjectMessage>(
   state: ConversationState<TMessage>,
   snapshot: AssistantSnapshot,
+  options: { registerRevision?: boolean } = {},
 ): ConversationState<TMessage> {
+  const registerRevision = options.registerRevision !== false
   const previous = state.runs[snapshot.run.id]
-  if (previous && snapshot.run.revision <= previous.revision) return state
+  // A locally-derived snapshot carries the revision it was derived from, so it
+  // must not be rejected for failing to advance it.
+  if (previous && registerRevision && snapshot.run.revision <= previous.revision) return state
   const index = state.messages.findIndex((item) => item.id === snapshot.message.id)
   const messages = [...state.messages]
   if (index < 0) messages.push(snapshot.message as TMessage)
   else messages[index] = snapshot.message as TMessage
+  if (!registerRevision) return { messages, runs: state.runs }
   return { messages, runs: { ...state.runs, [snapshot.run.id]: snapshot.run } }
+}
+
+/**
+ * Forgets the recorded revision for a run.
+ *
+ * Call this whenever the message list is replaced wholesale from REST: the
+ * durable read may predate an already-applied snapshot, and leaving the old
+ * revision registered means the repairing snapshot is refused as a duplicate.
+ */
+export function forgetConversationRunRevision(runs: Record<string, AssistantRun>, runID: string): void {
+  if (runID) delete runs[runID]
 }
 
 export function replaceOptimisticUserMessage<TMessage extends ProjectMessage>(

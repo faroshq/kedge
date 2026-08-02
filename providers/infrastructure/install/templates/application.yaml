@@ -10,21 +10,23 @@ spec:
   displayName: "Web application"
   description: "A 3-tier app — frontend + backend + Postgres — exposed on a URL guarded by OIDC (oauth2-proxy). Authenticated users only; the backend and database are never exposed."
   category: Workloads
-  version: 0.1.0
+  version: 0.2.0
   # exposure: what the platform tells callers about reaching an instance.
   # Every instance gets an HTTPRoute. The template brings its own gate
   # (oauth2-proxy, oidc.mode) — the platform adds none.
   exposure: public
   backend: kro
   # Example payload the portal pre-fills the provision form with, so the 3-tier
-  # demo is effectively one click. The frontend/backend images are the example
-  # apps under examples/application/apps/, built + pushed to :latest by
-  # .github/workflows/infrastructure-examples.yaml; oidc.mode=none drops the auth
+  # demo is effectively one click. The frontend/backend images are the scaffold
+  # repo's hello-world tiers (github.com/faroshq/kedge-scaffold-application),
+  # built by that repo's CI and pinned to the SAME tag as
+  # development.scaffold.ref below — "just click provision" runs exactly the
+  # code a new App Studio project starts from. oidc.mode=none drops the auth
   # gate so "Provision → see it working" needs zero external setup (demo/dev).
   sampleValues:
     name: demo
-    frontendImage: ghcr.io/faroshq/kedge-infrastructure-example-frontend:latest
-    backendImage: ghcr.io/faroshq/kedge-infrastructure-example-backend:latest
+    frontendImage: ghcr.io/faroshq/kedge-scaffold-application/web:v0.1.1
+    backendImage: ghcr.io/faroshq/kedge-scaffold-application/api:v0.1.1
     database:
       version: "16"
     oidc:
@@ -120,8 +122,9 @@ spec:
           develop it: say so and pick a template whose development toolchain
           matches, rather than writing source the sandbox cannot execute.
 
-      INPUTS you set when provisioning: frontendImage, backendImage (required
-      in production mode; omit in development mode); name, frontendPort,
+      INPUTS you set when provisioning: frontendImage, backendImage (default to
+      the scaffold hello-world images — supply your own to run real code; omit
+      in development mode); name, frontendPort,
       backendPort, frontendReplicas, backendReplicas, frontendEnv, backendEnv
       (per-tier env-var maps; not for secrets), database.version, oidc.*. The
       platform stamps spec.expose.fqdn and spec.credentialsSecretName — do not
@@ -207,7 +210,8 @@ spec:
       # ── Frontend tier (the only tier exposed, behind oauth2-proxy) ──
       frontendImage:
         type: string
-        description: "Container image for the public-facing frontend. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
+        default: ghcr.io/faroshq/kedge-scaffold-application/web:v0.1.1
+        description: "Container image for the public-facing frontend. Defaults to the scaffold hello-world (same tag as development.scaffold.ref) so provisioning with no images runs a working app — replace with your own image to ship real code. Ignored when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
       frontendPort:
         type: integer
         default: 8080
@@ -227,7 +231,8 @@ spec:
       # ── Backend tier (internal; reachable only via cluster DNS) ──
       backendImage:
         type: string
-        description: "Container image for the internal backend/API tier. Required in production mode; ignored (and may be omitted) when kedgeMode is development."
+        default: ghcr.io/faroshq/kedge-scaffold-application/api:v0.1.1
+        description: "Container image for the internal backend/API tier. Defaults to the scaffold hello-world (same tag as development.scaffold.ref) so provisioning with no images runs a working app — replace with your own image to ship real code. Ignored when kedgeMode is development."
       backendPort:
         type: integer
         default: 8080
@@ -335,6 +340,14 @@ spec:
   # platform preview-console plugin when trusted keys are installed. Missing
   # plugin/config fails open and leaves the ordinary preview intact.
   development:
+    # Starter source for new App Studio projects: a working web+api+Postgres
+    # hello-world honoring the full platform contract (PORT, same-origin
+    # /api/*, DATABASE_URL with startup retry, dev+start scripts). Locked by
+    # git tag: changing the scaffold repo does nothing until a new tag is cut
+    # AND this ref (plus the sampleValues image tags above) is bumped to match.
+    scaffold:
+      repository: https://github.com/faroshq/kedge-scaffold-application
+      ref: v0.1.1
     components:
       frontend:
         workspacePath: web

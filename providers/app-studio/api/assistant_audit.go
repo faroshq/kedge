@@ -625,7 +625,7 @@ func projectAssistantAuditToolPath(name, arguments string) string {
 	base := projectToolBaseName(rawName)
 	switch base {
 	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
-		projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+		projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile, projectToolMkdir:
 	default:
 		return ""
 	}
@@ -638,7 +638,7 @@ func projectAssistantAuditToolPath(name, arguments string) string {
 		if path == "" || strings.ContainsAny(path, "\r\n\x00") {
 			return ""
 		}
-		if projectAssistantCanonicalFilesystemReadTool(rawName) {
+		if projectEinoAssistantFilesystemReadTool(rawName) {
 			var ok bool
 			path, ok = unescapeProjectCanonicalToolSummaryValue(path)
 			if !ok {

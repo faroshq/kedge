@@ -273,8 +273,6 @@ func projectBuildWorkflowYAMLComponents(components []projectBuildComponent) stri
 		"",
 		"on:",
 		"  push:",
-		"    branches:",
-		"      - \"**\"",
 		"  workflow_dispatch:",
 		"",
 		"permissions:",
@@ -285,6 +283,12 @@ func projectBuildWorkflowYAMLComponents(components []projectBuildComponent) stri
 		"  build:",
 		"    name: Build ${{ matrix.component }} image with Railpack",
 		"    runs-on: ubuntu-latest",
+		// Only the default branch publishes images. Building every branch made
+		// the newest published package an unreliable promote source: a feature
+		// branch whose build finished last became "the latest image". The
+		// branch name is read from the event rather than hardcoded, and manual
+		// dispatch still builds any ref.
+		"    if: github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)",
 		"    strategy:",
 		"      fail-fast: false",
 		"      matrix:",
@@ -318,7 +322,7 @@ func projectBuildWorkflowYAMLComponents(components []projectBuildComponent) stri
 		"          password: ${{ secrets.GITHUB_TOKEN }}",
 		"",
 		"      - name: Build and push image with Railpack",
-		"        uses: " + projectBuildRailpackAction,
+		"        uses: "+projectBuildRailpackAction,
 		"        with:",
 		"          context: ${{ matrix.context }}",
 		"          push: true",
@@ -336,4 +340,3 @@ func projectBuildWorkflowYAMLComponents(components []projectBuildComponent) stri
 func projectBuildYAMLQuote(v string) string {
 	return "\"" + strings.ReplaceAll(v, "\"", "\\\"") + "\""
 }
-

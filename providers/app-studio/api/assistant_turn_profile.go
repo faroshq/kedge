@@ -58,10 +58,10 @@ Return only one JSON object with these fields:
 Definitions:
 - discussion: conceptual, exploratory, or conversational; no current project state required.
 - guidance: recommendation, how-to, architecture, or design direction; no current project state required.
-- exploration: asks about current project, files, workspace, repository, runtime, or preview state without asking for a change.
+- exploration: asks about current project, files, workspace, repository, runtime, or preview state, or about the available development templates and environment options (listing, comparing, or choosing one), without asking for a code change.
 - debugging: asks to diagnose, explain, or inspect a problem without changing the app.
 - debug_fix: reports broken/problematic app behavior or asks to fix, solve, repair, resolve, or make it work, unless the user explicitly asks for diagnosis only.
-- implementation: asks to build, add, change, remove, update, deploy, provision, write code, or otherwise evolve the app.
+- implementation: asks to build, add, change, remove, update, deploy, provision, write code, switch the project's development template or environment, or otherwise evolve the app.
 
 Do not call tools. Do not answer the user. Classify intent only.`
 
@@ -88,7 +88,7 @@ type projectAssistantTurnRouter func(context.Context, projectAssistantTurnRouteR
 var projectAssistantMutationRequestKeywords = []string{
 	"build", "add", "change", "update", "implement", "write", "make the app", "create", "remove", "delete", "ship", "commit", "deploy", "provision",
 	"git", "push", "pull request", "branch", "merge",
-	"wire", "hook up", "set up", "setup", "configure", "connect", "integrate", "install", "refactor", "rename", "migrate", "enable", "disable",
+	"wire", "hook up", "set up", "setup", "configure", "connect", "integrate", "install", "refactor", "rename", "migrate", "enable", "disable", "switch",
 	"restart", "reload", "redeploy", "rebuild", "bounce",
 	"do it", "do that", "do this", "go for it", "go ahead", "proceed", "do whats needed", "do what's needed",
 	"dont stop", "don't stop", "keep going", "continue", "finish it", "get it done", "just do",
@@ -185,6 +185,9 @@ func fallbackProjectAssistantTurnDecisionForMessage(content string) projectAssis
 	if containsProjectAssistantTurnKeyword(normalized, []string{
 		"what files", "which files", "show me", "current app", "current project", "in my app", "in this app",
 		"in my project", "workspace", "runtime", "preview", "repository", "codebase", "how is", "where is",
+		// Template/environment-catalog asks need the infrastructure read
+		// tools, which only exploration and stronger profiles expose.
+		"template", "templates", "database", "environment",
 	}) {
 		decision := fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileExploration)
 		decision.RequiresRuntimeState = containsProjectAssistantTurnKeyword(normalized, []string{"runtime", "preview"})
@@ -399,6 +402,11 @@ func (p projectAssistantTurnPolicy) AllowsTool(spec projectAssistantToolSpec) bo
 			return spec.Risk == projectAssistantToolRiskRead
 		case projectAssistantToolBundleRuntime:
 			return spec.Risk == projectAssistantToolRiskRead
+		// Catalog reads (list/describe templates and instances) mutate
+		// nothing, and adaptive is where "which environment fits" questions
+		// land — without them the model narrates a catalog it cannot see.
+		case projectAssistantToolBundleInfrastructure:
+			return spec.Risk == projectAssistantToolRiskRead
 		default:
 			return false
 		}
@@ -458,10 +466,6 @@ func escalateProjectAssistantTurnPolicy(current, next projectAssistantTurnPolicy
 	}
 	merged.requiresRuntimeState = current.requiresRuntimeState || next.requiresRuntimeState
 	return normalizeProjectAssistantTurnPolicy(merged, projectAssistantTurnProfileDiscussion)
-}
-
-func projectAssistantToolsForTurnProfile(tools []projectAssistantTool, profile projectAssistantTurnProfile) []projectAssistantTool {
-	return projectAssistantToolsForTurnPolicy(tools, projectAssistantTurnPolicyForProfile(profile))
 }
 
 func projectAssistantToolsForTurnPolicy(tools []projectAssistantTool, policy projectAssistantTurnPolicy) []projectAssistantTool {

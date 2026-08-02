@@ -110,7 +110,7 @@ type projectAssistantResumeResponse struct {
 	RunID            string                             `json:"runID"`
 	RequestID        string                             `json:"requestID"`
 	Status           store.AssistantRunStatus           `json:"status"`
-	Decision         projectAssistantPermissionDecision `json:"decision"`
+	Decision         projectAssistantPermissionDecision `json:"decision,omitempty"`
 	UIEvents         []projectAssistantUIEvent          `json:"uiEvents,omitempty"`
 	AssistantMessage *aiv1alpha1.ProjectMessage         `json:"assistantMessage,omitempty"`
 	ToolCall         *projectToolCallStreamEvent        `json:"-"`
@@ -431,7 +431,7 @@ func projectAssistantPermissionReasonForArguments(spec projectAssistantToolSpec,
 	}
 	switch spec.Risk {
 	case projectAssistantToolRiskWrite:
-		if projectAssistantDirectApprovalGrantsWritePlan(spec.Name) {
+		if projectAssistantPlanCanAuthorizeWriteTool(spec.Name) {
 			if target, err := projectAssistantWriteTargetPath(spec.Name, args); err == nil {
 				return fmt.Sprintf(
 					"Allow App Studio to create or modify %q using workspace edit tools until the next commit request.",
@@ -852,10 +852,12 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 					persistMetadata(ctx, nil)
 				}
 			},
+			// Persist the provisional flag only when it changes: this fires per
+			// streamed chunk and each call is an immediate durable snapshot.
 			OnProvisionalText: func(string) {
 				callbackMu.Lock()
 				defer callbackMu.Unlock()
-				if callbacksClosed {
+				if callbacksClosed || metadataState.provisional {
 					return
 				}
 				metadataState.provisional = true
@@ -864,7 +866,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 			OnProvisionalReset: func() {
 				callbackMu.Lock()
 				defer callbackMu.Unlock()
-				if callbacksClosed {
+				if callbacksClosed || !metadataState.provisional {
 					return
 				}
 				metadataState.provisional = false

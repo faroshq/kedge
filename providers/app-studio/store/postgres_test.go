@@ -672,7 +672,7 @@ func TestPostgresStoreStopAndGrantRevocationAreAtomicExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stopping, err := s.RequestAssistantRunStop(ctx, scope, item.ID, run.ID, approved.Revision, run.Revision, time.Now().UTC())
+	stopping, err := s.RequestAssistantRunStopWithAssistantMessage(ctx, scope, item.ID, run.ID, approved.Revision, run.Revision, Message{}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

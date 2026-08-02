@@ -91,8 +91,6 @@ func (s *MemoryStore) ConsumeProjectBootstrapPermit(_ context.Context, scope Sco
 	return true, nil
 }
 
-func (s *MemoryStore) EnsureSchema(context.Context) error { return nil }
-
 func (s *MemoryStore) GetAssistantApprovalPreference(_ context.Context, scope Scope, actor string) (AssistantApprovalPreference, error) {
 	if err := scope.validate(); err != nil {
 		return AssistantApprovalPreference{}, err
@@ -736,10 +734,6 @@ func (s *MemoryStore) transitionWorkItemAndRun(scope Scope, workItemID string, e
 	return nil
 }
 
-func (s *MemoryStore) RequestAssistantRunStop(_ context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
-	return s.requestAssistantRunStop(scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, Message{}, now)
-}
-
 func (s *MemoryStore) RequestAssistantRunStopWithAssistantMessage(_ context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
 	return s.requestAssistantRunStop(scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, assistant, now)
 }
@@ -814,25 +808,6 @@ func (s *MemoryStore) LoadMessagesForWorkItem(_ context.Context, scope Scope, wo
 		items = items[len(items)-limit:]
 	}
 	return items, nil
-}
-
-func (s *MemoryStore) LatestAssistantRunForWorkItem(_ context.Context, scope Scope, workItemID string) (AssistantRun, error) {
-	if err := scope.validate(); err != nil {
-		return AssistantRun{}, err
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var latest AssistantRun
-	found := false
-	for _, run := range s.assistantRuns[scope] {
-		if run.WorkItemID == workItemID && (!found || run.UpdatedAt.After(latest.UpdatedAt)) {
-			latest, found = run, true
-		}
-	}
-	if !found {
-		return AssistantRun{}, fmt.Errorf("%w: latest work item run", ErrAssistantRunNotFound)
-	}
-	return cloneAssistantRun(latest), nil
 }
 
 func (s *MemoryStore) CreateAssistantRun(_ context.Context, scope Scope, user Message, assistant Message, run AssistantRun) (AssistantRun, error) {

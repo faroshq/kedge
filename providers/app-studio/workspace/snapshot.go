@@ -152,8 +152,7 @@ func (s *FileStore) prepareSnapshotFile(
 
 // RestoreSnapshot restores every file first touched by one assistant run.
 func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID string) (SnapshotRestoreResult, error) {
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
+	defer s.lockScope(scope)()
 
 	dir, err := s.snapshotDir(scope, snapshotID)
 	if err != nil {
@@ -232,8 +231,7 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 
 // DeleteSnapshots removes every assistant-run snapshot for one project.
 func (s *FileStore) DeleteSnapshots(ctx context.Context, scope Scope) error {
-	s.mutationMu.Lock()
-	defer s.mutationMu.Unlock()
+	defer s.lockScope(scope)()
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -299,4 +297,16 @@ func (s *FileStore) snapshotProjectDir(scope Scope) (string, error) {
 		scope.WorkspaceUUID,
 		scope.ProjectName,
 	), nil
+}
+
+func (s *FileStore) resetSnapshotAfter(scope Scope, snapshotID, clean string, content []byte, existed bool) error {
+	if strings.TrimSpace(snapshotID) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.prepareSnapshotFile(ctx, scope, snapshotID, clean, content, existed, content, existed); err != nil {
+		return fmt.Errorf("restore workspace snapshot metadata: %w", err)
+	}
+	return nil
 }

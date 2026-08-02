@@ -60,17 +60,24 @@ const (
 )
 
 type projectAssistantActionFeedItem struct {
-	ID         string                            `json:"id"`
-	Kind       string                            `json:"kind"`
-	Status     string                            `json:"status"`
-	Title      string                            `json:"title"`
-	Target     string                            `json:"target,omitempty"`
-	Outcome    string                            `json:"outcome,omitempty"`
-	Count      int                               `json:"count,omitempty"`
-	Severity   string                            `json:"severity"`
-	GroupKey   string                            `json:"groupKey,omitempty"`
-	GroupTitle string                            `json:"groupTitle,omitempty"`
-	Sequence   int                               `json:"sequence,omitempty"`
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Status     string `json:"status"`
+	Title      string `json:"title"`
+	Target     string `json:"target,omitempty"`
+	Outcome    string `json:"outcome,omitempty"`
+	Count      int    `json:"count,omitempty"`
+	Severity   string `json:"severity"`
+	GroupKey   string `json:"groupKey,omitempty"`
+	GroupTitle string `json:"groupTitle,omitempty"`
+	Sequence   int    `json:"sequence,omitempty"`
+	// Tool is the base tool name behind the item, carried in memory only (the
+	// feed JSON is deliberately opaque — no execution mechanics) so a later
+	// success of the same tool+target can absorb an earlier failed attempt:
+	// an LLM's self-corrected retry is not a user-facing failure. Absorption
+	// degrades gracefully across resumes, where rehydrated items carry no
+	// tool name.
+	Tool       string                            `json:"-"`
 	Diagnostic *projectAssistantActionDiagnostic `json:"diagnostic,omitempty"`
 }
 
@@ -91,17 +98,6 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 	)
 	item.Sequence = toolCall.Sequence
 	return item
-}
-
-func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantActionFeedItem {
-	return presentProjectAssistantAction(
-		toolCall.ID,
-		toolCall.Name,
-		toolCall.Status,
-		toolCall.Arguments,
-		toolCall.Summary,
-		toolCall.Error,
-	)
 }
 
 func projectAssistantActionFeedItemFromPermission(permission projectAssistantPermission) projectAssistantActionFeedItem {
@@ -145,10 +141,11 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 
 	args := projectAssistantActionArguments(arguments)
 	base := projectToolBaseName(name)
+	item.Tool = base
 	switch base {
 	case projectToolReadFile:
 		path := projectAssistantActionArgumentField(args, arguments, "file_path", "path")
-		if projectAssistantCanonicalFilesystemReadTool(name) {
+		if projectEinoAssistantFilesystemReadTool(name) {
 			if decoded, ok := unescapeProjectCanonicalToolSummaryValue(path); ok {
 				path = decoded
 			} else {
@@ -345,7 +342,7 @@ func projectAssistantActionFeedGrouping(item *projectAssistantActionFeedItem, ba
 	case projectToolGrep:
 		item.GroupKey = "inspect:search"
 		item.GroupTitle = "Searched project"
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolWriteFile, projectToolApplyPatch, projectToolDeleteFile, projectToolMkdir:
 		item.GroupKey = "edit:files"
 		item.GroupTitle = "Updated files"
 	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
@@ -456,4 +453,306 @@ func projectAssistantActionDiagnosticCategory(raw string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallStreamEvent) map[string]any {
+	metadata := map[string]any{}
+	if status != "" {
+		metadata[projectMessageMetadataStatus] = status
+	}
+	if actions := projectAssistantActionFeedFromToolCalls(toolCalls); len(actions) > 0 {
+		metadata[projectMessageMetadataAssistantActionFeed] = actions
+	}
+	if interrupt := projectAssistantUIInterruptFromToolCalls(toolCalls); interrupt != nil {
+		metadata[projectMessageMetadataAssistantInterrupt] = interrupt
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func projectAssistantActionFeedFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
+	return filterProjectAssistantActionFeedItems(projectAssistantActionFeedUpdatesFromToolCalls(events))
+}
+
+func projectAssistantActionFeedUpdatesFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
+	if len(events) == 0 {
+		return nil
+	}
+	actions := make([]projectAssistantActionFeedItem, 0, len(events))
+	for _, event := range events {
+		if event.ID == "" || event.Status == "" || projectToolBaseName(event.Name) == projectEinoAssistantWriteTodosTool {
+			continue
+		}
+		actions = upsertProjectAssistantActionFeedItem(actions, projectAssistantActionFeedItemFromToolCall(event))
+	}
+	if len(actions) == 0 {
+		return nil
+	}
+	return actions
+}
+
+func projectAssistantUIInterruptFromToolCalls(events []projectToolCallStreamEvent) *projectAssistantUIInterruptRequest {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Status == "input_required" && event.FollowUp != nil && event.Checkpoint != nil {
+			return projectAssistantUIInterruptRequestFromFollowUpCheckpoint("", *event.FollowUp, *event.Checkpoint)
+		}
+		if event.Status != "permission_required" || event.Permission == nil || event.Checkpoint == nil {
+			continue
+		}
+		return projectAssistantUIInterruptRequestFromPermissionCheckpoint("", *event.Permission, *event.Checkpoint)
+	}
+	return nil
+}
+
+func projectAssistantActionFeedFromMetadata(raw any) []projectAssistantActionFeedItem {
+	if raw == nil {
+		return nil
+	}
+	if typed, ok := raw.([]projectAssistantActionFeedItem); ok {
+		return filterProjectAssistantActionFeedItems(typed)
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out []projectAssistantActionFeedItem
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return filterProjectAssistantActionFeedItems(out)
+}
+
+func filterProjectAssistantActionFeedItems(items []projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
+	filtered := make([]projectAssistantActionFeedItem, 0, len(items))
+	for _, item := range items {
+		if projectAssistantActionFeedItemVisible(item) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func projectAssistantActionFeedItemVisible(item projectAssistantActionFeedItem) bool {
+	if item.Kind != projectAssistantActionFeedItemOther {
+		return true
+	}
+	return item.Status == projectAssistantActionFeedStatusWaiting ||
+		item.Status == projectAssistantActionFeedStatusFailed ||
+		item.Status == projectAssistantActionFeedStatusRejected
+}
+
+func projectAssistantUIInterruptFromMetadata(raw any) *projectAssistantUIInterruptRequest {
+	if raw == nil {
+		return nil
+	}
+	if typed, ok := raw.(*projectAssistantUIInterruptRequest); ok {
+		if typed == nil {
+			return nil
+		}
+		copy := *typed
+		return &copy
+	}
+	if typed, ok := raw.(projectAssistantUIInterruptRequest); ok {
+		return &typed
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out projectAssistantUIInterruptRequest
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	if out.InterruptID == "" && out.Action == nil {
+		return nil
+	}
+	return &out
+}
+
+func upsertProjectAssistantActionFeedItem(actions []projectAssistantActionFeedItem, action projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
+	if action.ID == "" {
+		return actions
+	}
+	// A success absorbs earlier FAILED attempts of the same tool on the same
+	// target: the model retried and recovered, so the failed attempt is
+	// self-corrected noise, not a user-facing error. Distinct targets and
+	// still-unrecovered failures keep their cards.
+	if action.Status == projectAssistantActionFeedStatusSucceeded && action.Tool != "" {
+		filtered := actions[:0]
+		for _, existing := range actions {
+			if existing.ID != action.ID &&
+				existing.Status == projectAssistantActionFeedStatusFailed &&
+				existing.Tool == action.Tool &&
+				existing.Target == action.Target {
+				continue
+			}
+			filtered = append(filtered, existing)
+		}
+		actions = filtered
+	}
+	for i := range actions {
+		if actions[i].ID == action.ID {
+			actions[i] = mergeProjectAssistantActionFeedItem(actions[i], action)
+			return actions
+		}
+	}
+	return append(actions, action)
+}
+
+func applyProjectAssistantActionFeedUpdate(actions []projectAssistantActionFeedItem, action projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
+	if projectAssistantActionFeedItemVisible(action) {
+		return upsertProjectAssistantActionFeedItem(actions, action)
+	}
+	filtered := actions[:0]
+	for _, existing := range actions {
+		if existing.ID != action.ID {
+			filtered = append(filtered, existing)
+		}
+	}
+	return filtered
+}
+
+func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFeedItem) projectAssistantActionFeedItem {
+	if next.Kind == "" {
+		next.Kind = existing.Kind
+	}
+	if next.Status == "" {
+		next.Status = existing.Status
+	}
+	if next.Title == "" {
+		next.Title = existing.Title
+	}
+	if next.Target == "" {
+		next.Target = existing.Target
+	}
+	if next.Tool == "" {
+		next.Tool = existing.Tool
+	}
+	if next.Outcome == "" {
+		next.Outcome = existing.Outcome
+	}
+	if next.Count == 0 {
+		next.Count = existing.Count
+	}
+	if next.Severity == "" {
+		next.Severity = existing.Severity
+	}
+	if next.GroupKey == "" {
+		next.GroupKey = existing.GroupKey
+	}
+	if next.GroupTitle == "" {
+		next.GroupTitle = existing.GroupTitle
+	}
+	if next.Sequence == 0 {
+		next.Sequence = existing.Sequence
+	}
+	if next.Diagnostic == nil {
+		next.Diagnostic = existing.Diagnostic
+	}
+	return next
+}
+
+// projectAssistantMetadataMaxToolCalls bounds how many tool-call events are
+// carried in durable message metadata.
+//
+// Metadata is re-serialized and saved on every tool event, and streamed inside
+// every SSE snapshot, so its size is paid O(n) times over a run — quadratic in
+// bytes. A long mutation-heavy run accumulated multi-megabyte metadata that
+// stalled the store and spammed subscribers. The most recent calls are what
+// the UI renders; older ones live in the audit record.
+const projectAssistantMetadataMaxToolCalls = 64
+
+func sanitizeProjectToolCallStreamEventsForMetadata(events []projectToolCallStreamEvent) []projectToolCallStreamEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	// Keep the newest events, and always keep the first: it anchors the run in
+	// the UI and is what a reader looks for when scrolling back.
+	trimmed := events
+	if len(events) > projectAssistantMetadataMaxToolCalls {
+		trimmed = make([]projectToolCallStreamEvent, 0, projectAssistantMetadataMaxToolCalls)
+		trimmed = append(trimmed, events[0])
+		trimmed = append(trimmed, events[len(events)-(projectAssistantMetadataMaxToolCalls-1):]...)
+	}
+	out := make([]projectToolCallStreamEvent, 0, len(trimmed))
+	for _, event := range trimmed {
+		if event.Permission != nil {
+			permission := *event.Permission
+			permission.Input = nil
+			event.Permission = &permission
+		}
+		if event.Mutation != nil {
+			// The patch body is the bulk of an edit event and is already
+			// durable twice over — in the run's audit record and in the undo
+			// snapshot. Metadata only needs the counts it renders.
+			mutation := *event.Mutation
+			mutation.Patch = ""
+			mutation.PatchTruncated = false
+			event.Mutation = &mutation
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
+func projectToolCallStreamEventsFromMetadata(raw any) []projectToolCallStreamEvent {
+	if raw == nil {
+		return nil
+	}
+	if typed, ok := raw.([]projectToolCallStreamEvent); ok {
+		return append([]projectToolCallStreamEvent(nil), typed...)
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out []projectToolCallStreamEvent
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func upsertProjectToolCallStreamEvent(events []projectToolCallStreamEvent, event projectToolCallStreamEvent) []projectToolCallStreamEvent {
+	for i := range events {
+		if events[i].ID == event.ID {
+			events[i] = mergeProjectToolCallStreamEvent(events[i], event)
+			return events
+		}
+	}
+	return append(events, event)
+}
+
+func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) projectToolCallStreamEvent {
+	if next.Name == "" {
+		next.Name = existing.Name
+	}
+	if next.Arguments == "" {
+		next.Arguments = existing.Arguments
+	}
+	if next.Summary == "" {
+		next.Summary = existing.Summary
+	}
+	if next.Error == "" {
+		next.Error = existing.Error
+	}
+	if next.Permission == nil {
+		next.Permission = existing.Permission
+	}
+	if next.FollowUp == nil {
+		next.FollowUp = existing.FollowUp
+	}
+	if next.Checkpoint == nil {
+		next.Checkpoint = existing.Checkpoint
+	}
+	if next.Sequence == 0 {
+		next.Sequence = existing.Sequence
+	}
+	if next.Mutation == nil {
+		next.Mutation = existing.Mutation
+	}
+	return next
 }

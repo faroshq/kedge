@@ -47,7 +47,7 @@ import { formatAssistantWorkedDuration, parseAssistantProgress, type AssistantPr
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
-import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
+import ResponseModePicker, { type AssistantResponseMode, type SuspendedTaskOption } from './ResponseModePicker.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
@@ -57,6 +57,7 @@ import {
   assistantRunMatchesStartRequest,
   assistantRunTerminal,
   firstProjectStartPlan,
+  forgetConversationRunRevision,
   firstProjectSubmissionAccepted,
   firstProjectSubmissionIsCurrent,
   firstProjectSubmissionMatches,
@@ -64,11 +65,11 @@ import {
   mergeConversationSnapshot,
   newFirstProjectSubmission,
   normalizeSnapshotMessage,
+  normalizeSnapshotRun,
   orderConversationMessages,
   replaceOptimisticUserMessage,
   type AssistantRun,
 } from './conversationResilience'
-import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import CheckpointChip from '@/components/CheckpointChip.vue'
 import { useEscapeKey } from '@/composables/useEscapeKey'
@@ -85,17 +86,28 @@ import {
   type WorkbenchTabDropPlacement,
   type WorkbenchTabDescriptor,
 } from './workbench'
-import { developmentPreviewDisplayPhase, developmentPreviewSyncStatus } from './previewState'
 import { PreviewConsoleController } from './previewConsole'
+import {
+  type AssistantTaskView,
+  assistantTaskViews,
+} from './activity'
+import {
+  type DevelopmentPreviewFrameState,
+  developmentPreviewDisplayPhase,
+  developmentPreviewFrameProblemMessage,
+  developmentPreviewFrameStateForLoads,
+  developmentPreviewSyncStatus,
+  recentDevelopmentPreviewLoads,
+} from './previewState'
 import type {
   DevelopmentTemplate,
   ImportRepository,
   KedgeContext,
   Project,
   ProjectAssistantSnapshot,
+  ProjectAssistantWorkItem,
   ProjectAssistantApprovalMode,
   ProjectAssistantActionFeedItem,
-  ProjectAssistantUIComponent,
   ProjectAssistantUIInterruptRequest,
   ProjectProviderBinding,
   ProjectLLMSettings,
@@ -136,23 +148,11 @@ interface WorkbenchLauncherItem {
 
 type LLMCredentialMode = 'api-key' | 'service-account-json'
 type ProjectMessageViewStatus = 'interrupted'
-type ProjectAssistantComponentValue = ProjectAssistantUIComponent['component']
-interface ProjectAssistantSurface {
-  rootId: string
-  components: Record<string, ProjectAssistantComponentValue>
-  dataModel: Record<string, string>
-}
-interface ProjectAssistantSurfaceCard {
-  id: string
-  role: string
-  body: string
-}
 type ProjectMessageView = ProjectMessage & {
   viewStatus?: ProjectMessageViewStatus
   plan?: AssistantPlan
   actionFeed?: ProjectAssistantActionFeedItem[]
   progress?: AssistantProgress
-  surface?: ProjectAssistantSurface
   interrupt?: ProjectAssistantUIInterruptRequest
 }
 interface PendingApprovalView {
@@ -331,14 +331,15 @@ const projectSettingsDescription = ref('')
 const projectSettingsSaving = ref(false)
 const projectSettingsStatus = ref<string | null>(null)
 const projectSettingsError = ref<string | null>(null)
-const deleteProjectTarget = ref<Project | null>(null)
-const deletingProject = ref(false)
 const prompt = ref('')
 const assistantIntent = ref<AssistantResponseMode>('auto')
 const approvalMode = ref<ProjectAssistantApprovalMode>('auto_approve')
 const approvalModeLoading = ref(false)
 const approvalModeSaving = ref(false)
 const approvalModeError = ref<string | null>(null)
+const assistantWorkItems = ref<ProjectAssistantWorkItem[]>([])
+const pendingWorkItemCancelRequestIDs: Record<string, string> = {}
+const selectedAssistantWorkItem = ref<ProjectAssistantWorkItem | null>(null)
 const projectQuery = ref('')
 const providerQuery = ref('')
 const workbenchLauncherQuery = ref('')
@@ -365,6 +366,9 @@ const promotionValuesText = ref('')
 const promotionAdvancedOpen = ref(false)
 let promotionPollTimer: number | undefined
 const conversationStatus = ref('')
+const undoConfirmRunID = ref('')
+const undoingRunID = ref('')
+const undoError = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
 const followUpAnswers = ref<Record<string, string>>({})
@@ -461,7 +465,7 @@ const assistantRunController = new ConversationRunController({
     }
     if (response.status === 'aborted' && activeAssistantRun?.id === runID) {
       const message = messages.value.find((item) => item.id === activeAssistantRun?.activeMessageID)
-      if (message) applyAssistantSnapshot(abortedConversationSnapshot({ run: activeAssistantRun, message }), projectName)
+      if (message) applyAssistantSnapshot(abortedConversationSnapshot({ run: activeAssistantRun, message }), projectName, 'local')
       else {
         activeAssistantRun = { ...activeAssistantRun, status: 'aborted', revision: activeAssistantRun.revision + 1 }
         messageStreaming.value = false
@@ -503,6 +507,31 @@ const canSendPrompt = computed(() =>
   !assistantResumeBusy.value &&
   !approvalModeLoading.value &&
   !approvalModeSaving.value,
+)
+const assistantTaskViewList = computed<AssistantTaskView[]>(() =>
+  assistantTaskViews(assistantWorkItems.value, messages.value),
+)
+
+// What the assistant is doing right now, for the Activity tab's header. Until
+// this existed a running turn was only visible inside the conversation you
+// happened to have open.
+const activeAssistantTaskSummary = computed(() => {
+  if (!messageStreaming.value) return ''
+  return conversationStatus.value || 'Working'
+})
+
+const suspendedAssistantTasks = computed<SuspendedTaskOption[]>(() =>
+  assistantWorkItems.value
+    .filter((item) => item.status === 'suspended')
+    .map((item) => {
+      const rootMessage = messages.value.find((message) => message.id === item.rootMessageID)
+      const label = rootMessage?.content.replace(/\s+/g, ' ').trim() || 'Previous implementation task'
+      let reason = 'Stopped before completion'
+      if (item.statusReason === 'provider restarted') reason = 'Interrupted when App Studio restarted'
+      else if (item.statusReason === 'no_progress') reason = 'Needs another attempt'
+      else if (item.statusReason === 'failed') reason = 'The previous attempt failed'
+      return { id: item.id, label, reason }
+    }),
 )
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
@@ -562,14 +591,6 @@ const createPromptSubmitTitle = computed(() => {
 })
 const createSetupVisible = computed(() => createSetupItemsForPrompt.value.length > 0 || !!createReadinessError.value)
 const createSetupErrorMessage = computed(() => createReadinessError.value || '')
-const deleteProjectMessage = computed(() => {
-  const project = deleteProjectTarget.value
-  if (!project) return ''
-  const projectName = project.displayName || project.name
-  const repositoryName = project.repository?.name || project.repository?.ref
-  const repositoryNote = repositoryName ? ` The associated repository resource (${repositoryName})` : ' The associated repository resource'
-  return `Are you sure you want to delete ${projectName}? This removes the App Studio project and its conversation history.${repositoryNote} will be orphaned and will not be deleted.`
-})
 const publishingProjectName = computed(() => selected.value?.displayName || selected.value?.name || '')
 const publishingProjectSlug = computed(() => projectToSlug(publishingProjectName.value || 'app-studio-project'))
 const publishingDefaultDomain = computed(() => `${publishingProjectSlug.value}${PUBLISHING_DOMAIN_SUFFIX}`)
@@ -778,6 +799,15 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     subtitle: hasPendingReview.value ? 'Resolve pending approvals and follow-up questions' : 'Inspect approvals and follow-up requests',
     icon: ClipboardList,
     builtInTab: 'review',
+  },
+  {
+    id: 'builtin:activity',
+    title: 'Activity',
+    subtitle: assistantTaskViewList.value.length
+      ? 'See what App Studio is working on and continue paused tasks'
+      : 'See what App Studio is working on',
+    icon: RotateCcw,
+    builtInTab: 'activity',
   },
 ])
 
@@ -1036,13 +1066,26 @@ watch(settingsProject, () => {
   if (showSettings.value) syncProjectSettingsForm()
 })
 
+// Distance from the bottom within which the transcript is considered "pinned",
+// so streaming output keeps following. Above it the reader has scrolled back
+// deliberately and must not be yanked down — messages mutate several times a
+// second while a run streams.
+const MESSAGES_AUTOSCROLL_THRESHOLD_PX = 80
+
+function messagesScrolledToBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= MESSAGES_AUTOSCROLL_THRESHOLD_PX
+}
+
 watch(messages, async () => {
+  const el = messagesRef.value
+  if (!el) return
+  const pinned = messagesScrolledToBottom(el)
   await nextTick()
-  if (messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+  if (pinned && messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight
 })
 
 useEscapeKey(() => {
-  if (!showSettings.value || deleteProjectTarget.value) return
+  if (!showSettings.value) return
   closeSettings()
 })
 
@@ -1280,6 +1323,8 @@ const promotionBuildLabel = computed(() => {
   switch (promotionBuildStatus.value) {
     case 'built':
       return 'Built'
+    case 'stale':
+      return 'Stale build'
     case 'incomplete':
       return 'Partly built'
     case 'none':
@@ -1892,9 +1937,10 @@ async function openProject(name: string, updateURL = true) {
   }
   error.value = null
   try {
-    const [project, loadedMessages, preference] = await Promise.all([
+    const [project, loadedMessages, workItems, preference] = await Promise.all([
       api.getProject(props.ctx, name),
       api.listAllMessages(props.ctx, name),
+      api.listAssistantWorkItems(props.ctx, name),
       api.getAssistantApprovalMode(props.ctx, name).catch((preferenceError: unknown) => {
         if (approvalRequestSerial === approvalModeLoadSerial) {
           approvalModeError.value = preferenceError instanceof Error ? preferenceError.message : String(preferenceError)
@@ -1905,7 +1951,9 @@ async function openProject(name: string, updateURL = true) {
     if (approvalRequestSerial !== approvalModeLoadSerial) return
     selected.value = project
     messages.value = loadedMessages.map(toProjectMessageView)
+    assistantWorkItems.value = workItems
     approvalMode.value = preference?.mode ?? 'auto_approve'
+    selectedAssistantWorkItem.value = null
     await recoverAssistantConversation(name)
     if (updateURL) props.navigate(encodeURIComponent(name))
   } catch (e) {
@@ -1945,22 +1993,87 @@ async function refreshSelectedProjectConversation(projectName: string) {
   selected.value = project
   messages.value = loadedMessages.map(toProjectMessageView)
   projects.value = projectList
+  // The durable read can predate a snapshot already applied to this tab, so it
+  // may have just overwritten newer content. Forget the recorded revision, or
+  // the snapshot that would repair it is refused as a duplicate.
+  if (activeAssistantRun) forgetConversationRunRevision(assistantRunRevisions, activeAssistantRun.id)
   await recoverAssistantConversation(projectName)
 }
 
+async function refreshAssistantWorkItems(projectName: string) {
+  const items = await api.listAssistantWorkItems(props.ctx, projectName)
+  if (selected.value?.name !== projectName) return
+  assistantWorkItems.value = items
+  if (selectedAssistantWorkItem.value) {
+    selectedAssistantWorkItem.value = items.find((item) => item.id === selectedAssistantWorkItem.value?.id && item.status === 'suspended') ?? null
+  }
+}
+
+async function discardAssistantWorkItem(item: ProjectAssistantWorkItem) {
+  const projectName = selected.value?.name
+  if (!projectName) return
+  const confirmed = await confirmDialog({
+    title: 'Discard suspended task?',
+    message: 'This removes its continuation authority. The conversation remains visible.',
+    confirmLabel: 'Discard task',
+    danger: true,
+  })
+  if (!confirmed) return
+  try {
+    const key = `${item.id}:${item.revision}`
+    const clientRequestID = pendingWorkItemCancelRequestIDs[key] ?? crypto.randomUUID()
+    pendingWorkItemCancelRequestIDs[key] = clientRequestID
+    await api.cancelAssistantWorkItem(props.ctx, projectName, item.id, item.revision, clientRequestID)
+    delete pendingWorkItemCancelRequestIDs[key]
+    if (selectedAssistantWorkItem.value?.id === item.id) selectedAssistantWorkItem.value = null
+    await refreshAssistantWorkItems(projectName)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 function selectAssistantResponseMode(mode: AssistantResponseMode) {
+  selectedAssistantWorkItem.value = null
   assistantIntent.value = mode
 }
 
-function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName = selected.value?.name ?? '', source: 'stream' | 'start' | 'latest' = 'stream', expectedRunID = ''): { accepted: boolean; current: AssistantRun | undefined } {
+function selectSuspendedAssistantTask(id: string) {
+  selectedAssistantWorkItem.value = assistantWorkItems.value.find((item) => item.id === id && item.status === 'suspended') ?? null
+}
+
+function discardSuspendedAssistantTask(id: string) {
+  const item = assistantWorkItems.value.find((candidate) => candidate.id === id && candidate.status === 'suspended')
+  if (item) void discardAssistantWorkItem(item)
+}
+
+// Continuing a task selects it and hands the user back to the composer, which
+// is where the follow-up instruction is written. Continue is deliberately the
+// prominent action: the paused task still carries its approved plan, so
+// resuming it is nearly always what someone wants, and discarding throws that
+// authority away.
+function continueAssistantTaskFromActivity(id: string) {
+  selectSuspendedAssistantTask(id)
+  if (!selectedAssistantWorkItem.value) return
+  void nextTick(() => promptRef.value?.focus())
+}
+
+async function stopAssistantTaskFromActivity() {
+  await cancelMessageStream()
+}
+
+function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName = selected.value?.name ?? '', source: 'stream' | 'start' | 'latest' | 'local' = 'stream', expectedRunID = ''): { accepted: boolean; current: AssistantRun | undefined } {
   const selectedProject = selected.value?.name ?? ''
-  const normalized = { ...snapshot, message: normalizeSnapshotMessage(snapshot.message) }
+  const normalized = { run: normalizeSnapshotRun(snapshot.run), message: normalizeSnapshotMessage(snapshot.message) }
   const previousRun = assistantRunRevisions[normalized.run.id]
-  const accepted = acceptScopedConversationSnapshot(selectedProject, activeAssistantProject, activeAssistantRun ?? previousRun, projectName, normalized.run, source, expectedRunID)
+  const scopeSource = source === 'local' ? 'stream' : source
+  const accepted = acceptScopedConversationSnapshot(selectedProject, activeAssistantProject, activeAssistantRun ?? previousRun, projectName, normalized.run, scopeSource, expectedRunID)
   if (!accepted.accepted) return accepted
   const current = mergeConversationSnapshot(
     { messages: messages.value, runs: assistantRunRevisions },
     normalized,
+    // A locally-derived snapshot must not claim a durable revision, or the
+    // server's authoritative version of the same transition is discarded.
+    { registerRevision: source !== 'local' },
   )
   if (current.messages !== messages.value) messages.value = current.messages.map(toProjectMessageView)
   Object.assign(assistantRunRevisions, current.runs)
@@ -2038,7 +2151,7 @@ async function syncDevelopmentPreviewForProject(projectName: string | undefined,
 	developmentSyncStatus.value = null
 	developmentSyncError.value = null
 	try {
-		await api.syncDevelopment(props.ctx, projectName)
+		const sync = await api.syncDevelopment(props.ctx, projectName)
 		const project = await api.getProject(props.ctx, projectName)
 		if (selected.value?.name !== projectName) return
 		selected.value = project
@@ -2047,12 +2160,17 @@ async function syncDevelopmentPreviewForProject(projectName: string | undefined,
 		} else {
 			await refreshDevelopmentPreviewFrame('')
 		}
-		developmentSyncStatus.value = developmentPreviewSyncStatus({
+		let status = developmentPreviewSyncStatus({
 			hasPreviewRouteBinding: developmentPreviewNeedsAuthorization.value,
 			previewURL: developmentPreviewURL.value,
 			readinessMessage: developmentPreviewReadinessMessage.value || '',
 			authorizationError: developmentPreviewAuthorizationError.value || '',
 		}, successStatus)
+		const skipped = sync?.skippedFiles ?? []
+		if (skipped.length) {
+			status += ` — ${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped (binary or oversized): ${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? ', …' : ''}`
+		}
+		developmentSyncStatus.value = status
 	} catch (e) {
 		developmentSyncError.value = e instanceof Error ? e.message : String(e)
 	} finally {
@@ -2224,11 +2342,45 @@ function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reas
   return typeof value === 'string' ? value : ''
 }
 
+// Watches the embedded preview for the two failures observable from outside a
+// cross-origin frame: never painting, and looping through an auth redirect.
+// See previewState.ts for why these are the only available signals.
+const developmentPreviewLoadTimeoutMS = 15_000
+
+const developmentPreviewFrameState = ref<DevelopmentPreviewFrameState>('pending')
+let developmentPreviewLoadTimer: number | undefined
+let developmentPreviewLoadTimestamps: number[] = []
+
+function resetDevelopmentPreviewFrameWatch() {
+  developmentPreviewFrameState.value = 'pending'
+  developmentPreviewLoadTimestamps = []
+  if (developmentPreviewLoadTimer !== undefined) window.clearTimeout(developmentPreviewLoadTimer)
+  developmentPreviewLoadTimer = window.setTimeout(() => {
+    if (developmentPreviewFrameState.value === 'pending') developmentPreviewFrameState.value = 'timeout'
+  }, developmentPreviewLoadTimeoutMS)
+}
+
 function handleDevelopmentPreviewFrameLoad() {
+  if (developmentPreviewLoadTimer !== undefined) {
+    window.clearTimeout(developmentPreviewLoadTimer)
+    developmentPreviewLoadTimer = undefined
+  }
+  const now = Date.now()
+  developmentPreviewLoadTimestamps = recentDevelopmentPreviewLoads(developmentPreviewLoadTimestamps, now).concat(now)
+  developmentPreviewFrameState.value = developmentPreviewFrameStateForLoads(developmentPreviewLoadTimestamps)
   refreshDevelopmentPreviewAuthorizationIfExpiring()
   const projectName = selected.value?.name
   if (projectName) void previewConsoleController.connect(projectName)
 }
+
+const developmentPreviewFrameProblem = computed(() =>
+  developmentPreviewFrameProblemMessage(developmentPreviewFrameState.value),
+)
+
+// Watch the frame afresh whenever it is remounted or pointed somewhere new.
+watch([developmentPreviewFrameKey, developmentPreviewURL], () => {
+  if (developmentPreviewURL.value) resetDevelopmentPreviewFrameWatch()
+})
 
 function handleDevelopmentPreviewVisibilityChange() {
   if (document.visibilityState === 'visible') handleDevelopmentPreviewAuthorizationWake()
@@ -2340,6 +2492,7 @@ function workbenchTabButtonClass(tab: WorkbenchTabDescriptor): string {
 
 function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'preview') return AppWindow
+  if (tab.kind === 'activity') return RotateCcw
   if (tab.kind === 'review') return ClipboardList
   if (tab.kind === 'providers') return PanelRight
   if (tab.kind === 'publishing') return Globe
@@ -2355,21 +2508,19 @@ function workbenchTabControlID(tab: WorkbenchTabDescriptor): string {
   return `app-studio-workbench-tab-${tab.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 }
 
-function requestDeleteProject(project: Project) {
-  deleteProjectTarget.value = project
-}
-
-function closeDeleteProjectDialog() {
-  if (deletingProject.value) return
-  deleteProjectTarget.value = null
-}
-
-async function confirmDeleteProject() {
-  const project = deleteProjectTarget.value
-  if (!project) return
+async function requestDeleteProject(project: Project) {
+  const projectName = project.displayName || project.name
+  const repositoryName = project.repository?.name || project.repository?.ref
+  const repositoryNote = repositoryName ? ` The associated repository resource (${repositoryName})` : ' The associated repository resource'
+  const confirmed = await confirmDialog({
+    title: 'Delete project?',
+    message: `Are you sure you want to delete ${projectName}? This removes the App Studio project and its conversation history.${repositoryNote} will be orphaned and will not be deleted.`,
+    danger: true,
+    confirmLabel: 'Delete project',
+  })
+  if (!confirmed) return
   const name = project.name
   busy.value = true
-  deletingProject.value = true
   error.value = null
   try {
     await api.deleteProject(props.ctx, name)
@@ -2381,12 +2532,10 @@ async function confirmDeleteProject() {
       resetWorkbench()
       showSettings.value = false
     }
-    deleteProjectTarget.value = null
     if (projects.value.length === 0) props.navigate(CREATE_PROJECT_ROUTE)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    deletingProject.value = false
     busy.value = false
   }
 }
@@ -2704,6 +2853,46 @@ function projectMessageUndo(message: ProjectMessage): ProjectAssistantUndoMetada
   return { runID: item.runID, status: item.status, ...(typeof item.fileCount === 'number' ? { fileCount: item.fileCount } : {}) }
 }
 
+// Undo is offered only where it can actually do something: a finished run that
+// edited files in this project's workspace and has not already been undone.
+function undoableRunIDForMessage(message: ProjectMessage): string {
+  if (message.role !== 'assistant' || projectMessageUndo(message)) return ''
+  const feed = (message as ProjectMessageView).actionFeed ?? []
+  if (!feed.some((item) => item.kind === 'edit' && item.status === 'succeeded')) return ''
+  const run = Object.values(assistantRunRevisions).find((candidate) => candidate.activeMessageID === message.id)
+  if (!run || !assistantRunTerminal(run.status)) return ''
+  return run.id
+}
+
+async function undoAssistantRunChanges(runID: string) {
+  const projectName = selected.value?.name
+  if (!projectName || !runID || undoingRunID.value) return
+  undoingRunID.value = runID
+  undoError.value = ''
+  try {
+    await api.undoAssistantRun(props.ctx, projectName, runID)
+    // The restore rewrites workspace files and re-syncs the sandbox, so pull
+    // the conversation (which carries the undo record) and refresh the preview.
+    await refreshSelectedProjectConversation(projectName)
+    void refreshDevelopmentPreviewFrame('Preview refreshed')
+  } catch (err) {
+    undoError.value = err instanceof Error ? err.message : 'Undo failed.'
+  } finally {
+    undoingRunID.value = ''
+    undoConfirmRunID.value = ''
+  }
+}
+
+function requestUndo(runID: string) {
+  undoError.value = ''
+  // Two-step: restoring discards work done since the run, and there is no redo.
+  if (undoConfirmRunID.value === runID) {
+    void undoAssistantRunChanges(runID)
+    return
+  }
+  undoConfirmRunID.value = runID
+}
+
 function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantUIInterruptRequest {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<ProjectAssistantUIInterruptRequest>
@@ -2920,18 +3109,8 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
   return assistantMarkdown.render(normalizeAssistantMarkdown(content))
 }
 
-function assistantSurfaceCards(message: ProjectMessageView): ProjectAssistantSurfaceCard[] {
-  const surface = message.surface
-  if (!surface) return []
-  return assistantSurfaceChildCards(surface, surface.rootId)
-}
-
-function assistantResponseCard(message: ProjectMessageView): ProjectAssistantSurfaceCard | undefined {
-  return assistantSurfaceCards(message).find((card) => card.role === 'assistant' && card.body.trim())
-}
-
 function assistantResponseContent(message: ProjectMessageView): string {
-  return assistantResponseCard(message)?.body || message.content || ''
+  return message.content || ''
 }
 
 function hasAssistantResponseContent(message: ProjectMessageView): boolean {
@@ -2940,45 +3119,6 @@ function hasAssistantResponseContent(message: ProjectMessageView): boolean {
 
 function renderAssistantResponse(message: ProjectMessageView): string {
   return assistantMarkdown.render(normalizeAssistantMarkdown(assistantResponseContent(message)))
-}
-
-function assistantSurfaceChildCards(surface: ProjectAssistantSurface, id: string): ProjectAssistantSurfaceCard[] {
-  const component = surface.components[id]
-  if (!component) return []
-  if (component.Column) {
-    return component.Column.children.flatMap((child) => assistantSurfaceChildCards(surface, child))
-  }
-  if (component.Row) {
-    return component.Row.children.flatMap((child) => assistantSurfaceChildCards(surface, child))
-  }
-  if (!component.Card) return []
-  return [assistantSurfaceCard(surface, id, component.Card.children)]
-}
-
-function assistantSurfaceCard(surface: ProjectAssistantSurface, id: string, children: string[]): ProjectAssistantSurfaceCard {
-  const textNodes = children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
-  const role = textNodes[0]?.value || 'assistant'
-  const body = textNodes.slice(1).map((node) => node.value).filter(Boolean).join('\n')
-  return { id, role, body }
-}
-
-function assistantSurfaceTextNodes(surface: ProjectAssistantSurface, id: string): Array<{ value: string }> {
-  const component = surface.components[id]
-  if (!component) return []
-  if (component.Text) {
-    const value = component.Text.dataKey ? surface.dataModel[component.Text.dataKey] || '' : component.Text.value || ''
-    return [{ value }]
-  }
-  if (component.Column) {
-    return component.Column.children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
-  }
-  if (component.Row) {
-    return component.Row.children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
-  }
-  if (component.Card) {
-    return component.Card.children.flatMap((child) => assistantSurfaceTextNodes(surface, child))
-  }
-  return []
 }
 
 function permissionKey(interrupt: ProjectAssistantUIInterruptRequest): string {
@@ -3653,6 +3793,42 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   <RotateCcw class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
                   Restored {{ projectMessageUndo(message)?.fileCount ?? 0 }} workspace file{{ projectMessageUndo(message)?.fileCount === 1 ? '' : 's' }}; Git history unchanged
                 </div>
+                <div v-else-if="undoableRunIDForMessage(message)" class="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-border-subtle px-2 py-1 text-[11px] font-medium text-text-muted transition hover:border-border hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="undoingRunID === undoableRunIDForMessage(message)"
+                    :aria-label="undoConfirmRunID === undoableRunIDForMessage(message)
+                      ? 'Confirm undoing this response’s file changes'
+                      : 'Undo this response’s file changes'"
+                    @click="requestUndo(undoableRunIDForMessage(message))"
+                  >
+                    <Loader2
+                      v-if="undoingRunID === undoableRunIDForMessage(message)"
+                      class="h-3.5 w-3.5 animate-spin"
+                      :stroke-width="1.75"
+                    />
+                    <RotateCcw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    <template v-if="undoingRunID === undoableRunIDForMessage(message)">Restoring…</template>
+                    <template v-else-if="undoConfirmRunID === undoableRunIDForMessage(message)">Undo file changes? This cannot be redone</template>
+                    <template v-else>Undo file changes</template>
+                  </button>
+                  <button
+                    v-if="undoConfirmRunID === undoableRunIDForMessage(message) && !undoingRunID"
+                    type="button"
+                    class="inline-flex min-h-8 items-center rounded-lg px-2 py-1 text-[11px] font-medium text-text-muted transition hover:text-text-secondary"
+                    @click="undoConfirmRunID = ''"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <div
+                  v-if="undoError && undoConfirmRunID === '' && undoableRunIDForMessage(message)"
+                  class="mt-2 text-[11px] font-medium text-danger"
+                  role="alert"
+                >
+                  {{ undoError }}
+                </div>
               </div>
             </div>
             <div
@@ -3796,8 +3972,12 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-0.5">
               <ResponseModePicker
                 :mode="assistantIntent"
+                :suspended-tasks="suspendedAssistantTasks"
+                :selected-task-id="selectedAssistantWorkItem?.id"
                 :disabled="messageStreaming || loading"
                 @select-mode="selectAssistantResponseMode"
+                @select-task="selectSuspendedAssistantTask"
+                @discard-task="discardSuspendedAssistantTask"
               />
               <ApprovalModePicker
                 :mode="approvalMode"
@@ -4091,6 +4271,21 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
           <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success">
             {{ developmentSyncStatus }}
           </div>
+          <div
+            v-if="developmentPreviewURL && developmentPreviewFrameProblem"
+            class="flex flex-wrap items-center gap-2 rounded-md border border-warning/30 bg-warning-subtle p-3 text-[12px] text-warning"
+            role="status"
+          >
+            <span class="min-w-0 flex-1">{{ developmentPreviewFrameProblem }}</span>
+            <button
+              v-if="developmentPreviewCanOpenInBrowser"
+              type="button"
+              class="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-lg border border-warning/40 px-2 py-1 font-medium transition hover:bg-warning/10"
+              @click="openDevelopmentPreviewInBrowser"
+            >
+              {{ developmentPreviewOpenButtonLabel }}
+            </button>
+          </div>
           <div v-if="developmentPreviewURL" class="min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-surface">
             <iframe
               ref="developmentPreviewFrameRef"
@@ -4201,7 +4396,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   <span class="font-medium text-text-primary">{{ component.name }}</span>
                 </span>
                 <span class="truncate text-text-muted" :title="component.image || 'not built yet'">
-                  {{ component.built ? (component.digest || component.image) : 'not built' }}
+                  {{ component.built ? (component.digest || component.image) : 'not built' }}<template v-if="component.builtCommit"> (from {{ component.builtCommit.slice(0, 7) }})</template>
                 </span>
               </li>
             </ul>
@@ -4304,6 +4499,91 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               >
                 <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
                 {{ promoteButtonLabel }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'activity'"
+        class="min-h-0 flex-1 overflow-auto p-3"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <div class="grid gap-3">
+          <div
+            v-if="activeAssistantTaskSummary"
+            class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/25 bg-accent-subtle p-3"
+          >
+            <div class="flex min-w-0 items-center gap-2">
+              <Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin text-accent" :stroke-width="1.75" />
+              <span class="min-w-0 text-[13px] font-medium text-text-primary">{{ activeAssistantTaskSummary }}</span>
+            </div>
+            <button
+              type="button"
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
+              @click="stopAssistantTaskFromActivity"
+            >
+              <Square class="h-3 w-3 fill-current" :stroke-width="2" />
+              Stop
+            </button>
+          </div>
+
+          <div v-if="!assistantTaskViewList.length" class="rounded-md border border-border-subtle bg-surface p-6 text-center">
+            <div class="text-[13px] font-semibold text-text-primary">No tasks yet</div>
+            <div class="mt-1 text-[12px] leading-5 text-text-muted">
+              Ask App Studio to build or change something and it will show up here while it works.
+            </div>
+          </div>
+
+          <div
+            v-for="task in assistantTaskViewList"
+            :key="task.id"
+            class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3"
+          >
+            <div class="flex min-w-0 items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="truncate text-[13px] font-medium text-text-primary">{{ task.label }}</div>
+                <div class="mt-1 text-[12px] leading-5 text-text-muted">{{ task.detail }}</div>
+              </div>
+              <span
+                class="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium"
+                :class="task.status === 'active'
+                  ? 'bg-accent-subtle text-accent'
+                  : task.status === 'suspended'
+                    ? 'bg-warning-subtle text-warning'
+                    : 'bg-surface-overlay text-text-muted'"
+              >{{ task.statusLabel }}</span>
+            </div>
+            <div v-if="task.actions.length" class="flex flex-wrap items-center gap-2">
+              <button
+                v-if="task.actions.includes('continue')"
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20"
+                @click="continueAssistantTaskFromActivity(task.id)"
+              >
+                <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Continue
+              </button>
+              <button
+                v-if="task.actions.includes('stop')"
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
+                @click="stopAssistantTaskFromActivity"
+              >
+                <Square class="h-3 w-3 fill-current" :stroke-width="2" />
+                Stop
+              </button>
+              <button
+                v-if="task.actions.includes('discard')"
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-text-muted transition hover:bg-danger-subtle hover:text-danger"
+                @click="discardSuspendedAssistantTask(task.id)"
+              >
+                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Discard
               </button>
             </div>
           </div>
@@ -4816,14 +5096,5 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
     </div>
   </Teleport>
 
-  <ConfirmDialog
-    v-if="deleteProjectTarget"
-    title="Delete project?"
-    :message="deleteProjectMessage"
-    confirm-label="Delete project"
-    :busy="deletingProject"
-    @cancel="closeDeleteProjectDialog"
-    @confirm="confirmDeleteProject"
-  />
   <PkConfirmDialog />
 </template>

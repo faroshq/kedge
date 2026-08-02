@@ -156,3 +156,59 @@ func TestProjectAssistantActionFeedMinimalDisclosureHidesTargetAndOutcome(t *tes
 		t.Fatalf("minimal item = %#v, want only generic presentation", item)
 	}
 }
+
+func TestUpsertProjectAssistantActionFeedItemAbsorbsRecoveredFailure(t *testing.T) {
+	failed := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:     "plan-1",
+		Name:   projectToolDefineInitialProjectPlan,
+		Status: "failed",
+		Error:  "acceptanceCriteria is required",
+	})
+	otherFailure := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:        "write-9",
+		Name:      projectToolWriteFile,
+		Status:    "failed",
+		Arguments: `{"path":"src/other.js"}`,
+		Error:     "boom",
+	})
+	succeeded := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:     "plan-2",
+		Name:   projectToolDefineInitialProjectPlan,
+		Status: "succeeded",
+	})
+
+	actions := upsertProjectAssistantActionFeedItem(nil, failed)
+	actions = upsertProjectAssistantActionFeedItem(actions, otherFailure)
+	actions = upsertProjectAssistantActionFeedItem(actions, succeeded)
+
+	if len(actions) != 2 {
+		t.Fatalf("actions = %#v, want the recovered failure absorbed", actions)
+	}
+	for _, a := range actions {
+		if a.ID == failed.ID {
+			t.Fatalf("recovered failure %q should have been absorbed by the retry's success", a.ID)
+		}
+	}
+	foundOther := false
+	for _, a := range actions {
+		if a.ID == otherFailure.ID {
+			foundOther = true
+		}
+	}
+	if !foundOther {
+		t.Fatal("an unrelated failure on a different tool/target must keep its card")
+	}
+}
+
+// Test-only overload of projectAssistantActionFeedItemFromToolCall for the
+// assistant tool-call shape.
+func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssistantToolCall) projectAssistantActionFeedItem {
+	return presentProjectAssistantAction(
+		toolCall.ID,
+		toolCall.Name,
+		toolCall.Status,
+		toolCall.Arguments,
+		toolCall.Summary,
+		toolCall.Error,
+	)
+}

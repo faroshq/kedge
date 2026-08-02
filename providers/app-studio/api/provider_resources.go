@@ -63,15 +63,22 @@ func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *a
 	for key, value := range values {
 		spec[key] = value
 	}
+	wantLabels := map[string]any{
+		"app-studio.kedge.faros.sh/project": p.Name,
+	}
+	// Stamp the originating template like portal-created instances carry, so
+	// the infrastructure portal's instance list can name it (its kind→template
+	// fallback only covers objects fetched with a kind).
+	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) != "" {
+		wantLabels["kedge.faros.sh/template"] = strings.TrimSpace(p.Spec.Template.Name)
+	}
 	want := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": binding.ResourceRef.APIVersion,
 			"kind":       binding.ResourceRef.Kind,
 			"metadata": map[string]any{
-				"name": name,
-				"labels": map[string]any{
-					"app-studio.kedge.faros.sh/project": p.Name,
-				},
+				"name":   name,
+				"labels": wantLabels,
 			},
 			"spec": spec,
 		},
@@ -95,6 +102,9 @@ func ensureProjectProviderResource(ctx context.Context, c *asclient.Client, p *a
 		labels = map[string]string{}
 	}
 	labels["app-studio.kedge.faros.sh/project"] = p.Name
+	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) != "" {
+		labels["kedge.faros.sh/template"] = strings.TrimSpace(p.Spec.Template.Name)
+	}
 	existing.SetLabels(labels)
 	if owner := projectProviderResourceOwnerRef(p); owner != nil {
 		existing.SetOwnerReferences([]metav1.OwnerReference{*owner})

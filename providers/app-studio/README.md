@@ -65,6 +65,7 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries for message content and metadata encryption at rest |
 | `APP_STUDIO_MESSAGE_RETENTION` | Retention window (`time.ParseDuration`, e.g. `720h`) |
 | `APP_STUDIO_WORKSPACE_ROOT` | Filesystem root for App Studio project workspaces and local file tools |
+| `APP_STUDIO_SNAPSHOT_RETENTION` | How long an assistant run stays undoable (`time.ParseDuration`, default `72h`). `0` keeps undo snapshots until the project is deleted — they share the workspace volume with every tenant, so unbounded retention eventually fails all writes. |
 | `APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verify on MCP calls (dev) |
 | `APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verification only for preview readiness probes (local dev with a self-signed Gateway) |
 | `APP_STUDIO_PREVIEW_CONSOLE_ENABLED` | Automatically shares bounded browser-console evidence while the embedded preview is open; set `false` for a deployment-wide kill switch. |
@@ -142,15 +143,49 @@ provisioning and missing process evidence enter a bounded operational lane with
 only status, preview, logs, and verification reads. Source repair reopens only
 when verification reports concrete build or application log blockers.
 
+Runtime failures are diagnosed before they reach the model. Dev-server output is
+classified into structured issues (missing module, missing script, syntax,
+compile, port-in-use, permission-denied, process-crash), each carrying the
+subject of the fault, a workspace-relative location where the runtime named one,
+and a concrete remediation. Verification reports that diagnosis rather than "the
+logs contain a failure", and the lane is chosen by fault class: only diagnosed
+*source* defects open source repair, while operational faults (a bound port, a
+denied filesystem operation) route to the operational lane instead of sending
+the assistant to edit code that was never at fault. Browser-side JavaScript
+errors are **not** captured — nothing in the preview HTTP path is owned by
+kedge, so there is no injection point for a client error shim.
+
+A run that keeps repeating an action, or keeps reasoning without progress, is
+stopped after a bounded number of unproductive model calls (warned first) and
+its WorkItem is suspended with reason `no_progress`, resumable with Continue.
+That bound is deliberately far below the global iteration ceiling.
+
+Under `auto_approve`, verbs that are irreversible or externally visible still
+require confirmation: `hydrate_workspace` (replaces the workspace, discarding
+uncommitted work with no undo snapshot), `promote_project`, and
+`infrastructure__provision`. Ordinary edits stay auto-approvable because they
+are snapshotted and undoable.
+
 This remains a single-replica design: execution cannot continue across a
 provider restart. On the next read, an orphaned running run is surfaced as
 `interrupted`; its WorkItem becomes suspended, while permission and input
-checkpoints stay resumable. Stop first persists `stopping`, then asks Eino to
+checkpoints stay resumable. Run ownership is inferred from this process's
+memory, which is only sound at one replica — the Helm chart refuses to render
+above one. Raising it requires a durable owner lease (owner identity plus a
+heartbeat, reconciling only expired leases); without one, a second replica
+would interrupt the first replica's live runs mid-mutation. Stop first persists `stopping`, then asks Eino to
 cancel gracefully without retaining a terminal checkpoint. Assistant starts
 use the durable `POST /messages` boundary; the legacy POST-SSE project and
 message endpoints have been removed. Clients must not depend on token replay:
 the remaining GET stream provides complete revisioned snapshots, and a
 reconnect receives the latest one.
+
+A project runs one task at a time. The portal's **Activity** tab is where that
+is visible: what the assistant is working on now (with Stop), and every task
+with its state and only the actions the backend will accept — Continue or
+Discard for a paused task, Stop for a running one. A task still marked running
+by a run that is gone is released by reconciliation, which the work-item list
+and cancel endpoints now perform before reading, so it cannot wedge new work.
 
 Lifecycle logs contain only organization, workspace, project, run, revision,
 and status fields. They intentionally omit prompt text, assistant content,
@@ -160,7 +195,7 @@ Useful checks from this module:
 
 ```sh
 go test ./...
-go test -race ./api ./store
+go test -race ./api ./store ./workspace
 cd portal \
   && npm run test:workbench \
   && npm run test:preview-state \
@@ -170,6 +205,9 @@ cd portal \
   && npm run test:assistant-plan \
   && npm run test:assistant-plan-popover \
   && npm run test:conversation-resilience \
+  && npm run test:activity \
+  && npm run test:approval-mode \
+  && npm run test:response-mode \
   && npm run typecheck \
   && npm run build
 ```
@@ -187,6 +225,19 @@ remains the git-source boundary: `commit_project_files` reads selected workspace
 files and delegates the actual commit to the Code provider's `code__commit_files`
 tool.
 
+Every workspace mutation (`write_file`, `apply_patch`, `delete_file`) is
+recorded in a per-run snapshot, which is what `POST
+/api/projects/{project}/assistant/{run}/undo` restores and what the portal's
+"Undo file changes" control calls. Snapshots are swept on age — see
+`APP_STUDIO_SNAPSHOT_RETENTION`.
+
+`delete_file` removes a file from the workspace and records a tombstone so the
+next sync removes it from the development sandbox too; without that, a renamed
+file kept running there. **Deletion does not reach git**: removing a file from
+the repository additionally requires deleting it there, because the Code
+provider's commit bundle carries only path+content. Mutations lock per project
+workspace, not store-wide, so one tenant's slow write does not block another's.
+
 ## Development runtime
 
 App Studio owns the project-facing development runtime API. It creates and
@@ -194,6 +245,16 @@ deletes infrastructure-backed `SandboxRunner` resources in the caller's tenant
 workspace, syncs App Studio workspace files to the runner, and serves project
 preview URLs by minting signed, host-based URLs from the companion
 `SandboxPreviewHTTPRoute` status.
+
+Sync is incremental: App Studio records the content hashes last confirmed for
+each component and ships only what changed, plus explicit `deletePaths`. This is
+safe because sandbox files live on a PVC, so pod restarts preserve them; the
+recorded state is discarded — forcing a full sync — on any failed sync, on a
+template switch or hydrate that replaces the volume, and on provider restart. A
+workspace above the 500-file listing limit fails the sync with an explanation
+rather than shipping an alphabetical prefix of the tree, and files the payload
+cannot carry (binary, oversized) are reported as `skippedFiles` rather than
+silently dropped.
 
 Infrastructure owns the resource composition: the `sandbox-runner` Template uses
 KRO to create the runtime namespace, PVC, Deployment, Service, control Secret,

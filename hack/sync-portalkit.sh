@@ -5,7 +5,12 @@
 # boundaries.
 #
 #   provider-sdk/portalkit      → vanilla-TS portals  (icons.ts, modal.ts)
-#   provider-sdk/portalkit-vue  → Vue SFC portals     (confirm.ts, ConfirmDialog.vue)
+#   provider-sdk/portalkit-vue  → Vue SFC portals     (confirm.ts, ConfirmDialog.vue, …)
+#
+# Each portal vendors only the files it imports (ConditionsPanel.vue pulls in
+# ResourceTable.vue and StatusBadge.vue). The src/portalkit/ directory is owned
+# by this script: it is recreated on every sync, so removing a file from a
+# portal's list below removes it from the portal.
 #
 # Edit the canonical files under provider-sdk/ and run `make sync-portalkit`.
 # CI runs `make verify-portalkit` to fail on drift.
@@ -13,47 +18,35 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Vanilla-TS (string-building) portals + files.
 TS_SRC="$ROOT/provider-sdk/portalkit"
-TS_PORTALS=(
-  "providers/agents/portal"
-  "providers/kuery/portal"
-  "providers/quickstart/portal"
-)
-TS_FILES=(icons.ts modal.ts tenant.ts)
-
-# Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
-VUE_PORTALS=(
-  "portal"
-  "providers/app-studio/portal"
-  "providers/code/portal"
-  "providers/databricks/portal"
-  "providers/edges/portal"
-  "providers/infrastructure/portal"
-)
-VUE_FILES=(confirm.ts ConfirmDialog.vue ResourceTable.vue ConditionsPanel.vue StatusBadge.vue)
 
-sync_group() {
-  local src="$1"; shift
-  local -n portals=$1; shift
-  local -n files=$1; shift
-  for p in "${portals[@]}"; do
-    local dst="$ROOT/$p/src/portalkit"
-    mkdir -p "$dst"
-    for f in "${files[@]}"; do
-      cp "$src/$f" "$dst/$f"
-    done
-    echo "synced $(basename "$src") -> $p/src/portalkit"
+# sync <src-dir> <portal> <file...> — replaces the portal's src/portalkit with
+# exactly the listed files.
+sync() {
+  local src="$1" portal="$2"; shift 2
+  local dst="$ROOT/$portal/src/portalkit"
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  for f in "$@"; do
+    cp "$src/$f" "$dst/$f"
   done
+  echo "synced $(basename "$src") -> $portal/src/portalkit ($*)"
 }
 
-sync_group "$TS_SRC" TS_PORTALS TS_FILES
-sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
+# Vanilla-TS (string-building) portals.
+sync "$TS_SRC" "providers/agents/portal"     icons.ts modal.ts tenant.ts
+sync "$TS_SRC" "providers/kuery/portal"      icons.ts modal.ts tenant.ts
+sync "$TS_SRC" "providers/quickstart/portal" icons.ts modal.ts tenant.ts
 
-# tenant.ts is plain TS (no framework) and shared by hub-proxy portals of BOTH
-# kinds, so the vanilla canonical is also vendored into the Vue portals.
-for p in "${VUE_PORTALS[@]}"; do
-  cp "$TS_SRC/tenant.ts" "$ROOT/$p/src/portalkit/tenant.ts"
-  echo "synced tenant.ts -> $p/src/portalkit"
-done
+# Vue SFC portals.
+sync "$VUE_SRC" "portal"                      confirm.ts ConfirmDialog.vue
+sync "$VUE_SRC" "providers/app-studio/portal" confirm.ts ConfirmDialog.vue
+sync "$VUE_SRC" "providers/code/portal"       confirm.ts ConfirmDialog.vue ResourceTable.vue ConditionsPanel.vue StatusBadge.vue
+sync "$VUE_SRC" "providers/databricks/portal" confirm.ts ConfirmDialog.vue ResourceTable.vue ConditionsPanel.vue StatusBadge.vue
+sync "$VUE_SRC" "providers/edges/portal"      confirm.ts ConfirmDialog.vue
+
+# tenant.ts is plain TS (no framework); Vue portals whose api client reads the
+# tenant context vendor it from the vanilla canonical.
+cp "$TS_SRC/tenant.ts" "$ROOT/providers/app-studio/portal/src/portalkit/tenant.ts"
+echo "synced tenant.ts -> providers/app-studio/portal/src/portalkit"

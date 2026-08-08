@@ -451,7 +451,7 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		"tableRef",
 		"provider-databricks",
 		"Do not call provider backend URLs",
-		"Do not generate application code that queries Databricks tableRefs",
+		"server-side provider-neutral Kedge Actions SDK",
 		"do not embed Databricks credentials",
 	} {
 		if !strings.Contains(joined, want) {
@@ -484,6 +484,11 @@ func TestProjectAssistantWorkspaceInspectPromptUsesCanonicalReads(t *testing.T) 
 	prompt := projectSystemPromptForMode(project, repository, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
 		"Use the current project snapshot first, then bounded reads and searches",
+		"Repair-or-stop cadence after a failed preview/API/network/console/provider observation",
+		"at most one targeted fresh read/search answering a new question",
+		"one bounded repair attempt using authorized version-checked mutations",
+		"rerun the original failed observation once",
+		"Never claim recovery without later success evidence from rerunning that same observation",
 		"The source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file",
 		"use verify_development_runtime only when that evidence is relevant",
 		"Never call commit_project_files unless the user explicitly requested repository persistence",

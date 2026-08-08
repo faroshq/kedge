@@ -135,11 +135,12 @@ func runServe() {
 	// Tenant access goes through the hub's GraphQL gateway (the hub injects
 	// X-Kedge-Cluster per request). Without a hub URL the project API returns
 	// 501 (useful for UI-only dev), with a loud warning.
+	hubInsecure := os.Getenv("KEDGE_HUB_INSECURE") == "true"
 	var gqlClient *tenant.GraphQLClient
 	if hubURL := os.Getenv("KEDGE_HUB_URL"); hubURL == "" {
 		log.Printf("WARNING project API disabled (no KEDGE_HUB_URL)")
 	} else {
-		gqlClient = tenant.NewGraphQLClient(hubURL, os.Getenv("KEDGE_HUB_INSECURE") == "true")
+		gqlClient = tenant.NewGraphQLClient(hubURL, hubInsecure)
 	}
 
 	msgStore, closeStore, err := openMessageStore(ctx)
@@ -157,13 +158,15 @@ func runServe() {
 		msgStore,
 		workspaces,
 		os.Getenv("KEDGE_HUB_URL"),
-		// The MCP virtual-workspace endpoint lives on the same hub host as the
-		// GraphQL client above, so it must honor the standard KEDGE_HUB_INSECURE
-		// knob every provider uses for in-cluster hub TLS (the hub serves its
-		// external cert, not one valid for the .svc.cluster.local name). Keep the
-		// MCP-specific override too, for callers that want to scope it narrowly.
+		// The MCP virtual-workspace and authenticated catalog endpoints live on the
+		// same hub host as the GraphQL client above, so they must honor the standard
+		// KEDGE_HUB_INSECURE knob every provider uses for in-cluster hub TLS (the
+		// hub serves its external cert, not one valid for the .svc.cluster.local
+		// name). Keep the MCP-specific override too, for callers that want to
+		// scope it narrowly. Provider Action invocation has its own verified
+		// transport and is not relaxed by this setting.
 		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true" ||
-			os.Getenv("KEDGE_HUB_INSECURE") == "true",
+			hubInsecure,
 	)
 	apiServer.SetPreviewInsecureSkipTLSVerify(os.Getenv("APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY") == "true")
 	if err := apiServer.ConfigurePreviewInspection(os.Getenv("APP_STUDIO_BROWSER_WORKER_URL")); err != nil {

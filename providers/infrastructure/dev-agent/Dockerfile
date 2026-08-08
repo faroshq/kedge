@@ -3,11 +3,13 @@
 # components of any infrastructure Template (docs/app-studio-template-sandboxes.md §2).
 # The image is scratch on purpose: it exists only to carry the static binary
 # that an init container copies into the component's toolchain image
-# (`kedge-dev-agent --install /kedge/bin`), so nothing kedge-specific is ever
-# baked into dev images. Stdlib-only Go module; the build context is this dir.
+# (`kedge-dev-agent --install /kedge/bin`). Application dependencies stay in
+# generated component manifests and are installed by the component toolchain;
+# this image carries no application SDK projection. The build context is the
+# repository root (see Makefile's docker-build-dev-agent target).
 FROM golang:1.26 AS build
 WORKDIR /src
-COPY . .
+COPY providers/infrastructure/dev-agent/ ./
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/kedge-dev-agent .
 

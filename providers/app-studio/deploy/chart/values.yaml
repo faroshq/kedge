@@ -131,6 +131,16 @@ workspace:
 
 hub:
   url: "http://kedge-hub.kedge.svc.cluster.local:8080"
+  # Public hub origin used by action-enabled development runtimes. Keep this
+  # separate from hub.url: the latter is an internal provider-to-hub address.
+  # Production action-enabled projects require an absolute HTTPS origin.
+  actionsExternalURL: ""
+  # Optional public CA bundle for that origin. The referenced ConfigMap is
+  # mounted at a dedicated path so it augments (never masks) image/system
+  # trust. Leave empty when the origin chains to the system CA.
+  actionsCABundleConfigMap:
+    name: ""
+    key: ca-bundle.pem
   insecure: false
   tokenSecretRef:
     name: ""

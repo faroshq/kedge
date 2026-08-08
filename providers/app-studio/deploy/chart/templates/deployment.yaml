@@ -1,4 +1,5 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
+{{- $actionsCABundleConfigMap := .Values.hub.actionsCABundleConfigMap.name -}}
 {{- if ne (int .Values.replicaCount) 1 -}}
 {{- fail "app-studio replicaCount must be 1 because assistant project mutations require a single active writer" -}}
 {{- end -}}
@@ -96,6 +97,14 @@ spec:
               value: "8081"
             - name: KEDGE_HUB_URL
               value: {{ .Values.hub.url | quote }}
+            {{- if .Values.hub.actionsExternalURL }}
+            - name: KEDGE_ACTIONS_EXTERNAL_URL
+              value: {{ .Values.hub.actionsExternalURL | quote }}
+            {{- end }}
+            {{- if $actionsCABundleConfigMap }}
+            - name: KEDGE_ACTIONS_CA_BUNDLE_FILE
+              value: /etc/kedge/actions-ca/ca-bundle.pem
+            {{- end }}
             - name: KEDGE_PROVIDER_NAME
               value: "app-studio"
             # Provider kubeconfig — used for the kcp front-proxy host + TLS
@@ -171,6 +180,11 @@ spec:
               readOnly: true
             - name: project-workspaces
               mountPath: {{ .Values.workspace.path | quote }}
+            {{- if $actionsCABundleConfigMap }}
+            - name: actions-ca-bundle
+              mountPath: /etc/kedge/actions-ca
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
         {{- if .Values.browserWorker.enabled }}
@@ -246,6 +260,14 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "appstudio.fullname" . }}-workspaces
           {{- end }}
+        {{- if $actionsCABundleConfigMap }}
+        - name: actions-ca-bundle
+          configMap:
+            name: {{ $actionsCABundleConfigMap | quote }}
+            items:
+              - key: {{ .Values.hub.actionsCABundleConfigMap.key | quote }}
+                path: ca-bundle.pem
+        {{- end }}
         {{- if .Values.browserWorker.enabled }}
         - name: browser-worker-tmp
           emptyDir:

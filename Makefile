@@ -714,6 +714,9 @@ run-hub-embedded-graphql: build-hub certs
 #   make tilt-cluster TILT_KCP_DIR=/path/to/kcp
 #   make tilt-cluster KCP_DIR=/path/to/kcp
 TILT_KCP_DIR ?= $(or $(KCP_DIR),$(HOME)/go/src/github.com/kcp-dev/kcp)
+# Tilt's KIND image loader stages a full `docker save` tarball in TMPDIR. Keep
+# that payload off capacity-limited /tmp tmpfs mounts used by development hosts.
+TILT_TMPDIR ?= $(CURDIR)/.kcp/tmp/tilt
 
 ## Full multi-shard kcp in a kind cluster + kedge-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
@@ -725,7 +728,8 @@ tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TI
 	@# cluster+context up front avoids that race.
 	@kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
 	@kind export kubeconfig --name kcp-tilt
-	tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)"
+	@mkdir -p "$(TILT_TMPDIR)"
+	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)"
 
 # --- Provider quickstart (local dev) ---
 # The quickstart provider is a small standalone HTTP server that registers
@@ -838,6 +842,33 @@ e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructur
 		exit 1; \
 	}
 	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Provider-actions E2E: embedded hub plus host-process App Studio and
+## Databricks providers, a local TLS fake upstream, and a generated Node app
+## invoking the action through the hub. KEDGE_E2E_KEEP_DATA=true preserves
+## logs and source/readiness/interaction evidence under the suite temp dir.
+E2E_PROVIDER_ACTIONS_TIMEOUT ?= 20m
+.PHONY: e2e-provider-actions e2e-provider-actions-live e2e-provider-actions-npm
+e2e-provider-actions: build-hub build-app-studio-provider build-databricks-provider ## Run local generated-app provider-actions E2E
+	@test -z "$$(lsof -ti :19463 :16463 :18085 :18086 :25063 :2380 2>/dev/null)" || { \
+		echo "ports 19463/16463/18085/18086/25063/2380 are in use; stop the provider-actions E2E processes first"; \
+		exit 1; \
+	}
+	go test ./test/e2e/suites/provideractions/... -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Optional bounded smoke against an already-running local hub/provider setup.
+## Set KEDGE_E2E_PROVIDER_ACTIONS_LIVE=true plus KEDGE_LIVE_HUB_URL,
+## KEDGE_LIVE_PROJECT, and KEDGE_LIVE_ACTIONS_TOKEN_FILE.
+e2e-provider-actions-live: ## Run the opt-in live generated-app provider-actions smoke
+	KEDGE_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true KEDGE_E2E_PROVIDER_ACTIONS_LIVE=true \
+		go test ./test/e2e/suites/provideractions/... -run '^TestOptionalLiveProviderActionSDK$$' -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Optional registry-backed package smoke. The live-only flag keeps TestMain
+## from starting the full hub/provider stack; set KEDGE_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
+## to use a non-default registry mirror.
+e2e-provider-actions-npm: ## Verify the published Actions SDK alias with a clean npm install
+	KEDGE_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true KEDGE_E2E_PROVIDER_ACTIONS_NPM_SMOKE=true \
+		go test ./test/e2e/suites/provideractions/... -run '^TestOptionalPublishedActionsSDKCleanInstall$$' -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:
@@ -1131,6 +1162,10 @@ APP_STUDIO_BROWSER_WORKER_CONTAINER ?= kedge-app-studio-browser-worker
 APP_STUDIO_BROWSER_WORKER_URL ?= http://127.0.0.1:$(APP_STUDIO_BROWSER_WORKER_PORT)
 APP_STUDIO_HUB_URL ?= https://localhost:9443
 APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
+# Optional external HTTPS hub origin for generated development runtimes. Keep
+# unset unless the operator has configured a pod-reachable, certificate-valid
+# URL; the App Studio launcher must not invent an insecure localhost default.
+KEDGE_ACTIONS_EXTERNAL_URL ?=
 APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
 APP_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:app-studio
@@ -1333,6 +1368,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	@# workspace and silently never engage. The retry loop tolerates the file
 	@# being absent until init writes it.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
+	KEDGE_ACTIONS_EXTERNAL_URL="$${KEDGE_ACTIONS_EXTERNAL_URL:-$(KEDGE_ACTIONS_EXTERNAL_URL)}"; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
 	APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_PRIVATE_KEY)")"; \
@@ -1343,6 +1379,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		KEDGE_ACTIONS_EXTERNAL_URL="$${KEDGE_ACTIONS_EXTERNAL_URL}" \
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
@@ -1358,6 +1395,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		PORT=$(APP_STUDIO_PORT) \
 		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		KEDGE_ACTIONS_EXTERNAL_URL="$${KEDGE_ACTIONS_EXTERNAL_URL}" \
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
 		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
@@ -1658,8 +1696,9 @@ uninstall-provider-vibe-studio: ## Delete the vibe-studio CatalogEntry + Provide
 
 # --- Dev agent image (template-native development mode) ---
 # The static control binary an init container injects into any dev-mode
-# component (docs/app-studio-template-sandboxes.md §2). Scratch image,
-# self-contained build context (its own go.mod, stdlib-only).
+# component (docs/app-studio-template-sandboxes.md §2). Scratch image with a
+# stdlib-only module; application dependencies are installed by each component
+# from its declared package manifest, not projected by this image.
 DEV_AGENT_DIR ?= providers/infrastructure/dev-agent
 DEV_AGENT_IMAGE ?= ghcr.io/faroshq/kedge-dev-agent:latest
 DEV_AGENT_PLATFORM ?= linux/$(ARCH)
@@ -1668,7 +1707,7 @@ docker-build-dev-agent: ## Build the kedge-dev-agent injector image used by dev-
 	docker build -f $(DEV_AGENT_DIR)/Dockerfile \
 		--platform $(DEV_AGENT_PLATFORM) \
 		--provenance=false \
-		-t $(DEV_AGENT_IMAGE) $(DEV_AGENT_DIR)
+		-t $(DEV_AGENT_IMAGE) $(CURDIR)
 
 load-dev-agent-image: docker-build-dev-agent ## Load the dev agent image into the local kind runtime cluster
 	@echo ">>> loading $(DEV_AGENT_IMAGE) into kind cluster $(KRO_KIND_NAME)"

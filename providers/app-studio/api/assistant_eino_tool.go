@@ -584,7 +584,16 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 			_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 			return modelResult, durableErr
 		}
-		failed := t.finishFailedMutationToolCall(callID, spec.Name, args, err)
+		failed := ""
+		if projectAssistantWorkspaceMutationTool(spec.Name) {
+			// Workspace mutations keep their typed recovery envelope and bounded
+			// reread/repair accounting. Provider/MCP reads and other non-mutation
+			// tools must remain ordinary safe failures; classifying them as a
+			// mutation would manufacture a file target and recovery budget.
+			failed = t.finishFailedMutationToolCall(callID, spec.Name, args, err)
+		} else {
+			failed = t.finishFailedNonMutationToolCall(callID, spec.Name, args, err)
+		}
 		modelResult, durableErr := t.finishDurableToolFailureForModel(ctx, ledgerDecision, failed, err)
 		_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 		return modelResult, durableErr
@@ -1420,6 +1429,9 @@ func (t projectEinoAssistantTool) finishFailedToolCall(callID, name, rawArgs, re
 }
 
 func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name string, args map[string]any, invokeErr error) string {
+	if !projectAssistantWorkspaceMutationTool(name) {
+		return t.finishFailedNonMutationToolCall(callID, name, args, invokeErr)
+	}
 	if invokeErr == nil {
 		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), "mutation failed")
 	}
@@ -1473,6 +1485,18 @@ func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name stri
 	result := string(payload)
 	t.recordToolMessage(callID, name, result)
 	return result
+}
+
+// finishFailedNonMutationToolCall converts provider/MCP and other
+// non-workspace failures into bounded model feedback without manufacturing a
+// mutation envelope. The action feed receives only the safe error text, so a
+// failed read remains a provider/read diagnostic instead of operation=mutation.
+func (t projectEinoAssistantTool) finishFailedNonMutationToolCall(callID, name string, args map[string]any, invokeErr error) string {
+	reason := "tool call failed"
+	if invokeErr != nil {
+		reason = projectEinoAssistantSafeErrorText(invokeErr)
+	}
+	return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), reason)
 }
 
 func (t projectEinoAssistantTool) emitToolCall(event projectToolCallStreamEvent) {

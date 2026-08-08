@@ -115,7 +115,6 @@ func TestInstallSelf(t *testing.T) {
 	if info.Size() != selfInfo.Size() {
 		t.Errorf("installed binary size %d != executable size %d", info.Size(), selfInfo.Size())
 	}
-
 	plugin, err := os.ReadFile(filepath.Join(dir, previewConsolePluginName))
 	if err != nil {
 		t.Fatalf("read installed plugin: %v", err)
@@ -171,7 +170,6 @@ func TestInstallSelfInvalidJWKSFailsOpenAndRemovesStaleConfig(t *testing.T) {
 		})
 	}
 }
-
 func TestNormalizePreviewConsoleJWKSRejectsPrivateOrMalformedKeys(t *testing.T) {
 	for _, raw := range []string{
 		`{"keys":[]}`,
